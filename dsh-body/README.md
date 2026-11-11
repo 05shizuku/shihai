@@ -2,7 +2,12 @@
 
 给她一副身体。独立的 DSH host 插件，纯 JavaScript，**零第三方依赖**。
 
-它只做三件事，和用户 m00362 说的一模一样：
+> **一句话**：给 AI 一副会饿会困的身体——到饭点想吃饭，熬夜会困，被夸开心、被骂
+> 难受，这些「感觉」写进提示词。
+>
+> **怎么用**：装上就能跑，零配置可用；她只说「有点饿」，不报数字、不打分。
+
+它只做三件事：
 
 1. **一日三餐**：早饭 / 中饭 / 晚饭到点就吃。吃没吃饱不看你写了什么，
    看饭钱还剩多少（宿主自己的用量账本 `.dshw-usage.json` 里的 `lastBalance`）。
@@ -63,11 +68,11 @@
 | `tickMs` | `300000` | 心跳间隔，5 分钟 |
 | `dataDir` | `<DSH_HOME>/.dsh-body` | 状态目录 |
 | `stateFile` / `moodFile` / `balanceFile` | 自动派生 | 见下 |
-| `fishHome` | env `DSH_FISH_HOME` → `~/.dsh-fish-location.json` → `~/.dsh-fish` | 她的家 |
+| `fishHome` | env `DSH_FISH_HOME` → `~/.dsh-fish-location.json` → `~/.dsh-fish` | 这条 AI 的家 |
 | `applyToAll` | `false` | 是否给所有会话都挂身体 |
 | `targetRoot` / `targetSessionIds` | 自动取 `fishHome` / `home.json` | 只挂给谁 |
 | `allowRoots` / `denyRoots` | `[]` / `[]` | 隔离工作区，见下节 |
-| `sectionOrder` | `8800` | 排在 dsh-fish 身份段（8500–8700）之后 |
+| `sectionOrder` | `8800` | 排在身份类段（8500–8700）之后 |
 | `eventsFile` | `<dataDir>/body-events.jsonl` | 快层事件写这儿 |
 | `eventsEnabled` | `true` | 要不要写快层事件 |
 | `fastEnabled` | `true` | 要不要挂【刚刚】那一段 |
@@ -198,14 +203,14 @@
 
 **不提供任何直接改饥饿值 / 心情值的开关** —— 那是身体的经历，不是配置项。
 
-两条接口都在 host 那半边用 `webServer.register` 挂上，和 dsh-fish 观测台同一个写法：
+两条接口都在 host 那半边用 `webServer.register` 挂上，和常见 DSH 插件的观测台同一个写法：
 
 | 路由 | 方法 | 作用 |
 | --- | --- | --- |
 | `/dsh-body/status` | GET | 上面那一整套读数（JSON） |
 | `/dsh-body/config` | GET / POST | 读生效配置 / 提交补丁（`lib/report.js` 里白名单 + 范围校验，坏值 400 并逐条说明原因） |
 
-两条都过 `connection.requestRejection(req)` 的信任栅栏（和 dsh-fish 一样），
+两条都过 `connection.requestRejection(req)` 的信任栅栏，
 所以在 App 内部同源 fetch 是通的，浏览器里直接开会被挡成 401。
 
 宿主没有 `webServer` / `connection` 时插件照常跑（只是设置页显示"连不上"），
