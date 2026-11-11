@@ -1,0 +1,4 @@
+- insert:
+    - id: dsh-remember
+      name: 'dsh-remember'
+      config: {}

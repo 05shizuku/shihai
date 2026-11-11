@@ -1,0 +1,4 @@
+- insert:
+    - id: dsh-qq-bridge
+      name: 'dsh-qq-bridge'
+      config: {}

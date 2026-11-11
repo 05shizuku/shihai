@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Remember",
+    "description": "A ledger an agent can keep for itself: raw lines are append-only, nodes carry weight and fade with time, and only three to five of them surface at the top of a session."
+  }
+}

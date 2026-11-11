@@ -1,0 +1,41 @@
+{
+    "name":  "dsh-body",
+    "version":  "0.2.0",
+    "private":  true,
+    "description":  "给她一副身体：一日三餐按余额决定吃没吃饱，精力随时间掉、睡着回，心情被饥饿与外部评价牵动。只注入感觉，不注入数字。",
+    "type":  "module",
+    "main":  "./index.js",
+    "exports":  {
+                    ".":  "./index.js",
+                    "./client":  "./client.js",
+                    "./locale/*.json":  "./locale/*.json",
+                    "./icon":  "./icon.svg"
+                },
+    "files":  [
+                  "index.js",
+                  "client.js",
+                  "lib",
+                  "locale",
+                  "icon.svg",
+                  "cordis.patch.yml",
+                  "README.md"
+              ],
+    "dsh":  {
+                "bundle":  {
+                               "patch":  "./cordis.patch.yml"
+                           },
+                "client":  {
+                               "platform":  "web",
+                               "inject":  [
+
+                                          ]
+                           }
+            },
+    "peerDependencies":  {
+
+                         },
+    "engines":  {
+                    "node":  "\u003e=20"
+                },
+    "license":  "MIT"
+}

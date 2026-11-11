@@ -1,0 +1,38 @@
+{
+  "name": "dsh-remember",
+  "version": "0.16.0",
+  "private": true,
+  "type": "module",
+  "description": "记得：给宿主里活着的 agent 一本自己的账——原话层只增不改，节点带分量会随时间淡下去，排名按激活度（四路真实信号的凸组合），唤醒回弹（翻到就记「被想起」），身体越线叫醒（事件流当叫醒源），检索按 BM25F+trigram+口语词对，技能两处情境各成一次才成立，按住有三种按法，每次开头只挂三到五条；快层副本按上限裁旧、回声单独记档（回声不占原话层）；意图层只读 QQ 桥的消息流，把「这句话大概是什么性质」认成事件（有 id 翻得到，但没有分量，要变记忆得我自己掂量一次）；情绪流从意图层、快层、账本被翻三类真事里认情绪（七类枚举，认不出不给），系数由我自己攒（emotion_tune 往账上追加，只增不改），折出来的状态只是上次的笔记，不接管嘴；意图源按场分册（一个群一册、私聊一人一册，游标按册记账），recall 可按群号或私聊点名翻；翻账默认给原文但有两道字数闸（recallItemMax 每条上限、recallMaxChars 一次总量），截短或省掉的条数写在 note 里，要原文全文就 full=true。",
+  "main": "./index.js",
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg"
+  },
+  "files": [
+    "index.js",
+    "client.js",
+    "lib",
+    "locale",
+    "icon.svg",
+    "README.md",
+    "cordis.patch.yml",
+    "test",
+    "tools"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": []
+    }
+  },
+  "license": "MIT"
+}
