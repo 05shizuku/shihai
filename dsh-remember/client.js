@@ -581,6 +581,11 @@ window.__ModuleLoader__.load({
               : '○ 关着（勾上下面总开关再保存就行）'),
         h('p', { style: C.sub },
           `账上 ${s.total ?? 0} 条（活着 ${s.alive ?? 0}，按住 ${s.sealed ?? 0}）· 记在 ${status.plugin?.dataDir ?? '默认位置'} · 原话层 ${status.rawLines ?? 0} 行`),
+        // 账本红灯（2026-11-15 审查加的 ledger 字段）：损坏别只写在日志文件里
+        status.ledger?.broken
+          ? h('p', { style: C.err },
+            `⚠ 账本读不出能认的账，这次启动按空账算。原文备份${status.ledger.backupOk ? '已滚成 .bak（别删，恢复靠它）' : '没滚成 —— 先手动备份再动账本'}。`)
+          : null,
         inj.lastError ? h('p', { style: C.err }, `最近一次出错：${inj.lastError}`) : null,
       )
 

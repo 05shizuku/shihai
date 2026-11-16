@@ -207,10 +207,17 @@ export function relSealLeft(until, now) {
 }
 
 export function makeId(now, salt = '') {
+  // 64 位：单趟 32 位哈希在几万条账上就会撞 —— 撞了 = normNodes 的 seen 去重
+  // 把后写的那条静默丢掉。两把不同的哈希拼一起当主键（2026-11-16 重新接回）。
   const s = `${now}${salt}${Math.random().toString(36).slice(2, 8)}`
-  let h = 0
-  for (let i = 0; i < s.length; i += 1) h = (h * 31 + s.charCodeAt(i)) >>> 0
-  return `r_${h.toString(36)}`
+  let h1 = 0
+  let h2 = 2166136261 // FNV-1a 的偏移基数
+  for (let i = 0; i < s.length; i += 1) {
+    const c = s.charCodeAt(i)
+    h1 = (h1 * 31 + c) >>> 0
+    h2 = ((h2 ^ c) * 16777619) >>> 0
+  }
+  return `r_${h1.toString(36)}${h2.toString(36)}`
 }
 
 export function cleanText(v, max = 2000) {
@@ -321,7 +328,7 @@ export function makeNode(input = {}, now = Date.now()) {
         ? (Array.isArray(src.contexts) ? src.contexts : [])
             .map((c) => ({
               at: Number(c?.at) || Number(src.at) || now,
-              where: cleanText(c?.where ?? c, 120),
+              where: cleanText(c?.where ?? c, 260),
             }))
             .filter((c) => c.where)
             .slice(0, 16)
@@ -799,9 +806,11 @@ export function renderSection(
   const top = pick(rankNodes(pool, now, { limit, scoreOf, byId: dir }))
 
   // 一条太长会把别的挤掉。开头这段只留摘要：正文还在账本里，问得具体就捞得回来。
+  // 判断和切都按码点 —— UTF-16 的 length/slice 会把 emoji 当两个字，
+  // 劈出半个代理对挂在段首（2026-11-16 重新接回）。
   const brief = (node, max = briefMax) => {
     const t = String(node?.text ?? '')
-    return t.length > max ? { ...node, text: `${t.slice(0, max)}…` } : node
+    return cpLen(t) > max ? { ...node, text: `${cutByCodePoints(t, max)}…` } : node
   }
   const line = (n, max = briefMax) => renderLine(brief(n, max), now)
 
@@ -947,7 +956,7 @@ export function recordSkill(
   const wKey = skillWhereKey(where)
   const isNewContext = Boolean(wKey) && !haveKeys.has(wKey)
   const mergedContexts = same.flatMap((n) => (Array.isArray(n.contexts) ? n.contexts : []))
-  if (isNewContext) mergedContexts.push({ at: now, where: cleanText(where, 120) })
+  if (isNewContext) mergedContexts.push({ at: now, where: cleanText(where, 260) })
   const mergedTouches = same.flatMap((n) => (Array.isArray(n.touches) ? n.touches : []))
   const next = {
     ...primary,
@@ -1271,7 +1280,7 @@ export function searchNodes(
     hits.push({ node: n, score: rank(n, now) * 0.25 + rel.relevance, relevance: rel.relevance })
   }
   hits.sort((a, b) => b.score - a.score)
-  return hits.slice(0, Math.max(1, limit))
+  return hits.slice(0, Math.max(0, limit))
 }
 
 /** 碰过一次：更新 lastAt 并记一笔。为什么碰要写下来，不然分量涨得没有理由。 */

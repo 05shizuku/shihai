@@ -57,6 +57,11 @@ function render(seed = null) {
   return mod.RememberSection()
 }
 
+/** 折叠区默认收着（2026-11-14 小白改版：首屏只看健康态和两件事）。
+ *  想看观测台/配置卡，就得把两折都撑开再渲染 —— 下面的卡片断言都用撑开态。 */
+const OPEN_FOLDS = { adjust: true, observatory: true }
+const FOLD_SEED = [OPEN_FOLDS, null, false]
+
 const requireStub = (name) => {
   if (name !== 'react') throw new Error(`unexpected require(${JSON.stringify(name)})`)
   return reactStub
@@ -310,7 +315,7 @@ ok(pills[0].ok === true && pills[0].note === '账本 42 条', 'hubPills: 记忆�
 ok(pills[1].ok === true && pills[1].note === '桥接着', 'hubPills: 桥灯看 running')
 ok(pills[2].ok === false && pills[2].note === '没起来（HTTP 503）', 'hubPills: 没起来的灯不连坐，error 只取前 48 字')
 ok(mod.hubPills({ bridge: { j: { ok: true, running: false } } })[1].note === '桥没起', 'hubPills: 桥没起也照说')
-ok(mod.hubPills({})[0].ok === false && mod.hubPills({})[0].note === '没起来', 'hubPills: 什么都没有=没起来，不炸')
+ok(mod.hubPills({})[0].ok === false && mod.hubPills({})[0].note.startsWith('没起来'), 'hubPills: 什么都没有=没起来，不炸（括号里的原因不钉死措辞）')
 
 const hubEff = {
   enabled: true,
@@ -342,8 +347,11 @@ const hubText = flat(mod.HubSection())
 ok(hubText.includes('识海总控'), '总控渲染出标题')
 ok(hubText.includes('状态灯每 5 秒自刷'), '总控渲染出状态灯行')
 ok(hubText.includes('没起来（HTTP 503）'), '身体的灯灰着并给出原因')
-ok(hubText.includes('正在读配置…'), '展开的记忆块还没读到配置时提示正在读')
-ok(!hubText.includes('保存（写回 识海记忆）'), '没读到配置时不画保存按钮（避免存空）')
+// 2026-11-15 二次简化后的总控（她的原话：看不懂的别放上来）：只摆状态灯 +
+// 每家一个总开关，裸键值编辑器不在这里 —— 细配置去各自页签
+ok(hubText.includes('总开关（每次开头挂几行记忆）'), '总控里每家一个总开关')
+ok(hubText.includes('细配置去左边「记得」页签'), '细配置指引去各自页签')
+ok(!hubText.includes('保存'), '总控不摆裸配置（没有保存按钮）')
 
 // ---------------------------------------------------------------- 有数据时的隔离卡
 const walk = (node, out = []) => {
@@ -357,12 +365,34 @@ const walk = (node, out = []) => {
   if (node.props?.children) walk(node.props.children, out)
   return out
 }
-const withData = render([status, '', mod.formFrom(status), false, ''])
+const withData = render([status, '', mod.formFrom(status), false, '', ...FOLD_SEED])
 const text2 = flat(withData)
 ok(text2.includes('隔离（这些工作区完全不碰这本账）'), '有数据时画出「隔离」那一块')
 ok(text2.includes('大肥鱼的家'), '隔离卡里列了「大肥鱼的家」这个工作区')
 ok(text2.includes('3 条会话'), '工作区旁边带上有几条会话')
 ok(text2.includes('隔离目录'), '还有一行可以直接写目录')
+
+// ---------------------------------------------------------------- 折叠区（2026-11-14 小白改版：默认收着）
+ok(text2.includes('▾ 调整与安全（一般不用碰）'), '撑开后折叠区显示 ▾')
+const folded = render([status, '', mod.formFrom(status), false, '', { adjust: false, observatory: false }, null, false])
+const textFolded = flat(folded)
+ok(textFolded.includes('▸ 调整与安全（一般不用碰）'), '折叠区默认收着（▸）')
+ok(!textFolded.includes('习惯与快通路'), '收着的时候观测台卡片不渲染（首屏只看健康态）')
+ok(textFolded.includes('测一下：读写通不通'), '「测一下」在首屏快捷卡里，不用展开')
+ok(text2.includes('测一下：读写通不通'), '撑开后「测一下」还在（首屏快捷卡不折叠）')
+
+// 账本红灯：ledger.broken 时健康卡亮出来（2026-11-15 审查加的字段，别只躺在 status 里）
+const brokenLedger = render([
+  { ...status, ledger: { broken: true, backupOk: true } },
+  '',
+  mod.formFrom(status),
+  false,
+  '',
+  ...FOLD_SEED,
+])
+ok(flat(brokenLedger).includes('账本读不出能认的账'), '账本损坏时健康卡亮红灯')
+ok(flat(brokenLedger).includes('已滚成 .bak'), '红灯里说明备份滚到哪了（别删）')
+ok(!text2.includes('账本读不出能认的账'), '账本健康时不亮红灯')
 
 // ---------------------------------------------------------------- 激活度
 const withAct = render([
@@ -375,6 +405,7 @@ const withAct = render([
   mod.formFrom(status),
   false,
   '',
+  ...FOLD_SEED,
 ])
 const textAct = flat(withAct)
 ok(textAct.includes('激活 0.82'), '最重的几条里带激活值（激活 0.82）')
@@ -382,7 +413,7 @@ ok(textAct.includes('此刻最容易被想起的（按激活度）'), '那张卡
 ok(textAct.includes('激活度权重（写死，不开面板）'), '概览里标出四路权重是写死的')
 ok(textAct.includes('分量 0.45 · 新近 0.15 · 契合 0.25 · 复现 0.15'), '四路权重数值原样画出')
 ok(textAct.includes('凸组合'), '卡尾说明凸组合这件事')
-const textNoAct = flat(render([status, '', mod.formFrom(status), false, '']))
+const textNoAct = flat(render([status, '', mod.formFrom(status), false, '', ...FOLD_SEED]))
 ok(!textNoAct.includes('激活 0.82'), 'status 没带激活值时不硬画（旧宿主也不炸）')
 
 const labels = walk(withData).filter((n) => n.type === 'label')
@@ -405,6 +436,7 @@ const withHabit = render([
   mod.formFrom(status),
   false,
   '',
+  ...FOLD_SEED,
 ])
 const text3 = flat(withHabit)
 ok(text3.includes('他问起记忆架构时'), '习惯卡里列出走快通路的那条')
@@ -440,6 +472,7 @@ const withCuriosity = render([
   mod.formFrom(status),
   false,
   '',
+  ...FOLD_SEED,
 ])
 const text4 = flat(withCuriosity)
 ok(text4.includes('记忆架构：快层怎么接'), '好奇卡里列出活跃好奇（主题：想知道什么）')
@@ -465,6 +498,7 @@ const fastOff = render([
   mod.formFrom(status),
   false,
   '',
+  ...FOLD_SEED,
 ])
 const text5 = flat(fastOff)
 ok(text5.includes('快层还是空的'), '快层没有事件时说明白')
@@ -516,6 +550,7 @@ const intentOff = render([
   mod.formFrom(status),
   false,
   '',
+  ...FOLD_SEED,
 ])
 const textIntentOff = flat(intentOff)
 ok(textIntentOff.includes('意图层还是空的'), '没有意图事件时说明白')
@@ -577,6 +612,7 @@ const emotionEmpty = render([
   mod.formFrom(status),
   false,
   '',
+  ...FOLD_SEED,
 ])
 const textEmotionEmpty = flat(emotionEmpty)
 ok(textEmotionEmpty.includes('情绪流还是空的'), '情绪流没有事件时说明白')
@@ -588,6 +624,7 @@ const emotionOff = render([
   mod.formFrom(status),
   false,
   '',
+  ...FOLD_SEED,
 ])
 const textEmotionOff = flat(emotionOff)
 ok(textEmotionOff.includes('情绪流这段接口现在关着'), '情绪流关着时也说明白')
@@ -611,6 +648,7 @@ const noWake = render([
   mod.formFrom(status),
   false,
   '',
+  ...FOLD_SEED,
 ])
 const text6 = flat(noWake)
 ok(text6.includes('还没叫醒过。'), '没叫醒过时说明白（不硬画）')
@@ -621,6 +659,7 @@ const wakeOff = render([
   mod.formFrom(status),
   false,
   '',
+  ...FOLD_SEED,
 ])
 const text7 = flat(wakeOff)
 ok(text7.includes('叫醒现在关着'), '叫醒关着时也说明白')

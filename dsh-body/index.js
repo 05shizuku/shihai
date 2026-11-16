@@ -424,7 +424,9 @@ export function apply(ctx, baseConfig = {}) {
     const meal = mealDue(new Date(now), cfg.meals, st)
     if (meal) {
       const tier = tierOf(balance, cfg.tiers)
-      st = eatMeal(st, meal, tier, now, Number(cfg.missedGraceMinutes) || 5)
+      // grace 显式配 0 也算数（`Number(x) || 5` 会把 0 吞成 5，2026-11-16 修）
+      const graceRaw = Number(cfg.missedGraceMinutes)
+      st = eatMeal(st, meal, tier, now, Number.isFinite(graceRaw) ? graceRaw : 5)
       log(`${meal.label}：余额=${balance == null ? '读不到' : balance} → ${tier.label}（饥饿 ${st.hunger.toFixed(1)}）`)
       if (msOf(st.lastMeal?.at) > was.mealAt && String(st.lastMeal?.id) !== 'topup') {
         noteEvent(cfg, 'meal', `吃过${meal.label}了，胃里踏实一点`, msOf(st.lastMeal.at), {

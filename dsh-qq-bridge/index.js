@@ -42,7 +42,7 @@ import {
 import { OnebotClient } from './lib/onebot.js'
 import { normalizeRoots, scopeOk } from './lib/scope.js'
 import { applyConfigPatch } from './lib/report.js'
-import { downloadPhotos, inlineBase64Segments, parsePhotoMarkers, photoLines, toSegments } from './lib/photos.js'
+import { downloadPhotos, filterImageSources, inlineBase64Segments, parsePhotoMarkers, photoLines, toSegments } from './lib/photos.js'
 import { loadStickers, missingStickerText, parseStickerMarkers } from './lib/stickers.js'
 import { HEARTBEAT_INTERVAL_MS, heartbeatInfo, writeHeartbeat } from './lib/heartbeat.js'
 
@@ -130,22 +130,30 @@ export function resolveDshHome() {
 
 /** 十分钟内见过的 message_id 就不再递 —— 账记在共享文件里，几个实例一起认。 */
 const SEEN_MS = 10 * 60 * 1000
+/** 盘上的账多久重读一次：热重载双实例窗口里，另一个实例记下的重复消息也要认得 */
+const SEEN_RELOAD_MS = 5000
 function makeSeenFile(homeDir, scoped = null) {
   const file = join(homeDir, 'seen.json')
   let cache = null
-  let loaded = false
+  let loadedAt = 0
   const load = () => {
-    if (loaded) return cache
-    loaded = true
+    // 每 5 秒重读一次盘 —— 只在首次读的话，运行中另一实例记的重复消息
+    // 这边永远看不见，「几个实例一起认」是半吊子（2026-11-16 重新接回）。
+    // 每次标记都会立刻 save，盘上始终是全量的账，重读不丢东西。
+    if (cache && Date.now() - loadedAt < SEEN_RELOAD_MS) return cache
     if (scoped && !scoped(file)) return (cache = {})
     const raw = readJson(file, {})
     cache = raw && typeof raw === 'object' ? raw : {}
+    loadedAt = Date.now()
     return cache
   }
   const save = () => {
     try {
       if (scoped && !scoped(file)) return
-      writeFileSync(file, JSON.stringify(cache))
+      // 原子写：seen 坏了 = 去重清零 = 重启后重复递话 —— 跟 config/heartbeat 一个待遇
+      const tmp = `${file}.${process.pid}.tmp`
+      writeFileSync(tmp, JSON.stringify(cache))
+      renameSync(tmp, file)
     } catch {
       /* 写不进去就退化为只认本实例的账 */
     }
@@ -207,12 +215,15 @@ export function makeMessageLog(dir, maxLines = 2000, scoped = null) {
   // 旧的单本 messages.jsonl 不再写，留着当历史合订本（下游把游标抄完为止）。
   // 隔离：scoped 不过的分册一个字不记（连读带写都不动）。
   const counters = new Map() // file -> n
+  /** 分册文件名里的 id 段：只留数字字母下划线连字符 —— 群号/QQ 号本来就是数字，
+   *  带 `../` 之类的怪值进不了文件名（对齐 photos.js 的 safePhotoName，2026-11-16 重新接回）。 */
+  const safeIdPart = (v) => String(v ?? '').replace(/[^0-9A-Za-z_-]/g, '_').slice(0, 64) || '_'
   const fileFor = (row) => {
     if (String(row.chatType ?? '') === 'group' && row.groupId != null && String(row.groupId) !== '') {
-      return join(dir, `messages-group-${String(row.groupId)}.jsonl`)
+      return join(dir, `messages-group-${safeIdPart(row.groupId)}.jsonl`)
     }
     if (row.userId != null && String(row.userId) !== '') {
-      return join(dir, `messages-private-${String(row.userId)}.jsonl`)
+      return join(dir, `messages-private-${safeIdPart(row.userId)}.jsonl`)
     }
     return join(dir, 'messages-misc.jsonl')
   }
@@ -251,7 +262,7 @@ export function makeMessageLog(dir, maxLines = 2000, scoped = null) {
      *  返回旧→新排好的一小段，读不动/没文件就空数组——上下文是添头，不能因它误事。 */
     recent(groupId, n = 6, excludeMid = '') {
       try {
-        const file = join(dir, `messages-group-${String(groupId)}.jsonl`)
+        const file = join(dir, `messages-group-${safeIdPart(groupId)}.jsonl`)
         if (scoped && !scoped(file)) return []
         if (!existsSync(file)) return []
         const lines = readFileSync(file, 'utf8').split('\n').filter(Boolean)
@@ -740,7 +751,7 @@ writeHeartbeat(heartbeatFile, heartbeatInfo({ version: VERSION, startedAt, pendi
  * 桥芯：收（handleOnebotEvent）→ 递（prompt）→ 认/回（onSessionEvent）。
  * 单独拆出来是为了冒烟能不开 WS 就把整条链走一遍。
  */
-/* ---------- 群 @ 递话带上下文（猫羽雫 2026-11-07 的提法：群里的消息要联系群里的上下文回） ---------- */
+/* ---------- 群 @ 递话带上下文（群友 2026-11-07 的提法：群里的消息要联系群里的上下文回） ---------- */
 
 const GROUP_CONTEXT_LINES = 10 // 带几句就够——上下文是添头，塞多了反而把会话灌乱
 const GROUP_CONTEXT_CHARS = 800
@@ -784,7 +795,7 @@ export function groupContextBlock(ml, ev) {
 
 /** 实时版（v0.6.1）：递话当下向协议端要群里最近几条真消息。
  *  2026-11-07 ①群实锤：WS 推送慢半拍时，文件尾巴停在几分钟前，块就成了「上一个触发点那会儿」的账
- *  ——她问「晴猫说的要试试嘛」，我看到的却还是换插件那几句。上下文必须按群里的真账来。
+ *  ——她问「晴（说的要试试嘛」，我看到的却还是换插件那几句。上下文必须按群里的真账来。
  *  拉不动（没 onebot/接口报错/空）返回 null，调用方退回文件尾巴版 groupContextBlock。 */
 export async function groupContextLive(onebot, ev) {
   try {
@@ -835,7 +846,10 @@ export function createBridge({ cfg, log = () => {}, sessionController, livenessB
   const writePendingFile = (p) => {
     if (!pendingFile) return
     try {
-      writeFileSync(pendingFile, JSON.stringify({ savedAt: Date.now(), items: p.entries() }))
+      // 原子写：pending 坏了 = 挂起全丢 = 回话没主（跟 config/heartbeat 一个待遇）
+      const tmp = `${pendingFile}.${process.pid}.tmp`
+      writeFileSync(tmp, JSON.stringify({ savedAt: Date.now(), items: p.entries() }))
+      renameSync(tmp, pendingFile)
     } catch {
       /* 存不上就存不上，挂起还在内存里活着 */
     }
@@ -1046,9 +1060,14 @@ export function createBridge({ cfg, log = () => {}, sessionController, livenessB
       try {
         const res = await onebot.call('get_friend_msg_history', { user_id: Number(u), count: BACKFILL_COUNT })
         const rows = Array.isArray(res?.data?.messages) ? res.data.messages : []
-        for (const m of rows) {
-          const at = Number(m?.time) > 0 ? Number(m.time) * 1000 : 0
-          if (!at || at < since) continue
+        // 接口给的是新→旧（跟 get_group_msg_history 同族，见 groupContextLive 的 rows.reverse）——
+        // 按时间旧→新排好再入账，消息流里的顺序才跟真实时序一致（2026-11-16 重新接回）
+        const ordered = rows
+          .map((m) => ({ m, at: Number(m?.time) > 0 ? Number(m.time) * 1000 : 0 }))
+          .filter((x) => x.at > 0)
+          .sort((a, b) => a.at - b.at)
+        for (const { m, at } of ordered) {
+          if (at < since) continue
           const mid = String(m?.message_id ?? '')
           if (!mid || seenRecently(mid, Date.now())) continue
           const text = extractText(m.message)
@@ -1295,6 +1314,14 @@ export function createBridge({ cfg, log = () => {}, sessionController, livenessB
 
     if (isAllowedGroup(ev, cfg.allowGroups)) {
       log(formatGroupLog(ev, text))
+      // 查重提前（2026-11-16 重新接回的顺序）：同一条消息（协议端重发/双实例）连消息流
+      // 都不重复记 —— 原来先记流后查重，重复的 @ 消息在流里出现两遍。
+      // seen 是「查过即记」：首见返回 false 并记下，所以 @ 递话不受影响。
+      const midG = String(ev.message_id ?? '')
+      if (midG && seenRecently(midG, Date.now())) {
+        log(`重复事件跳过（message_id=${midG}）`)
+        return
+      }
       // 消息流：允许的群里每条消息都记一条（群生态也是事件源；不是记忆）。
       // 媒体行也拼进来 —— 群里的图和文件大多不 @ 我，直链进消息流我翻得到、下载得了。
       const mediaG = extractMedia(ev.message)
@@ -1307,18 +1334,13 @@ export function createBridge({ cfg, log = () => {}, sessionController, livenessB
           userId: String(ev.user_id ?? ''),
           nickname: String(ev.sender?.nickname ?? ''),
           text: (text + mediaLines(mediaG)).slice(0, 500),
-          mid: String(ev.message_id ?? ''),
+          mid: midG,
           atMe: atMe(ev, cfg.selfUin)
         })
       }
       // 群里 @ 我：递进会话，我看到就能自己决定回不回（m07835 他说的话不用全转他，我自己判断）。
       // 不 @ 的只记日志 —— 群里的日常 chatter 不往会话里灌。
       if (!atMe(ev, cfg.selfUin)) return
-      const midG = String(ev.message_id ?? '')
-      if (midG && seenRecently(midG, Date.now())) {
-        log(`重复事件跳过（message_id=${midG}）`)
-        return
-      }
       // 照片三件套（v0.7.0）：群里 @ 我这条消息里的图存下来（没 @ 我的图只留直链在消息流）
       const savedG = photosOk
         ? await downloadPhotos(mediaG.images, {
@@ -1361,11 +1383,27 @@ export function createBridge({ cfg, log = () => {}, sessionController, livenessB
     const dest = toGroup ? `群 ${groupId}` : userId
     // 照片三件套（v0.7.0）：[发图:xxx] 拆出来变图片段，文字里不留痕
     const parsed = parsePhotoMarkers(raw)
-    // 表情包标记（v0.8.0）：[表情:名字] 按名字查表情库，查得到就变图片段
-    const stickerParsed = parseStickerMarkers(parsed.text, stickerIndex)
-    const photos = parsed.photos
+    // 表情包标记（v0.8.0）：[表情:名字] 按名字查表情库，查得到就变图片段。
+    // 库关着（stickersOk=false）就把标记当普通文字发 —— 空索引会把标记全吞了
+    // 还倒贴一句「库里没有」（README 本来就这么承诺，2026-11-16 重新接回）
+    const stickerParsed = stickersOk
+      ? parseStickerMarkers(parsed.text, stickerIndex)
+      : { text: parsed.text, stickers: [], missing: [] }
+    // 发图白名单（2026-11-15 审查补的，2026-11-16 重新接回）：[发图:任意路径]
+    // 原来照单全发、发送失败还会 base64 读出来 —— 群里诱导一句就能把本机文件
+    // 掏出去。本地路径只许发收图（photos/）和表情（stickers/）目录里的；网络直链放行。
+    const gate = filterImageSources(
+      [...parsed.photos, ...stickerParsed.stickers.map((s) => s.path)],
+      [photosDir, stickerDir].filter(Boolean),
+    )
+    if (gate.rejected.length) {
+      log(
+        `发图拦下 ${gate.rejected.length} 张 —— 只许发收图/表情目录里的文件：` +
+          gate.rejected.map((s) => String(s).slice(0, 60)).join('、'),
+      )
+    }
     // 两边的图合起来：先说话，再给图（挂在最后一段气泡上）
-    const images = [...photos, ...stickerParsed.stickers.map((s) => s.path)]
+    const images = gate.allowed
     // 库里没有的名字不静默吞掉 —— 说出来（她写那个名字是想发图的）
     let body = stickerParsed.text
     if (stickerParsed.missing.length) {

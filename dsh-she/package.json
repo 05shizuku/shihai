@@ -1,0 +1,8 @@
+{
+  "name": "dsh-she",
+  "version": "0.1.0",
+  "private": true,
+  "description": "她：本体捆包——记忆（dsh-remember）与身体（dsh-body）合成一个 bundle。桥是感官，留在外面。",
+  "dsh": { "bundle": { "patch": "./cordis.patch.yml" } },
+  "license": "MIT"
+}

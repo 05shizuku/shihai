@@ -72,7 +72,8 @@ export function readJsonSafeSticky(file, fallback = null) {
  * 原子写：tmp + rename，**先 fsync 再 rename**。
  * 「写一半断电」要真兜得住，得保证数据落盘之后才换名 —— 不 fsync 的话，
  * rename 成功了、内容还躺在页缓存里，掉电就是空文件（2026-11-15 审查修的）。
- * fsync 失败就抛：tmp 留着、原文件没动，下一次写重来。
+ * fsync 失败就吞掉继续（个别文件系统不支持对文件 fsync）—— tmp 留着、
+ * 原文件没动，下一次写重来；真掉电兜不住的场景换文件系统才兜得住。
  */
 export function atomicWriteJson(file, data, mode = 0o600) {
   ensureDir(dirname(file))

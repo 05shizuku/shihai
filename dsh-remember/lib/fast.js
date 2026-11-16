@@ -73,7 +73,6 @@ export function fastRelTime(at, now = Date.now()) {
   if (mins < 15) return '不久前'
   if (mins < 60) return '一会儿前'
   const hours = Math.floor(mins / 60)
-  if (hours < 6) return '今天早些时候'
   if (hours < 24) return '今天早些时候'
   if (hours < 48) return '昨天'
   if (hours < 72) return '前天'

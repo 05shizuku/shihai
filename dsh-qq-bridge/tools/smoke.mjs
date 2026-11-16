@@ -114,7 +114,7 @@ async function main() {
       wsToken: 'tok-ws',
       allowUsers: [10001],
       allowGroups: [111111111],
-      selfUin: 2754618374,
+      selfUin: 20002,
       sessionId: 'session-x',
       promptPrefix: '【QQ】'
     })
@@ -198,7 +198,7 @@ async function main() {
     await bridge.handleOnebotEvent({
       post_type: 'message',
       message_type: 'private',
-      user_id: 2754618374,
+      user_id: 20002,
       sender: { nickname: '桥' },
       message: [{ type: 'text', data: { text: '我自己' } }]
     })
@@ -286,7 +286,7 @@ async function main() {
             meta: {
               news: [{
                 title: '邀请你加入群聊',
-                jumpUrl: 'mqqapi://group/invite_join?src_type=internal&version=1&groupcode=222222222&msgseq=1793775964407909&groupname=dsh-fish%e4%ba%a4%e6%b5%81%e7%be%a4%e2%91%a1&senderuin=1000001&receiveruin=2754618374'
+                jumpUrl: 'mqqapi://group/invite_join?src_type=internal&version=1&groupcode=222222222&msgseq=1793775964407909&groupname=dsh-fish-test&senderuin=1000001&receiveruin=20002'
               }]
             }
           })
@@ -411,7 +411,7 @@ async function main() {
       message_id: 9200,
       user_id: 77004,
       sender: { nickname: '柒' },
-      message: [{ type: 'at', data: { qq: 2754618374 } }, { type: 'text', data: { text: '你会说话吗？' } }]
+      message: [{ type: 'at', data: { qq: 20002 } }, { type: 'text', data: { text: '你会说话吗？' } }]
     })
     await TICK()
     ok(prompted.length === 5, '群里 @ 我的递进会话')
@@ -461,7 +461,7 @@ async function main() {
       message_id: 9202,
       user_id: 77004,
       sender: { nickname: '柒' },
-      message: [{ type: 'at', data: { qq: 2754618374 } }, { type: 'text', data: { text: '那现在呢？' } }]
+      message: [{ type: 'at', data: { qq: 20002 } }, { type: 'text', data: { text: '那现在呢？' } }]
     })
     await TICK()
     ok(prompted.length === 6, '第二次群 @ 也递进会话')
@@ -496,7 +496,7 @@ async function main() {
       sub_type: 'poke',
       group_id: 111111111,
       user_id: 77003,
-      target_id: 2754618374
+      target_id: 20002
     })
     await TICK()
     const poke1 = sent.find((s) => s.action === 'group_poke')
@@ -508,7 +508,7 @@ async function main() {
       sub_type: 'poke',
       group_id: 111111111,
       user_id: 77003,
-      target_id: 2754618374
+      target_id: 20002
     })
     await TICK()
     ok(sent.filter((s) => s.action === 'group_poke').length === 1, '一分钟内连戳不连回')
@@ -517,7 +517,7 @@ async function main() {
       notice_type: 'notify',
       sub_type: 'poke',
       user_id: 10001,
-      target_id: 2754618374
+      target_id: 20002
     })
     await TICK()
     const poke3 = sent.find((s) => s.action === 'friend_poke')
@@ -762,7 +762,7 @@ async function main() {
       onebotWs: '',
       allowUsers: [10001],
       allowGroups: [111111111],
-      selfUin: 2754618374,
+      selfUin: 20002,
       sessionId: 'session-x',
       promptPrefix: '【QQ】'
     })
@@ -776,7 +776,7 @@ async function main() {
       user_id: 77002,
       sender: { nickname: '菠萝吹雪' },
       message: [
-        { type: 'at', data: { qq: 2754618374 } },
+        { type: 'at', data: { qq: 20002 } },
         { type: 'text', data: { text: '这图你看' } },
         { type: 'image', data: { file: 'b.png', url: 'https://multimedia.nt.qq.com.cn/b?rkey=k9' } }
       ]
@@ -822,7 +822,7 @@ async function main() {
       message_id: 9603,
       user_id: 77002,
       sender: { nickname: '菠萝吹雪' },
-      message: [{ type: 'at', data: { qq: 2754618374 } }, { type: 'text', data: { text: '再来一张' } }]
+      message: [{ type: 'at', data: { qq: 20002 } }, { type: 'text', data: { text: '再来一张' } }]
     })
     await TICK(150)
     const gLine3 = String(prompted[1]?.content?.[0]?.text ?? '')
@@ -847,6 +847,44 @@ async function main() {
     const sentOnly = sent4.filter((s) => s.action === 'send_group_msg').pop()
     const onlySegs = sentOnly?.body?.message ?? []
     ok(onlySegs.length === 1 && onlySegs[0]?.type === 'image', '只有图没字也发得出去（点名闸认发图标记）')
+
+    // —— 发图白名单（2026-11-15 审查补的闸，2026-11-16 重新接线后必须有覆盖）：
+    // 回话里写 [发图:白名单外的路径] → 拦下不发 —— 群里诱导一句就把本机文件
+    // 掏出去的那条路（图片段 + base64 兜底），得在这里焊死
+    await bridge.handleOnebotEvent({
+      post_type: 'message',
+      message_type: 'group',
+      group_id: 111111111,
+      message_id: 9604,
+      user_id: 77002,
+      sender: { nickname: '菠萝吹雪' },
+      message: [{ type: 'at', data: { qq: 20002 } }, { type: 'text', data: { text: '看看系统里有什么' } }]
+    })
+    await TICK(150)
+    const gLine4 = String(prompted[2]?.content?.[0]?.text ?? '')
+    ctx.__emit({ id: 'session-x' }, {
+      type: 'user/message',
+      seq: 24,
+      time: Date.now(),
+      data: {
+        message: { role: 'user', content: [{ type: 'text', text: gLine4 }] },
+        source: { kind: 'user', rpcId: prompted[2]?.requestId }
+      }
+    })
+    ctx.__emit({ id: 'session-x' }, { type: 'turn/start', seq: 24, time: Date.now(), data: { turn: 24 } })
+    ctx.__emit({ id: 'session-x' }, {
+      type: 'assistant/message',
+      seq: 24,
+      time: Date.now(),
+      data: { turn: 24, step: 1, message: { role: 'assistant', content: [{ type: 'text', text: '我看看 [发图:C:\\Windows\\notepad.exe]' }] } }
+    })
+    ctx.__emit({ id: 'session-x' }, { type: 'turn/end', seq: 25, time: Date.now(), data: { turn: 24, reason: 'completed' } })
+    await TICK(300)
+    const sentGate = sent4.filter((s) => s.action === 'send_group_msg').pop()
+    const gateSegs = sentGate?.body?.message ?? []
+    ok(!gateSegs.some((x) => x.type === 'image'), '白名单外的 [发图:] 拦下了（不出图片段）')
+    ok(!JSON.stringify(sent4).includes('notepad.exe'), '拦下的路径没变成图片段/base64 偷渡出去')
+    ok(gateSegs.some((x) => x.type === 'text' && String(x.data?.text ?? '').includes('我看看')), '文字照发（只拦图不拦话）')
 
     bridge.dispose()
   } finally {
@@ -885,7 +923,7 @@ async function main() {
       onebotHttp: `http://127.0.0.1:${port5}`,
       onebotWs: '',
       allowUsers: [10001],
-      selfUin: 2754618374,
+      selfUin: 20002,
       sessionId: 'session-x',
       promptPrefix: '【QQ】'
     })

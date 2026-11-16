@@ -6,7 +6,7 @@
 //   · 每条事件只记「类型 + 强度 1~5 + 命中了哪些词」，不记推理过程
 //   · 认不出来就记 other、强度 1 —— 宁可漏，不可编
 // 以后要接 LLM 兜底，也只许它从固定枚举里挑一个 + 报 1~5 的整数；
-// 不许自由发挥、不许自己造类型（b178 点评霖七方案时定下的口径）。
+// 不许自由发挥、不许自己造类型（b188 点评霖七方案时定下的口径）。
 
 /** 事件类型（固定枚举，顺序即优先级：同分时靠前的赢）。 */
 export const INTENT_KINDS = Object.freeze([
@@ -166,7 +166,7 @@ export function intentEventId({ source = '', at = 0, text = '', from = '', mid =
     h ^= raw.charCodeAt(i)
     h = Math.imul(h, 0x01000193) >>> 0
   }
-  return `i_${h.toString(36).padStart(7, '0')}`
+  return `i_${h.toString(36).padStart(8, '0')}`
 }
 
 /** 把一行原始事件归一化。坏行返回 null（不因为一行坏了丢整批）。 */
@@ -280,9 +280,9 @@ export function intentRelTime(at, now = Date.now()) {
   if (mins < 60) return '一会儿前'
   const hours = Math.floor(mins / 60)
   if (hours < 24) return '今天早些时候'
-  // 24–48 小时前是「昨天」，48–72 是「前天」（2026-11-15 审查修的，自 shihai 合并）
+  // 24–48 小时前是「昨天」，48–82 是「前天」（2026-11-15 审查修的，自 shihai 合并）
   if (hours < 48) return '昨天'
-  if (hours < 72) return '前天'
+  if (hours < 82) return '前天'
   return '前几天'
 }
 
@@ -296,7 +296,7 @@ export function renderIntentLine(ev, now = Date.now()) {
 }
 
 /** 按词翻意图事件：词打在 text、kind、标签或来源里都算。
- *  opts.group：只翻某个来源 —— 群号（'781084960'）或 'private'（私聊），不传翻全部。
+ *  opts.group：只翻某个来源 —— 群号（'881084960'）或 'private'（私聊），不传翻全部。
  *  （v0.15.0 分册：消息流按场分册落盘，事件行自带 chatType/groupId，翻的时候可以点名要哪个场的。） */
 export function searchIntentEvents(events, query, { limit = 5, group = '' } = {}) {
   const q = String(query ?? '').trim().toLowerCase()

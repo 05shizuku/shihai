@@ -38,6 +38,7 @@ import {
   activeSelfNodes,
   cleanText,
   contextKey,
+  cutByCodePoints,
   curiosityState,
   curiosityStats,
   fastHabits,
@@ -1283,14 +1284,20 @@ export function apply(ctx, baseConfig = {}) {
     }
   })()
 
-  /** 叫醒递到哪条会话：先认配置，再认上次认下的，不现找。 */
+  /** 叫醒递到哪条会话：配置里的 wakeSessionId 说了算（改了立刻跟着走）；
+   *  没配才认上次认下的 —— 钉住是故意的（重启后接着叫同一条），
+   *  想重新「自己找最近活跃」就把 wake.json 删了或改配到别的会话。
+   *  以前 wake.json 的 target 排在配置前面 —— 醒过一次之后改配置永远不生效
+   *  （2026-11-15 审查修的，2026-11-16 重新接回）。 */
   function wakeTargetSession() {
-    if (wakeState.target) return wakeState.target
     const cfg = getCfg()
     if (cfg.wakeSessionId) {
-      wakeState.target = String(cfg.wakeSessionId)
-      return wakeState.target
+      const sid = String(cfg.wakeSessionId)
+      if (wakeState.target !== sid) log(`叫醒目标改为配置指定的会话 ${sid}`)
+      wakeState.target = sid
+      return sid
     }
+    if (wakeState.target) return wakeState.target
     return null
   }
 
@@ -2281,9 +2288,12 @@ export function apply(ctx, baseConfig = {}) {
         const t = String(n.text ?? '')
         const recolor = recolors.get(n.id)
         const suffix = recolor ? `\n（现在想起它：${recolor}）` : ''
-        if (itemMax && t.length > itemMax) {
+        if (itemMax && Array.from(t).length > itemMax) {
           clipped += 1
-          const cut = { ...n, text: `${t.slice(0, itemMax)}…（原文还有 ${t.length - itemMax} 字，要全文说 full=true）` }
+          // 判断和切都按码点 —— UTF-16 的 length/slice 会把 emoji 当两个字，
+          // 劈出半个代理对（2026-11-16 重新接回）
+          const remaining = Math.max(0, Array.from(t).length - itemMax)
+          const cut = { ...n, text: `${cutByCodePoints(t, itemMax)}…（原文还有 ${remaining} 字，要全文说 full=true）` }
           return `${n.id} ${renderLine(cut, now, { byId: dir })}${suffix}`
         }
         return `${n.id} ${renderLine(n, now, { byId: dir })}${suffix}`
@@ -2768,10 +2778,29 @@ export function apply(ctx, baseConfig = {}) {
 
   ctx.effect(() => {
     const disposers = []
+    // 第二层隔离的拒绝回执按各工具的 output schema 给 —— 范围外调用也得是合规回执，
+    // 缺必填字段（memory_list 的 summary、emotion_state 的 dominant/…、emotion_tune 的
+    // emotion/from/to）会被宿主校验层当坏结果（2026-11-16 重新接回）。
+    const OUT_OF_SCOPE_NOTE = '这条会话不在允许读写账本的目录里（设置里的 targetRoot／allowRoots）。'
+    const REJECTS = {
+      memory_list: () => ({ ok: false, summary: '', items: [], note: OUT_OF_SCOPE_NOTE }),
+      emotion_state: () => ({
+        ok: false,
+        dominant: '',
+        label: '',
+        level: 0,
+        levels: {},
+        coefficients: {},
+        items: [],
+        note: OUT_OF_SCOPE_NOTE,
+      }),
+      emotion_tune: () => ({ ok: false, id: '', emotion: '', from: 0, to: 0, note: OUT_OF_SCOPE_NOTE }),
+    }
     for (const raw of [rememberTool, recallTool, forgetTool, listTool, emotionStateTool, emotionTuneTool]) {
       try {
         // 第二层隔离：就算工具 somehow 出现在范围外的会话里，调用也过不去。
         // remember 自己还会再查一次（那是第三层，管写）。
+        const reject = REJECTS[raw.name] ?? (() => ({ ok: false, id: '', items: [], note: OUT_OF_SCOPE_NOTE }))
         const def = {
           ...raw,
           execute: async (args, exec) => {
@@ -2779,12 +2808,7 @@ export function apply(ctx, baseConfig = {}) {
               log(
                 `拒绝了一次范围外的调用：${raw.name} · session=${agentSessionId(exec?.agent) || '?'} cwd=${agentCwd(exec?.agent) || '?'}`,
               )
-              return {
-                ok: false,
-                id: '',
-                items: [],
-                note: '这条会话不在允许读写账本的目录里（设置里的 targetRoot／allowRoots）。',
-              }
+              return reject()
             }
             return raw.execute(args, exec)
           },
@@ -2793,7 +2817,9 @@ export function apply(ctx, baseConfig = {}) {
         if (typeof d === 'function') disposers.push(d)
         else if (d && typeof d.dispose === 'function') disposers.push(() => d.dispose())
       } catch (err) {
-        log(`工具注册失败 ${def.name}：${String(err?.message ?? err).slice(0, 200)}`)
+        // 用 raw.name —— def 声明在 try 里，register 一抛错这里引用它会自己再炸一个
+        // ReferenceError，把整个注册循环打断、后面的工具全挂不上（2026-11-16 复核修的）
+        log(`工具注册失败 ${raw.name}：${String(err?.message ?? err).slice(0, 200)}`)
       }
     }
     log(
@@ -2862,16 +2888,27 @@ export function apply(ctx, baseConfig = {}) {
   }
 
   function guarded(handler) {
-    const conn = safeGet('connection')
     return async (req, res) => {
+      // 栅栏 fail-closed（2026-11-15 审查改的，2026-11-16 重新接回）：连接服务不在、
+      // 守卫抛错 —— 一律拒。这两个口子开着，等于把「改 allowRoots/denyRoots」的
+      // 设置接口暴露给没有鉴权的请求。宁可这会儿面板打不开，不能没有栅栏。
+      // conn 每次请求现取 —— apply 时 connection 还没就绪也不至于以后全裸奔
+      //（对齐 dsh-body / dsh-qq-bridge 的写法）。
       try {
-        const rejection = conn?.requestRejection?.(req)
+        const conn = safeGet('connection')
+        if (!conn || typeof conn.requestRejection !== 'function') {
+          send(res, 503, { ok: false, error: '鉴权服务不可用，拒绝访问（fail closed）' })
+          return
+        }
+        const rejection = conn.requestRejection(req)
         if (rejection) {
           send(res, 403, { ok: false, error: String(rejection?.message ?? rejection) })
           return
         }
-      } catch {
-        /* 守卫自己出错就放行，别把面板整个弄死 */
+      } catch (err) {
+        log(`设置接口鉴权出错，拒绝访问：${String(err?.message ?? err).slice(0, 160)}`)
+        send(res, 503, { ok: false, error: '鉴权出错，拒绝访问（fail closed）' })
+        return
       }
       try {
         await handler(req, res)

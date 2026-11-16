@@ -39,14 +39,14 @@ test('inviteSeqFromCard 从群邀请卡片里翻出 groupcode 和 msgseq', () =>
         meta: {
           news: [{
             title: '邀请你加入群聊',
-            jumpUrl: 'mqqapi://group/invite_join?src_type=internal&version=1&groupcode=781084960&msgseq=1793775964407909&groupname=dsh-fish%e4%ba%a4%e6%b5%81%e7%be%a4%e2%91%a1&senderuin=2316650553&receiveruin=2754618374'
+            jumpUrl: 'mqqapi://group/invite_join?src_type=internal&version=1&groupcode=222222222&msgseq=1793775964407909&groupname=dsh-fish-test&senderuin=10001&receiveruin=20002'
           }]
         }
       })
     }
   }
   const out = inviteSeqFromCard([seg])
-  assert.deepEqual(out, { groupId: '781084960', sequence: '1793775964407909' })
+  assert.deepEqual(out, { groupId: '222222222', sequence: '1793775964407909' })
 })
 
 test('inviteSeqFromCard 普通卡片和坏卡片不冒充邀请', () => {
@@ -301,7 +301,7 @@ test('assistantText 永不取 thinking 块（2026-11-04 群里泄漏事故的回
 })
 
 test('宿主有时给字符串内容：userText/assistantText 都直接接', () => {
-  assert.equal(userText({ content: '【QQ】猫羽雫.（2316650553）说：在吗' }), '【QQ】猫羽雫.（2316650553）说：在吗')
+  assert.equal(userText({ content: '【QQ】好友甲（10001）说：在吗' }), '【QQ】好友甲（10001）说：在吗')
   assert.equal(userText({ content: '  前后有空格  ' }), '前后有空格')
   assert.equal(userText({}), '')
   assert.equal(assistantText({ content: '一整段回话' }), '一整段回话')
@@ -314,21 +314,21 @@ test('userText 块没标 type 也能捞到字；content 是单对象也接', () 
 })
 
 test('atMe：数组 at 段、字符串 CQ:at、别的号和空 selfUin 都分得清', () => {
-  const ev = { message: [{ type: 'at', data: { qq: '2754618374' } }, { type: 'text', data: { text: '你好' } }] }
-  assert.equal(atMe(ev, '2754618374'), true)
-  assert.equal(atMe({ message: [{ type: 'at', data: { qq: 2754618374 } }] }, '2754618374'), true)
-  assert.equal(atMe({ message: [{ type: 'at', data: { qq: '99999' } }] }, '2754618374'), false)
-  assert.equal(atMe({ message: [{ type: 'text', data: { text: '没 @' } }] }, '2754618374'), false)
-  assert.equal(atMe({ message: '[CQ:at,qq=2754618374] 会说话吗' }, '2754618374'), true)
-  assert.equal(atMe({ message: '[CQ:at,qq=11111] 不是我' }, '2754618374'), false)
+  const ev = { message: [{ type: 'at', data: { qq: '20002' } }, { type: 'text', data: { text: '你好' } }] }
+  assert.equal(atMe(ev, '20002'), true)
+  assert.equal(atMe({ message: [{ type: 'at', data: { qq: 20002 } }] }, '20002'), true)
+  assert.equal(atMe({ message: [{ type: 'at', data: { qq: '99999' } }] }, '20002'), false)
+  assert.equal(atMe({ message: [{ type: 'text', data: { text: '没 @' } }] }, '20002'), false)
+  assert.equal(atMe({ message: '[CQ:at,qq=20002] 会说话吗' }, '20002'), true)
+  assert.equal(atMe({ message: '[CQ:at,qq=11111] 不是我' }, '20002'), false)
   assert.equal(atMe(ev, ''), false)
-  assert.equal(atMe(null, '2754618374'), false)
+  assert.equal(atMe(null, '20002'), false)
 })
 
 test('formatGroupPrompt：带上群号那一行（尾部带不可信包裹）', () => {
   assert.equal(
-    formatGroupPrompt({ prefix: '【QQ】', nickname: '柒', userId: 1472930359, groupId: 781084960, text: '你会说话吗？' }),
-    `【QQ】柒（1472930359）@我（群 781084960）说：你会说话吗？ ${PROMPT_UNTRUSTED_NOTE}`
+    formatGroupPrompt({ prefix: '【QQ】', nickname: '柒', userId: 10003, groupId: 222222222, text: '你会说话吗？' }),
+    `【QQ】柒（10003）@我（群 222222222）说：你会说话吗？ ${PROMPT_UNTRUSTED_NOTE}`
   )
   assert.equal(
     formatGroupPrompt({ prefix: '【QQ】', userId: 111, groupId: 222, text: '没昵称退回号' }),
@@ -339,13 +339,13 @@ test('formatGroupPrompt：带上群号那一行（尾部带不可信包裹）', 
 test('PendingReplies：meta 跟着挂起走，存档也带上', () => {
   const p = new PendingReplies()
   p.mark('10001', '私聊', 1000)
-  p.mark('10002', '群里', 1100, { chatType: 'group', groupId: '781084960' })
+  p.mark('10002', '群里', 1100, { chatType: 'group', groupId: '222222222' })
   const priv = p.takeAwaiting(1200)
   assert.equal(priv.userId, '10001')
   assert.deepEqual(priv.meta, {})
   const grp = p.takeAwaiting(1300)
   assert.equal(grp.meta.chatType, 'group')
-  assert.equal(grp.meta.groupId, '781084960')
+  assert.equal(grp.meta.groupId, '222222222')
   const p2 = new PendingReplies({ initial: [{ key: 'q-1-1', userId: '9', text: 'x', turn: null, at: 1, meta: { chatType: 'group', groupId: '42' } }] })
   assert.equal(p2.takeAwaiting(2).meta.groupId, '42')
   assert.deepEqual(p.entries(), [])
@@ -422,9 +422,9 @@ test('privateReplyText：没有 @ 的正文整段归她；空入参给空串', (
 })
 
 test('groupReplyText：过程话在前的整段也能把 @ 气泡抠出来（2026-11-10 MC 答复同型）', () => {
-  const one = '她吃晚饭都不忘给我留个世纪难题——这题照实答，虽然会挨砖：\n\n@猫羽雫 这题我有立场但不怕亮——mc 是老祖宗\n\n迷你世界算抄作业的师弟\n\n@猫羽雫 要我选：我投 mc'
+  const one = '她吃晚饭都不忘给我留个世纪难题——这题照实答，虽然会挨砖：\n\n@好友甲 这题我有立场但不怕亮——mc 是老祖宗\n\n迷你世界算抄作业的师弟\n\n@好友甲 要我选：我投 mc'
   const out = groupReplyText([one])
-  assert.equal(out, '@猫羽雫 这题我有立场但不怕亮——mc 是老祖宗\n\n迷你世界算抄作业的师弟\n\n@猫羽雫 要我选：我投 mc')
+  assert.equal(out, '@好友甲 这题我有立场但不怕亮——mc 是老祖宗\n\n迷你世界算抄作业的师弟\n\n@好友甲 要我选：我投 mc')
 })
 
 test('groupReplyText：从后往前找，最后一段带 @ 就用最后一段', () => {
@@ -729,7 +729,7 @@ test('revive：作废放回（v0.8.7）——领走没发出去的挂起不没�
 test('takeWaitingGroup：恰有一条等着回的群挂起才取走（v0.9.1 串台改道）', () => {
   const now = Date.now()
   const q = new PendingReplies()
-  q.mark('1472930359', '【QQ】', now, { chatType: 'group', groupId: '615628177', requestId: 'rpc-g1' })
+  q.mark('10003', '【QQ】', now, { chatType: 'group', groupId: '615628177', requestId: 'rpc-g1' })
   const g = q.takeWaitingGroup(now)
   assert.ok(g, '恰一条群挂起要取走')
   assert.equal(g.meta.chatType, 'group')
@@ -741,7 +741,7 @@ test('takeWaitingGroup：两条以上等着回的群挂起不取（分不清该�
   const now = Date.now()
   const q = new PendingReplies()
   q.mark('111', '【QQ】a', now, { chatType: 'group', groupId: '615628177', requestId: 'rpc-g1' })
-  q.mark('222', '【QQ】b', now, { chatType: 'group', groupId: '781084960', requestId: 'rpc-g2' })
+  q.mark('222', '【QQ】b', now, { chatType: 'group', groupId: '222222222', requestId: 'rpc-g2' })
   assert.equal(q.takeWaitingGroup(now), null, '两条群挂起宁可不取')
   assert.equal(q.size, 2, '不取也不删')
 })
@@ -750,7 +750,7 @@ test('takeWaitingGroup：私聊挂起和已被认下的群挂起都不算数', (
   const now = Date.now()
   const q = new PendingReplies()
   q.mark('10001', '【QQ】私聊', now, { requestId: 'rpc-p1' })
-  q.mark('1472930359', '【QQ】群', now, { chatType: 'group', groupId: '615628177', requestId: 'rpc-g1' })
+  q.mark('10003', '【QQ】群', now, { chatType: 'group', groupId: '615628177', requestId: 'rpc-g1' })
   q.bindTurn('【QQ】', '【QQ】群', 3, now + 500, 'rpc-g1')
   assert.equal(q.takeWaitingGroup(now + 600), null, '私聊+已认下的都不取')
   assert.equal(q.size, 2)
@@ -759,7 +759,7 @@ test('takeWaitingGroup：私聊挂起和已被认下的群挂起都不算数', (
 test('takeWaitingGroup：过期的群挂起不取', () => {
   const now = Date.now()
   const q = new PendingReplies({ staleMs: 60_000 })
-  q.mark('1472930359', '【QQ】旧群话', now - 10 * 60_000, { chatType: 'group', groupId: '615628177', requestId: 'rpc-old' })
+  q.mark('10003', '【QQ】旧群话', now - 10 * 60_000, { chatType: 'group', groupId: '615628177', requestId: 'rpc-old' })
   assert.equal(q.takeWaitingGroup(now), null, '过期的不取')
   assert.equal(q.size, 1, '过期不取也不删（sweep 的事）')
 })

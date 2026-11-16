@@ -185,8 +185,8 @@ const bridgeMessages = join(dir, 'messages.jsonl')
 writeFileSync(
   bridgeMessages,
   [
-    { at: Date.now() - 30 * 1000, chatType: 'private', userId: '2316650553', nickname: '猫羽雫.', text: '晚安', mid: '9001' },
-    { at: Date.now() - 10 * 1000, chatType: 'private', userId: '2316650553', nickname: '猫羽雫.', text: '你太厉害了！', mid: '9002' },
+    { at: Date.now() - 30 * 1000, chatType: 'private', userId: '10001', nickname: '好友甲', text: '晚安', mid: '9001' },
+    { at: Date.now() - 10 * 1000, chatType: 'private', userId: '10001', nickname: '好友甲', text: '你太厉害了！', mid: '9002' },
   ]
     .map((e) => JSON.stringify(e))
     .join('\n') + '\n',
@@ -199,7 +199,7 @@ try {
   // 起步
   ok(h.tools.has('remember') && h.tools.has('recall') && h.tools.has('forget') && h.tools.has('memory_list'), '四个工具都注册上了')
   ok(h.tools.has('emotion_state') && h.tools.has('emotion_tune'), '情绪流的两个工具也注册上了')
-  eq(h.routes.length, 2, '两条路由挂上了')
+  eq(h.routes.length, 3, '三条路由挂上了（status / config / selftest）')
   ok(existsSync(join(dataDir, 'dsh-remember.log')), '日志文件写出来了')
 
   // 还没记事的时候：段文本是空的，但段落该挂还是要挂
@@ -675,6 +675,21 @@ try {
   const res4 = fakeRes()
   await configRoute.handler(fakeReq('POST', '{不是 json'), res4)
   eq(res4.statusCode, 400, '不是 JSON 就 400')
+
+  // /selftest（2026-11-16 新增的读写探针，设置页「测一下」按钮的账）：只收 POST
+  const selftestRoute = h.routes.find((r) => r.path === '/dsh-remember/selftest')
+  ok(selftestRoute, 'selftest 路由在')
+  const resSt0 = fakeRes()
+  await selftestRoute.handler(fakeReq('GET'), resSt0)
+  eq(resSt0.statusCode, 405, 'GET /selftest 405（只收 POST）')
+  const resSt1 = fakeRes()
+  await selftestRoute.handler(fakeReq('POST'), resSt1)
+  eq(resSt1.statusCode, 200, 'POST /selftest 200')
+  const selftest = JSON.parse(resSt1.body)
+  ok(selftest.ok === true, '自检通过：账读得到、数据目录写得进')
+  ok(typeof selftest.ms === 'number' && selftest.ms >= 0, '自检带耗时')
+  ok(selftest.ledger && Number.isFinite(selftest.ledger.total) && Number.isFinite(selftest.ledger.alive), '自检带账本读数（total/alive）')
+  ok(String(selftest.note).includes('读写都通'), '自检的 note 说人话')
 
   // 盘上的东西
   const memory = JSON.parse(readFileSync(join(dataDir, 'memory.json'), 'utf8'))

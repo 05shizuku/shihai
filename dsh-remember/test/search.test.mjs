@@ -86,8 +86,8 @@ test('同一天重放同一个结果（确定性）', () => {
 })
 
 test('数字串查询：群号、版本号精确命中', () => {
-  const n = node({ text: '他邀我进的群 781084960，我点头进去了' })
-  assert.equal(searchNodes([n, node({ text: '别的事' })], '781084960', { now: NOW }).length, 1)
+  const n = node({ text: '他邀我进的群 881084960，我点头进去了' })
+  assert.equal(searchNodes([n, node({ text: '别的事' })], '881084960', { now: NOW }).length, 1)
 })
 
 // ---------------------------------------------------------------------------

@@ -596,3 +596,5 @@ node tools/preview.mjs                                  # 只读：拿真实账�
 Windows 上 `node --test test/` 会 MODULE_NOT_FOUND，测试文件要显式列出来。
 
 零依赖是刻意的：`link:` 装着，Node 从真实路径往上找不到 profile 里的包。
+
+v0.19.0 起总控也长在这里：「识海」那节把三件套并成一页看——

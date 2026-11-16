@@ -1,0 +1,9 @@
+# dsh-she：本体捆包。用包名引用（走 profile node_modules 的 Junction → package.json main），
+# 相对路径会被 ESM 当目录导入报 ERR_UNSUPPORTED_DIR_IMPORT（教训 2026-11-06）。
+- insert:
+    - id: dsh-remember
+      name: 'dsh-remember'
+      config: {}
+    - id: dsh-body
+      name: 'dsh-body'
+      config: {}
