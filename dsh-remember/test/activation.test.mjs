@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 
 import {
   ACTIVATION_AXES,
+  ECHO_TAU_MS,
   ECHO_WINDOW_MS,
   RECENCY_TAU_BASE_MIN,
   RECENCY_TAU_SPAN_MIN,
@@ -194,25 +195,45 @@ test('renderSection / searchNodes / summaryOf 都吃同一个 scoreOf', () => {
   assert.ok(s2.topScore > 0)
 })
 
-test('唤醒回弹：被想起的回声抬复现轴，只数最近 7 天的', () => {
-  assert.equal(ECHO_WINDOW_MS, 7 * DAY, '回声窗口 = 7 天')
+test('唤醒回弹：回声按熏习势力抬复现轴（现行熏种子，2026-11-16）', () => {
+  // 窗口 = 3τ：衰减由指数（τ = 14 天）负责，窗口只挡极端老数据（边缘 ≈5%，无悬崖）
+  assert.equal(ECHO_WINDOW_MS, 3 * ECHO_TAU_MS, '回声窗口 = 3τ = 42 天')
+  assert.equal(ECHO_TAU_MS, 14 * DAY, '熏习半衰期 14 天：比新近的分钟级慢、比分量的天级快')
   const n = { id: 'r1', hits: 0, touches: [], tags: [] }
   // 没回声 = 0
   assert.equal(repeatAxis(n, new Map(), 0), 0)
-  // 被想起 2 次 → 2/4 = 0.5
-  assert.equal(repeatAxis(n, new Map(), 2), 0.5)
+  // 熏习势力是小数：刚熏的一次 ≈1 份 → 1/4 = 0.25
+  assert.equal(repeatAxis(n, new Map(), 1), 0.25)
+  // 陈年回声的势力（30 天前 ≈0.118）照样按比例计入，不丢也不虚增
+  assert.ok(Math.abs(repeatAxis(n, new Map(), 0.118) - 0.118 / 4) < 1e-9, '小数势力按比例进复现轴')
   // 负数、坏值当 0
   assert.equal(repeatAxis(n, new Map(), -3), 0)
   assert.equal(repeatAxis(n, new Map(), NaN), 0)
-  // 封顶：回声再多也只算满一路
+  // 封顶：回声势力再大也只算满一路
   assert.equal(repeatAxis(n, new Map(), 99), 1)
   // activationOf 从 ctx.echoes（Map）里拿
   const echoes = new Map([['r1', 3], ['r2', 1]])
   const withEcho = activationOf(n, NOW, { events: [], echoes })
   const noEcho = activationOf(n, NOW, { events: [] })
   assert.ok(withEcho.activation > noEcho.activation, `被想起的该更热：${withEcho.activation} vs ${noEcho.activation}`)
-  assert.ok(Math.abs(withEcho.axes.repeat - 0.75) < 1e-9, `回声 3 次 → 复现 0.75，实际 ${withEcho.axes.repeat}`)
+  assert.ok(Math.abs(withEcho.axes.repeat - 0.75) < 1e-9, `势力 3 份 → 复现 0.75，实际 ${withEcho.axes.repeat}`)
   // 别的条的回声不串门
   const other = activationOf({ id: 'r9', hits: 0, touches: [], tags: [] }, NOW, { events: [], echoes })
   assert.equal(other.axes.repeat, 0, '没有回声的条不该被别人的回声抬高')
+})
+
+test('违熏不进复现轴：activationOf 的 ctx 里没有违熏，激活度不知道它存在（2026-11-16）', () => {
+  // 违熏是「校正质量」的账 —— 拿它扣现行倾向就把逻辑搞反了；
+  // 这条钉住「违熏不在激活度的任何一路里」，谁想把接进去先过这一关
+  const n = { id: 'r1', hits: 0, touches: [], tags: [], text: 'x', weight: 0.5, at: NOW, lastAt: NOW }
+  const a = activationOf(n, NOW, { events: [] })
+  assert.equal(a.axes.repeat, 0)
+  assert.ok(Math.abs(a.activation - (0.45 * a.axes.weight + 0.15 * a.axes.recency + 0.25 * a.axes.fit)) < 1e-9,
+    '激活度 = 三路和（repeat 为 0）—— 违熏不参与')
+})
+
+test('违熏不进 repeatAxis：repeatAxis 只吃 hits/touches/peers/echoes 四样（2026-11-16）', () => {
+  // 签名钉死：第三个参数是熏习势力（数字），没有第五个「违熏」参数
+  assert.equal(repeatAxis({ id: 'r1', hits: 0, touches: [], tags: [] }, new Map(), 0), 0)
+  assert.equal(repeatAxis({ id: 'r1', hits: 2, touches: [], tags: [] }, new Map(), 1), 0.75)
 })

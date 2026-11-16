@@ -19,6 +19,7 @@ import {
 } from '../lib/emotion.js'
 
 const NOW = 1_700_000_000_000
+const MIN = 60 * 1000
 
 test('情绪枚举：固定七个，各有中文名', () => {
   assert.equal(EMOTION_KINDS.length, 7)
@@ -26,6 +27,30 @@ test('情绪枚举：固定七个，各有中文名', () => {
     assert.ok(EMOTION_LABEL[kind], `${kind} 缺标签`)
   }
   assert.equal(EMOTION_LABEL.calm, '平静')
+})
+
+test('tune 改 halfLife 只对往后的事生效（半衰期写死在事件行里，2026-11-16 B 方案）', () => {
+  const lines = [
+    // 旧行：写入时 halfLife 还是种子值 120 —— 折叠时必须用它，不能被后面的 tune 追溯重算
+    { at: 1 * MIN, kind: 'event', id: 'e1', emotion: 'warm', delta: 0.5, halfLife: 120 },
+    // 中间改半衰期：120 → 10
+    { at: 6 * MIN, kind: 'tune', id: 't1', emotion: 'warm', from: 1, to: 1, reason: '这种情绪凉得比想的快', halfLife: 10 },
+    // 新行：写入时 halfLife 已经是 10
+    { at: 21 * MIN, kind: 'event', id: 'e2', emotion: 'warm', delta: 0.5, halfLife: 10 },
+  ]
+  const st = foldEmotion(lines, { now: 31 * MIN })
+  // e1（距 now 30 分，行上半衰期 120）：0.5 × 2^(-30/120) ≈ 0.420
+  // e2（距 now 10 分，行上半衰期 10）：0.5 × 2^(-1) = 0.25 —— 合计 ≈0.67
+  // 追溯重算的坏情况：e1 也被改成 10 → 0.5 × 2^(-3) ≈ 0.0625，合计 ≈0.31
+  assert.ok(st.levels.warm > 0.6, `旧行用当时的半衰期衰减（levels.warm=${st.levels.warm}，追溯重算会 ≈0.31）`)
+  assert.ok(st.levels.warm < 0.75, `新行确实用了新的半衰期（levels.warm=${st.levels.warm}）`)
+  // 系数表里的 halfLife 是新值 —— 往后的事件在写入时会把它写死在自己的行上
+  const table = emotionCoefficients(lines)
+  assert.equal(table.warm.halfLife, 10)
+  // 旧行没有 halfLife 字段（历史真实形状）→ 回落当前表，行为不变
+  const legacy = [{ at: 1 * MIN, kind: 'event', id: 'e0', emotion: 'warm', delta: 0.5 }]
+  const stLegacy = foldEmotion(legacy, { now: 10 * MIN })
+  assert.ok(stLegacy.levels.warm > 0, '没有 halfLife 字段的旧行回落当前表，不炸')
 })
 
 test('认情绪：意图层那十一类各归各的，认不出的不给情绪', () => {

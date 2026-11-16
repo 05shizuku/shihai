@@ -174,6 +174,9 @@ export function normEmotionLine(raw) {
       key: String(raw.key ?? `${source}|${ref}`),
       emotion,
       delta,
+      // 写入当时的半衰期（2026-11-16，B 方案）：tune 改 halfLife 只对往后的事件生效，
+      // 旧行不被追溯重算 —— 跟 delta「当时的数写死在行里」同一个道理。旧行没有这字段。
+      halfLife: Number(raw.halfLife) > 0 ? Number(raw.halfLife) : 0,
       intensity: Number(raw.intensity) || 0,
       text: String(raw.text ?? '').slice(0, 120),
     }
@@ -234,7 +237,10 @@ export function foldEmotion(lines = [], { now = Date.now() } = {}) {
   for (const rawLine of lines) {
     const line = normEmotionLine(rawLine)
     if (!line || line.kind !== 'event') continue
-    const halfLife = table[line.emotion]?.halfLife || 90
+    // 半衰期优先读事件行上写死的（写入当时的值）—— tune 改 halfLife 只对往后的事件
+    // 生效，不追溯重算历史（旧行没有这字段才回落当前表，2026-11-16 B 方案）
+    const halfLife =
+      Number(line.halfLife) > 0 ? Number(line.halfLife) : table[line.emotion]?.halfLife || 90
     const ageMin = Math.max(0, (now - line.at) / 60000)
     const weight = Math.pow(2, -ageMin / halfLife)
     raw[line.emotion] = Math.max(0, raw[line.emotion] + line.delta * weight)
