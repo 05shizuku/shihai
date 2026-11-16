@@ -972,7 +972,7 @@ window.__ModuleLoader__.load({
           h('span', { style: C.sub }, '分钟（0–720，两次叫醒的最小间隔）'),
         ),
         h('p', { style: { ...C.cardTitle, marginTop: 6 } }, '隔离（这些工作区完全不碰这本账）'),
-        h('p', { style: C.sub }, '勾上的工作区：那里的会话看不到这本账的四个工具，也不挂段。'),
+        h('p', { style: C.sub }, '勾上的工作区：那里的会话看不到这本账的七个工具，也不挂段。'),
         ...(status.workspaces ?? []).map((w) =>
           h('label', { key: `ws-${w.path}`, style: { ...C.row, gap: 6, fontSize: 13 } },
             h('input', {

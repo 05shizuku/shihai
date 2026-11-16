@@ -773,6 +773,8 @@ export function renderSection(
     briefMax = 120,
     habitLimit = HABIT_LIMIT_DEFAULT,
     scoreOf,
+    /** 每选中一条回调一次（观测用：调用方记「被展示」行）。不传就不记 —— 展示不算现行。 */
+    onPick = null,
   } = {},
 ) {
   // 上了快通路的习惯不参加这里的竞争 —— 它们另有那一段。
@@ -799,6 +801,7 @@ export function renderSection(
       if (!node || taken.has(node.id)) continue
       taken.add(node.id)
       out.push(node)
+      if (typeof onPick === 'function') onPick(node)
     }
     return out
   }

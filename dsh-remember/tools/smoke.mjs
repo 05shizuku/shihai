@@ -5,7 +5,7 @@
  * 它不碰任何真实数据：账本落在系统临时目录里，跑完就删。
  */
 
-import { mkdtempSync, readFileSync, rmSync, existsSync, writeFileSync, appendFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, existsSync, writeFileSync, appendFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -88,7 +88,7 @@ function makeHarness(dataDir, targetRoot, extra = {}) {
   // 每个 agent 有自己那一层 ctx：段落收在那个 agent 自己的 sections 里，
   // tools.restrict 也记在 restrictions 里 —— 隔离就是往那儿写一条 deny。
   // guard 是隔离的可靠那一层：真机上 restrict 对插件 scope 注册的工具无效（报
-  // unknown global tools），所以 agent 自己那层还得挂一条 guard 把这四个名字一律拒。
+  // unknown global tools），所以 agent 自己那层还得挂一条 guard 把这七个名字一律拒。
   const restrictions = []
   const guards = []
   const makeAgentCtx = (ownSections) => {
@@ -193,11 +193,30 @@ writeFileSync(
   'utf8',
 )
 
+// 预埋一笔陈年回声（30 天前，现行熏种子 2026-11-16）：熏习势力要按 τ 衰减，
+// 不能按硬数数 —— 30 天前的一次 ≈exp(-30/14)≈0.12 份，不该和刚熏的等价
+// （账本目录要 apply 才会建，这里先手动建好才能预埋）
+mkdirSync(dataDir, { recursive: true })
+writeFileSync(
+  join(dataDir, 'echo.jsonl'),
+  JSON.stringify({
+    id: 'e_aged01',
+    at: Date.now() - 30 * 24 * 60 * 60 * 1000,
+    kind: 'echo',
+    text: '被想起：「陈年旧事」→ r_aged-target',
+    query: '陈年旧事',
+    refs: ['r_aged-target'],
+    source: 'recall',
+  }) + '\n',
+  'utf8',
+)
+
 try {
   const h = makeHarness(dataDir, targetRoot, { fastSource: bodyEvents, intentSource: bridgeMessages })
 
   // 起步
-  ok(h.tools.has('remember') && h.tools.has('recall') && h.tools.has('forget') && h.tools.has('memory_list'), '四个工具都注册上了')
+  ok(h.tools.has('remember') && h.tools.has('recall') && h.tools.has('forget') && h.tools.has('memory_list'), '账本四个 + 情绪流两个都注册上了')
+  ok(h.tools.has('vikarma'), '违熏工具也注册上了')
   ok(h.tools.has('emotion_state') && h.tools.has('emotion_tune'), '情绪流的两个工具也注册上了')
   eq(h.routes.length, 3, '三条路由挂上了（status / config / selftest）')
   ok(existsSync(join(dataDir, 'dsh-remember.log')), '日志文件写出来了')
@@ -512,8 +531,8 @@ try {
   eq(h.restrictions.length, 1, '范围外的会话被隔开：在它自己那层 deny 一次')
   eq(
     (h.restrictions[0]?.deny ?? []).join(','),
-    'remember,recall,forget,memory_list,emotion_state,emotion_tune',
-    'deny 的正是这六个工具（账本四个 + 情绪流两个）',
+    'remember,recall,forget,memory_list,emotion_state,emotion_tune,vikarma',
+    'deny 的正是这七个工具（账本四个 + 情绪流两个 + 违熏）',
   )
   eq(outsiderSections.length, 0, '范围外的会话不挂任何段')
   // guard：真机上 restrict 挡不住（它只认全局注册的工具），这一层才是靠得住的
@@ -972,6 +991,14 @@ try {
   )
   const skNoName = await h.tools.get('remember').execute({ text: '没名字的技能', kind: 'skill' }, exec)
   ok(!skNoName.ok && skNoName.note.includes('名字'), '技能不带名字要被拒')
+  // 没有 cwd 的会话记技能：以前是静默失效（永远 single、一句提示没有），现在要拒得说明白
+  const hSkillBook = makeHarness(join(dir, 'skill-book'), '', {})
+  const skNoCwd = await hSkillBook.tools.get('remember').execute(
+    { text: '拆会话帧先认 zstd 头', kind: 'skill', context: '拆会话帧', changes: '想过' },
+    { agent: { session: { header: { id: 'session-nocwd' } } } },
+  )
+  eq(skNoCwd.ok, false, '没有工作目录的会话记不了技能（拒，不静默失效）')
+  ok(skNoCwd.note.includes('工作目录'), `拒绝时说清为什么（${skNoCwd.note}）`)
 
   // ------------------------------------------------------------------ 条件封存：到点自松 / 等一条翻篇
   const rootAnchor = await h.tools.get('remember').execute(
@@ -997,6 +1024,9 @@ try {
     'cond 按住期间按词翻不到（按住的那条不在结果里）',
   )
   // 但 include_sealed 递进去了就翻得到，行上写明是什么在按着 —— 两种按法各验一次
+  // 顺带钉住 cond 按住不熏（2026-11-16 复核抓的：isSealed 不带目录会把 cond 判成翻篇）
+  const r2EchoBefore = readFileSync(join(dataDir, 'echo.jsonl'), 'utf8')
+    .split('\n').filter((x) => x.includes('"kind":"echo"') && x.includes(r2.id)).length
   const sealedShown = await h.tools.get('recall').execute(
     { query: '今天他问了个问题', include_sealed: true },
     exec,
@@ -1005,11 +1035,21 @@ try {
     sealedShown.items.some((x) => x.includes(r2.id) && x.includes('按住·等翻篇')),
     `include_sealed 按词翻得到 cond 按住的（${sealedShown.items.length} 条：${sealedShown.items.join(' ┃ ')}）`,
   )
+  const r2EchoAfter = readFileSync(join(dataDir, 'echo.jsonl'), 'utf8')
+    .split('\n').filter((x) => x.includes('"kind":"echo"') && x.includes(r2.id)).length
+  eq(r2EchoAfter, r2EchoBefore, 'cond 按住的条 include_sealed 翻到也不熏（isSealed 带目录才认得出 cond）')
+  // 按住的条 include_sealed 翻到也不熏（2026-11-16）：回声喂的是复现轴，
+  // 按住的不参与竞争 —— 只查 !n.sealed 会漏掉 until/cond 按住的
+  const skEchoBefore = readFileSync(join(dataDir, 'echo.jsonl'), 'utf8')
+    .split('\n').filter((x) => x.includes('"kind":"echo"') && x.includes(sk1.id)).length
   const untilShown = await h.tools.get('recall').execute({ query: '拆会话帧', include_sealed: true }, exec)
   ok(
     untilShown.items.some((x) => x.includes('按住·还有')),
     `include_sealed 按词翻得到 until 按住的（${untilShown.items.join(' ┃ ').slice(0, 120)}）`,
   )
+  const skEchoAfter = readFileSync(join(dataDir, 'echo.jsonl'), 'utf8')
+    .split('\n').filter((x) => x.includes('"kind":"echo"') && x.includes(sk1.id)).length
+  eq(skEchoAfter, skEchoBefore, '按住的条 include_sealed 翻到也不熏（松开前不记被想起）')
   // 翻篇自动松的语义在单测里验过（isSealed 对 superseded 目标）；这里验 status 的被按住清单
   // 把三种按法都标得出来：sk1 是 until，r2 是 cond
   const res6 = fakeRes()
@@ -1063,15 +1103,88 @@ try {
     !readFileSync(join(dataDir, 'lines.jsonl'), 'utf8').includes('"kind":"echo"'),
     '原话层里没有回声行（回声单独记档，原话层只留我自己写的字）',
   )
-  // 回声喂复现轴：status 带回声块，甲攒了两笔
+  // 回声喂复现轴：status 带回声块，甲攒了两笔；熏习势力按 τ 衰减
   const res8 = fakeRes()
   await statusRoute.handler(fakeReq('GET'), res8)
   const status5 = JSON.parse(res8.body)
-  ok(status5.echoes?.windowDays === 7 && status5.echoes?.total >= 3, `status 带回声块（total=${status5.echoes?.total}）`)
+  ok(status5.echoes?.windowDays === 42 && status5.echoes?.total >= 3, `status 带回声块（total=${status5.echoes?.total}，窗口=3τ）`)
   ok(
-    (status5.echoes?.top ?? []).some((x) => x.id === echoA.id && x.count === 2),
-    `甲的两笔回声在 top 里（${JSON.stringify((status5.echoes?.top ?? []).slice(0, 3))}）`,
+    (status5.echoes?.top ?? []).some(
+      (x) => x.id === echoA.id && x.count === 2 && x.strength > 1 && x.strength <= 2,
+    ),
+    `甲的两笔回声在 top 里（count=2，都是刚熏的所以势力≈2；${JSON.stringify((status5.echoes?.top ?? []).slice(0, 3))}）`,
   )
+  // 陈年回声的衰减在独立小环境里验（主账本回声太多，0.12 的势力挤不进 top-5）：
+  // 账本里只预埋一陈（30 天前）一鲜（现在）两笔回声，断言无歧义
+  const agedDir = join(dir, 'aged-book')
+  mkdirSync(agedDir, { recursive: true })
+  writeFileSync(
+    join(agedDir, 'echo.jsonl'),
+    [
+      { id: 'e_aged02', at: Date.now() - 30 * 24 * 60 * 60 * 1000, kind: 'echo', query: '陈年旧事', refs: ['r_aged-target'], source: 'recall' },
+      { id: 'e_fresh02', at: Date.now(), kind: 'echo', query: '刚发生的缘', refs: ['r_fresh-target'], source: 'recall' },
+    ]
+      .map((e) => JSON.stringify(e))
+      .join('\n') + '\n',
+    'utf8',
+  )
+  writeFileSync(join(agedDir, 'body-events.jsonl'), '', 'utf8')
+  const hAged = makeHarness(agedDir, targetRoot, { fastSource: join(agedDir, 'body-events.jsonl') })
+  const resAged = fakeRes()
+  await hAged.routes.find((r) => r.path === '/dsh-remember/status').handler(fakeReq('GET'), resAged)
+  const stAged = JSON.parse(resAged.body)
+  const agedRow = (stAged.echoes?.top ?? []).find((x) => x.id === 'r_aged-target')
+  ok(
+    !!agedRow && agedRow.count === 1 && agedRow.strength > 0.05 && agedRow.strength < 0.3,
+    `陈年回声按 τ 衰减（count=${agedRow?.count}，strength=${agedRow?.strength}，30 天 ≈0.12）`,
+  )
+  const freshRow = (stAged.echoes?.top ?? []).find((x) => x.id === 'r_fresh-target')
+  ok(
+    !!freshRow && freshRow.count === 1 && freshRow.strength > 0.9,
+    `刚熏的那笔势力接近满份（strength=${freshRow?.strength}）`,
+  )
+  ok(
+    (freshRow?.strength ?? 0) > (agedRow?.strength ?? 1) * 3,
+    `刚熏的势力显著高于陈年的（${freshRow?.strength} vs ${agedRow?.strength}）—— 习气偏向最近`,
+  )
+
+  // ---------------------------------------------------------- 违熏：说会做、没做到，记下来
+  const vkSeed = await h.tools.get('remember').execute(
+    { text: '遇到 bug 先看日志再猜', kind: 'lesson', weight: 0.7, will_do: '下次先翻日志' },
+    exec,
+  )
+  ok(vkSeed.ok, '违熏靶子记下了')
+  // 先 recall 一次，制造 echo —— 违熏的 echoId 反查靠它
+  const vkRecall = await h.tools.get('recall').execute({ query: '先看日志' }, exec)
+  ok(vkRecall.ok && vkRecall.echoed === true, '违熏靶子被想起一次')
+  const vk = await h.tools.get('vikarma').execute(
+    { seedId: vkSeed.id, reason: '未触发', actual: '又直接猜了' },
+    exec,
+  )
+  ok(vk.ok && String(vk.id).startsWith('vk_'), '违熏记下了')
+  // 没 will_do 的种子拒
+  const noWill = await h.tools.get('remember').execute({ text: '没写 will_do 的靶子', kind: 'fact' }, exec)
+  const vkBad = await h.tools.get('vikarma').execute({ seedId: noWill.id, reason: '未触发' }, exec)
+  ok(!vkBad.ok && vkBad.note.includes('will_do'), '没 will_do 的种子不给记违熏')
+  // 枚举外的 reason 拒
+  const vkBadReason = await h.tools.get('vikarma').execute({ seedId: vkSeed.id, reason: '乱写' }, exec)
+  ok(!vkBadReason.ok, '枚举外的 reason 不收')
+  // 不存在的种子拒
+  const vkGhost = await h.tools.get('vikarma').execute({ seedId: 'r_不存在', reason: '未触发' }, exec)
+  ok(!vkGhost.ok, '不存在的种子不收')
+  // 再 recall，行尾带违熏提醒（30 天内）
+  const vkRecall2 = await h.tools.get('recall').execute({ query: '先看日志' }, exec)
+  ok(
+    vkRecall2.items.some((x) => x.includes('上次现行时没兑现')),
+    'recall 行尾带违熏提醒',
+  )
+  // stats
+  const resVk = fakeRes()
+  await statusRoute.handler(fakeReq('GET'), resVk)
+  const stVk = JSON.parse(resVk.body)
+  ok(stVk.vikarma?.total >= 1, 'status 带违熏计数')
+  ok(stVk.vikarma.byReason['未触发'] >= 1, 'status 带 reason 分布')
+  ok(stVk.vikarma.top.some((x) => x.seedId === vkSeed.id), 'status 带违熏最多的种子')
 
   // ------------------------------------------------------------------ 叫醒：身体越过线就把我叫醒
   // 心跳不靠测试等 60 秒 —— apply 返回了 wakeBeat，直接一拍一拍喂。

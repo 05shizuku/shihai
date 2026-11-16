@@ -83,6 +83,7 @@ import {
 import { EDITABLE, applyConfigPatch, describePatch } from './lib/config.js'
 import {
   ACTIVATION_AXES,
+  ECHO_TAU_MS,
   ECHO_WINDOW_MS,
   RECENCY_TAU_BASE_MIN,
   RECENCY_TAU_SPAN_MIN,
@@ -130,6 +131,7 @@ import {
   agentSessionId,
   appendJsonLine,
   atomicWriteJson,
+  countLines,
   exists,
   isUnder,
   keepTailLines,
@@ -159,10 +161,10 @@ const VERSION = String(PKG?.version ?? '0.0.0')
 const REFRESH_MS = 2000
 
 /**
- * 这本账的四个工具。范围外的会话不该碰得到：先 try restrict 把它们从工具表里遮掉
+ * 这本账的七个工具。范围外的会话不该碰得到：先 try restrict 把它们从工具表里遮掉
  * （只对全局注册的工具有效），遮不掉就挂 agent scope 的 guard，一律拒（见 isolateAgent）。
  */
-const TOOL_NAMES = ['remember', 'recall', 'forget', 'memory_list', 'emotion_state', 'emotion_tune']
+const TOOL_NAMES = ['remember', 'recall', 'forget', 'memory_list', 'emotion_state', 'emotion_tune', 'vikarma']
 
 export const DEFAULTS = {
   /** 账本目录；留空 = <DSH_HOME>/.dsh-remember */
@@ -174,7 +176,7 @@ export const DEFAULTS = {
   /** 只给这个目录下的会话挂开头那几行；留空 = 跟 allowRoots 一样宽 */
   targetRoot: '',
   /**
-   * 隔离目录：这些目录下的会话完全碰不到这本账 —— 看不到四个工具、不挂段、不许写。
+   * 隔离目录：这些目录下的会话完全碰不到这本账 —— 看不到七个工具、不挂段、不许写。
    * 优先于 allowRoots／targetRoot（先隔离、后放行）。她那边就该写在这儿。
    */
   denyRoots: [],
@@ -330,6 +332,8 @@ export function apply(ctx, baseConfig = {}) {
     emotion: join(dataDir, 'emotion.jsonl'),
     /** 回声档：「被想起」单独记这本（机器记的事件，不是我说的话；原话层只留我写的） */
     echo: join(dataDir, 'echo.jsonl'),
+    /** 违熏档：种子说会做得不一样、实际没做到的账（只增不改；不进复现轴） */
+    vikarma: join(dataDir, 'vikarma.jsonl'),
     /** 叫醒的账：上回什么时候醒的（重启后冷却从这儿接着算） */
     wake: join(dataDir, 'wake.json'),
   }
@@ -446,13 +450,24 @@ export function apply(ctx, baseConfig = {}) {
   // 唤醒回弹：翻到一条 = 它又被想起了一次。回声记在单独的 echo.jsonl（机器记的事件，
   // 只增不改；原话层 lines.jsonl 只留我自己写的字），节点本身一个字节不动；
   // 复现这一路在读取时数最近 7 天的回声。
-  /** 每条被想起的时间戳们（id -> [at,…]，只留最近 50 个） */
+  /** 每条被想起的时间戳们（id -> [at,…]，只留最近 200 个） */
   const echoAt = new Map()
   /** 回声去重：同一组条 10 分钟内不重复记（一次对话里连翻几下是同一次醒） */
   const echoDedupe = new Map()
   /** 染色限流索引（id -> 最近一次 {at, dominant, level}）：echo.jsonl 里的 recolor 行（饭桶④） */
   const recolorAt = new Map()
+  /** 最近一次回声行（id -> {at, rowId}）：违熏反查用，不全量扫 echo.jsonl */
+  const latestEchoRow = new Map()
+  /** 展示观测（现行熏种子裁定：展示不算现行，只记账）：id -> 被挂到开头过哪些天（14 天窗） */
+  const displayDays = new Map()
+  /** 违熏索引（seedId -> {at, reason, count}）：recall 翻到时行尾提醒 + status 聚合用 */
+  const vikarmaAt = new Map()
+  /** 违熏的内存聚合（total / byReason）—— status 每几秒被拉一次，别为它整本解析。
+   *  与 vikarmaAt 同源同写（只在 loadVikarmaIndex / vikarma 写入两处更新）：
+   *  账本只增不减、没有删除操作，两者天然一致。 */
+  const vikarmaAgg = { total: 0, byReason: {} }
   loadEchoIndex(Date.now())
+  loadVikarmaIndex()
 
   function saveNodes() {
     // 坏账本没备份成功就拒绝覆盖写（自 shihai 合并，2026-11-15 审查）——宁可这条记不上，不能把原文冲掉
@@ -484,10 +499,49 @@ export function apply(ctx, baseConfig = {}) {
     else nodes[i] = next
   }
 
+  /**
+   * 展示观测（2026-11-16 拍板：展示不算现行，只记账不喂复现轴）。
+   * 每天每组条最多记一行（dedupe 键 = 日期|排序后的 id 集）——
+   * 用途：找出「常挂但从不被想起」的条（死重或 recall 词表覆盖不到），只观测不改排名。
+   */
+  const displayDedupe = new Map()
+  function recordDisplay(list, now) {
+    try {
+      const ids = list.map((n) => n.id).filter(Boolean).sort()
+      if (!ids.length) return
+      // 「天」按 UTC 日（与 loadEchoIndex 的去重口径一致；东八区日界在早八点，见 philosophy.md）
+      const day = new Date(now).toISOString().slice(0, 10)
+      const key = `${day}|${ids.join(',')}`
+      if (displayDedupe.has(key)) return
+      displayDedupe.set(key, now)
+      // 前几天的键清掉，防无限增长（盘上的行还在，只是内存去重表不用留）
+      for (const k of displayDedupe.keys()) {
+        if (!k.startsWith(day)) displayDedupe.delete(k)
+      }
+      appendJsonLine(files.echo, {
+        id: `d_${now.toString(36)}`,
+        at: now,
+        kind: 'display',
+        refs: ids,
+        source: 'inject',
+      })
+      for (const rid of ids) {
+        const days = displayDays.get(rid) ?? new Set()
+        days.add(day)
+        pruneDisplayDays(days, now)
+        if (days.size) displayDays.set(rid, days)
+        else displayDays.delete(rid)
+      }
+    } catch {
+      /* 观测失败不挡注入 */
+    }
+  }
+
   function currentSection(now = Date.now(), agent = null) {
     const cfg = getCfg()
     if (!cfg.enabled) return ''
     try {
+      const picked = []
       const text = renderSection(nodes, {
         now,
         limit: clamp(cfg.injectLimit, 0, 10),
@@ -496,9 +550,16 @@ export function apply(ctx, baseConfig = {}) {
         title: '我记得的',
         // 上了快通路的习惯不跟这些条抢位置（两段用同一个上限，才对得上）
         habitLimit: clamp(cfg.habitLimit, 0, 10),
-        // 排名用激活度（此刻的目录、刚发生的事都算数）—— 读取路径上不写任何东西
+        // 排名用激活度（此刻的目录、刚发生的事都算数）—— 读取路径上不写账本
+        //（唯一的例外是下面的展示观测行，它不喂排名）
         scoreOf: activationScorer(agent, now),
+        // 展示观测：挂了谁记一笔（不算现行，不进复现轴 —— 判据见 docs/philosophy.md）
+        onPick: (n) => picked.push(n),
       })
+      // 只记「真的挂给会话」的那次 —— status 轮询（agent=null）是预览，
+      // 记它会污染观测（null-agent 的打分上下文和真实注入不是一回事，集合也随
+      // 激活度漂移），2026-11-16 复核抓到的
+      if (picked.length && agent) recordDisplay(picked, now)
       meta.lastRenderAt = now
       meta.renderCount += 1
       meta.lastRenderError = null
@@ -980,6 +1041,9 @@ export function apply(ctx, baseConfig = {}) {
       key,
       emotion: d.emotion,
       delta: d.delta,
+      // 写入当时的半衰期（B 方案，2026-11-16）：tune 改 halfLife 只对往后的事件生效，
+      // 旧行不被追溯重算 —— 跟 delta「当时的数写死在行里」同一个道理
+      halfLife: Number(table[d.emotion]?.halfLife) || 0,
       intensity: Number(hit.intensity) || 0,
       text: String(text ?? '').slice(0, 120),
     }
@@ -1105,9 +1169,19 @@ export function apply(ctx, baseConfig = {}) {
 
   /** 同一组条多久内不重复记「被想起」。 */
   const ECHO_DEDUPE_MS = 10 * 60 * 1000
+  /** 一笔回声/一次染色最多带几条（跟 recall 的默认 limit 对齐） */
+  const RECALL_ECHO_MAX = 5
+  /** 展示观测的天窗：「常挂」要说的是最近 —— 14 天外的天自动丢弃（不然 cold 会误报陈年条） */
+  const DISPLAY_DAY_WINDOW_MS = 14 * 24 * 60 * 60 * 1000
+  function pruneDisplayDays(days, now) {
+    for (const d of [...days]) {
+      const t = Date.parse(`${d}T00:00:00.000Z`)
+      if (Number.isFinite(t) && now - t > DISPLAY_DAY_WINDOW_MS) days.delete(d)
+    }
+  }
 
   /** 启动时把回声读进索引（旧档在原话层里，新档单独记 echo.jsonl；之后随写随更）。 */
-  function loadEchoIndex() {
+  function loadEchoIndex(now = Date.now()) {
     try {
       for (const file of [files.lines, files.echo]) {
         for (const row of readJsonLines(file, 0)) {
@@ -1121,13 +1195,31 @@ export function apply(ctx, baseConfig = {}) {
             if (!prev || at > prev.at) recolorAt.set(key, { at, dominant: String(row.dominant ?? ''), level: Number(row.level) || 0 })
             continue
           }
+          if (row.kind === 'display' && Array.isArray(row.refs)) {
+            // 展示观测（不算现行，不进 echoAt）：id -> 被挂到开头过哪些天（14 天窗）
+            const day = new Date(at).toISOString().slice(0, 10)
+            for (const rid of row.refs) {
+              const key = String(rid ?? '').trim()
+              if (!key) continue
+              const days = displayDays.get(key) ?? new Set()
+              days.add(day)
+              pruneDisplayDays(days, now)
+              if (days.size) displayDays.set(key, days)
+              else displayDays.delete(key)
+            }
+            continue
+          }
           if (row.kind !== 'echo' || !Array.isArray(row.refs)) continue
+          const rowId = String(row.id ?? '')
           for (const rid of row.refs) {
             const key = String(rid ?? '').trim()
             if (!key) continue
             const list = echoAt.get(key) ?? []
             list.push(at)
-            echoAt.set(key, list.slice(-50))
+            // 上限给足余量：窗口 42 天（3τ），热条一个月被熏上百次也不该把最老的挤掉
+            echoAt.set(key, list.slice(-200))
+            const prevLatest = latestEchoRow.get(key)
+            if (!prevLatest || at > prevLatest.at) latestEchoRow.set(key, { at, rowId })
           }
         }
       }
@@ -1136,37 +1228,70 @@ export function apply(ctx, baseConfig = {}) {
     }
   }
 
-  /** 最近 7 天每个条被想起几次。 */
-  function echoCounts(now = Date.now()) {
-    const counts = new Map()
+  /**
+   * 窗口内每条的回声统计（现行熏种子，2026-11-16）：count = 被想起几次（整数，给人看），
+   * strength = 熏习势力（每次记 1 份、按 ECHO_TAU_MS 指数衰减的和 —— 喂给复现轴）。
+   * 刚被熏的 ≈1，一周前 ≈0.61，一个月前 ≈0.12 —— 习气的意思就是：最近熏的才顶用。
+   * 带 5 秒缓存：热路径上 activationScorer 每轮都来要，底下的 exp 是全索引量；
+   * recallEcho 写入时作废 —— 读多写少才划算（对齐 cfgCache 的口吻）。
+   */
+  let echoStatsCache = { at: 0, stats: new Map() }
+  function echoStats(now = Date.now()) {
+    if (now - echoStatsCache.at < 5000 && now >= echoStatsCache.at) return echoStatsCache.stats
+    const stats = new Map()
     for (const [id, list] of echoAt) {
-      const fresh = list.filter((t) => now - t < ECHO_WINDOW_MS && t <= now + 60_000)
-      if (fresh.length) counts.set(id, fresh.length)
+      let count = 0
+      let strength = 0
+      for (const t of list) {
+        if (now - t >= ECHO_WINDOW_MS || t > now + 60_000) continue
+        count += 1
+        strength += Math.exp(-(now - t) / ECHO_TAU_MS)
+      }
+      if (count) stats.set(id, { count, strength })
     }
-    return counts
+    echoStatsCache = { at: now, stats }
+    return stats
+  }
+
+  /** 复现轴吃的形状：每条一个熏习势力数（activation.js 不关心次数）。 */
+  function echoCounts(now = Date.now()) {
+    const out = new Map()
+    for (const [id, s] of echoStats(now)) out.set(id, s.strength)
+    return out
   }
 
   /**
    * 翻到就记一笔「被想起」。同一组条 10 分钟内不重复记 ——
    * 一次对话里连翻几下是同一次醒，不是几次。
    */
-  function recallEcho(list, query, now = Date.now()) {
+  function recallEcho(list, query, now = Date.now(), dir = null) {
     try {
+      // 按住的不熏（三种按法都算）—— 回声喂的是复现轴，按住的条不参与竞争；
+      // 只查 !n.sealed 会漏掉 until/cond 按住的（include_sealed 路径翻到它们）。
+      // isSealed 必须带目录：cond 按住要查「另一条还在不在」，不传目录会
+      // 把 cond 按住误判成翻篇（2026-11-16 复核抓到的实证）。
+      // 松开之后重新被翻到，才重新开始熏。
       const ids = (Array.isArray(list) ? list : [])
-        .filter((n) => n && n.id && !n.sealed)
+        .filter((n) => n && n.id && !isSealed(n, now, dir))
         .map((n) => n.id)
-        .slice(0, 5)
+        .slice(0, RECALL_ECHO_MAX)
       if (!ids.length) return false
       // 去重键按集合算（排序后拼）—— 翻两遍顺序差一点也算同一组，不重复记
       const key = [...ids].sort().join(',')
       const last = echoDedupe.get(key) || 0
       if (now - last < ECHO_DEDUPE_MS) return false
+      // 去重表顺手清理：只留两倍窗内的键，别让内存攒一辈子（2026-11-16 复核建议）
+      for (const [k, at] of echoDedupe) {
+        if (now - at > ECHO_DEDUPE_MS * 2) echoDedupe.delete(k)
+      }
       echoDedupe.set(key, now)
       const row = {
         id: `e_${now.toString(36)}`,
         at: now,
         kind: 'echo',
         text: `被想起：「${String(query ?? '').slice(0, 80)}」→ ${ids.join('、')}`,
+        // 缘起链的原始数据：哪条种子、在什么缘（query）下现行。机器可读，别让下游去解析 text
+        query: String(query ?? '').slice(0, 80),
         refs: ids,
         source: 'recall',
       }
@@ -1174,8 +1299,10 @@ export function apply(ctx, baseConfig = {}) {
       for (const rid of ids) {
         const arr = echoAt.get(rid) ?? []
         arr.push(now)
-        echoAt.set(rid, arr.slice(-50))
+        echoAt.set(rid, arr.slice(-200))
+        latestEchoRow.set(rid, { at: now, rowId: row.id })
       }
+      echoStatsCache = { at: 0, stats: new Map() } // 回声变了，熏习统计作废
       return true
     } catch {
       return false
@@ -1186,10 +1313,11 @@ export function apply(ctx, baseConfig = {}) {
    * 限流（饭桶④）：一条一周最多染一次 + 情绪明显变了才染。正文一字不动，只在 echo.jsonl 记行。 */
   const RECOLOR_GAP_MS = 7 * 24 * 60 * 60 * 1000
   const RECOLOR_LEVEL_DELTA = 0.3
-  function recolorRecall(list, state, now = Date.now()) {
+  function recolorRecall(list, state, now = Date.now(), dir = null) {
     const out = new Map()
     if (!state || state.dominant === 'calm') return out
-    const ids = list.filter((n) => !isSealed(n, now, 'out')).slice(0, 5).map((n) => n.id)
+    // dir 同 recallEcho：cond 按住要查另一条还在不在（'out' 字符串曾经被当成目录传进来）
+    const ids = list.filter((n) => !isSealed(n, now, dir)).slice(0, RECALL_ECHO_MAX).map((n) => n.id)
     for (const id of ids) {
       const last = recolorAt.get(id)
       const changed =
@@ -1215,6 +1343,30 @@ export function apply(ctx, baseConfig = {}) {
       }
     }
     return out
+  }
+
+  /** 违熏索引：seedId -> {at, reason, count}（最近一次 + 累计次数；status 聚合也从这走） */
+  function loadVikarmaIndex() {
+    try {
+      for (const row of readJsonLines(files.vikarma, 0)) {
+        if (!row || row.kind !== 'vikarma') continue
+        const sid = String(row.seedId ?? '').trim()
+        if (!sid) continue
+        const at = Number(row.at) || 0
+        if (!at) continue
+        const reason = String(row.reason ?? '')
+        const prev = vikarmaAt.get(sid) ?? { at: 0, reason: '', count: 0 }
+        vikarmaAt.set(sid, {
+          at: Math.max(prev.at, at),
+          reason: at >= prev.at ? reason : prev.reason,
+          count: prev.count + 1,
+        })
+        vikarmaAgg.total += 1
+        vikarmaAgg.byReason[reason] = (vikarmaAgg.byReason[reason] ?? 0) + 1
+      }
+    } catch {
+      /* 读不出就当没有 */
+    }
   }
 
   /**
@@ -1468,11 +1620,11 @@ export function apply(ctx, baseConfig = {}) {
   /**
    * 把范围外的会话跟这本账隔开。三层：
    *
-   *   1. restrict —— 挂在这条 agent 自己那一层遮掉这四个名字。**只对全局注册的工具有效**；
+   *   1. restrict —— 挂在这条 agent 自己那一层遮掉这七个名字。**只对全局注册的工具有效**；
    *      我们这四个是插件 scope 里注册的（所以 agent 看得见），真机上 restrict 会报
    *      `unknown global tools "remember", ...; known global tools: absorb, acp_cache, ...`
-   *      —— 能用就用（别的部署下这四个名字可能真是全局的），不能用不影响下面这层。
-   *   2. guard —— 同样挂在这条 agent 自己那一层，匹配这四个名字就直接拒。这条是可靠的：
+   *      —— 能用就用（别的部署下这七个名字可能真是全局的），不能用不影响下面这层。
+   *   2. guard —— 同样挂在这条 agent 自己那一层，匹配这七个名字就直接拒。这条是可靠的：
    *      2026-11-01 16:18 那次真机日志证明 restrict 挡不住，她那边是靠这层拦下的。
    *   3. execute 里再查一次 scopeOk（防漏，见下面工具注册那段）。
    */
@@ -1936,6 +2088,15 @@ export function apply(ctx, baseConfig = {}) {
       // 换了情境才算新的一处；两处不同的情境各成一次，这条技能成立（不是碰巧）。
       if (kind === 'skill') {
         const where = String(agentCwd(agent) ?? '').trim()
+        // 没有 cwd 的环境会静默失效：where 空 → isNewContext 恒 false → 永远 single，
+        // 一句提示都没有（2026-11-16 修的）。宁可拒了说清楚 —— 不是限制，是让失效可见。
+        if (!where) {
+          return {
+            ok: false,
+            id: '',
+            note: '技能要在有工作目录的会话里记 —— 情境就是这个目录，没有目录就分不出「两处不同的地方」。',
+          }
+        }
         const res = recordSkill(
           nodes,
           {
@@ -2278,7 +2439,7 @@ export function apply(ctx, baseConfig = {}) {
       let recolors = new Map()
       if (list.length) {
         try {
-          recolors = recolorRecall(list, emotionState(now), now)
+          recolors = recolorRecall(list, emotionState(now), now, dir)
         } catch {
           /* 折不出情绪就不染 */
         }
@@ -2287,7 +2448,16 @@ export function apply(ctx, baseConfig = {}) {
       const items = list.map((n) => {
         const t = String(n.text ?? '')
         const recolor = recolors.get(n.id)
-        const suffix = recolor ? `\n（现在想起它：${recolor}）` : ''
+        const recolorSuffix = recolor ? `\n（现在想起它：${recolor}）` : ''
+        // 违熏提醒（2026-11-16）：只挂 recall 返回的条上 —— 注入是系统自动挂的，
+        // 不是主动记忆，提醒了未必接得住；recall 是主动翻找，此刻提醒才有校正意义。
+        // 30 天窗：超了就不再提醒 —— 久了就变成唠叨，不是校正（账还在 vikarma.jsonl 里）
+        const vk = vikarmaAt.get(n.id)
+        const vkSuffix =
+          vk && now - vk.at < 30 * 24 * 60 * 60 * 1000
+            ? `\n（上次现行时没兑现：${vk.reason}，${relTime(vk.at, now)}）`
+            : ''
+        const suffix = recolorSuffix + vkSuffix
         if (itemMax && Array.from(t).length > itemMax) {
           clipped += 1
           // 判断和切都按码点 —— UTF-16 的 length/slice 会把 emoji 当两个字，
@@ -2300,7 +2470,7 @@ export function apply(ctx, baseConfig = {}) {
       })
       // 唤醒回弹：按词翻到的都记一笔「被想起」（原话层只增不改；节点本身不动）。
       let echoed = false
-      if (args?.query && list.length) echoed = recallEcho(list, args.query, now)
+      if (args?.query && list.length) echoed = recallEcho(list, args.query, now, dir)
       // 快层也翻得到：它不是节点（没有分量、不跟账本里的条抢位置），
       // 但秒级发生的事不该只闪一下就没了 —— 按词找得到它。
       if (args?.query && !kind) {
@@ -2776,6 +2946,109 @@ export function apply(ctx, baseConfig = {}) {
     },
   })
 
+  const VIKARMA_REASONS = ['未触发', '语气偏离', '条件不成立']
+
+  const vikarmaTool = defineTool({
+    name: 'vikarma',
+    description:
+      '记一笔违熏：种子说「我会因此做得不一样」（will_do），但实际没做到。' +
+      '这不是删除，也不是调轻——只往违熏的账上追加一行，下次 recall 翻到这条时行尾会提醒。' +
+      'expected 自动取种子的 will_do，不用你填；reason 只能从三个枚举里挑。',
+    parameters: toJsonSchema({
+      seedId: { type: 'string', required: true, description: '哪条种子没兑现（r_ 开头）。' },
+      echoId: { type: 'string', required: false, description: '哪一次现行没兑现；不填就挂到最近一次。' },
+      reason: {
+        type: 'string',
+        required: true,
+        enum: VIKARMA_REASONS,
+        description: '未触发（该做没做）／语气偏离（做了但态度不对）／条件不成立（当时以为会做，情境没出现）。',
+      },
+      actual: { type: 'string', required: false, description: '实际做了什么，一句话，给自己看。' },
+    }),
+    output: {
+      schema: {
+        type: 'object',
+        properties: { ok: { type: 'boolean' }, id: { type: 'string' }, note: { type: 'string' } },
+        required: ['ok', 'id', 'note'],
+      },
+      render: (_args, out) => [
+        { type: 'text', text: out.ok ? `[违熏记下了 ${out.id} · ${out.note}]` : `[没记下：${out.note}]` },
+      ],
+    },
+    async execute(args, exec) {
+      const cfg = getCfg()
+      if (!cfg.enabled) return { ok: false, id: '', note: '账本现在是关着的。' }
+      if (!scopeOk(exec?.agent)) return { ok: false, id: '', note: '这条会话不在允许记账的目录里。' }
+      const seedId = String(args?.seedId ?? '').trim()
+      const node = findNode(seedId)
+      if (!node) return { ok: false, id: seedId, note: `没有这条种子：${seedId || '（空）'}` }
+      if (!String(node.willDo ?? '').trim()) {
+        return { ok: false, id: seedId, note: '这条种子没写 will_do —— 没有「说会做得不一样」，就谈不上违熏。' }
+      }
+      const reason = String(args?.reason ?? '').trim()
+      if (!VIKARMA_REASONS.includes(reason)) {
+        return { ok: false, id: seedId, note: `reason 只认三个：${VIKARMA_REASONS.join(' / ')}` }
+      }
+      const now = Date.now()
+      // echoId 不填：走内存索引拿最近一次现行的行 id —— 不全量扫 echo.jsonl
+      // （2026-11-16 复核建议：echo.jsonl 只增不减，全量读会越来越卡）
+      let echoId = String(args?.echoId ?? '').trim()
+      if (echoId && !echoId.startsWith('e_')) {
+        // 传入的也校验个形状 —— 双键要能定位，抄错了入账就查不出（2026-11-16 复核建议）
+        return { ok: false, id: seedId, note: `echoId 得是回声行的 id（e_ 开头）：${echoId.slice(0, 40)}` }
+      }
+      if (!echoId) {
+        echoId = String(latestEchoRow.get(seedId)?.rowId ?? '')
+      }
+      const willDoAll = String(node.willDo ?? '')
+      const row = {
+        id: `vk_${now.toString(36)}`,
+        at: now,
+        kind: 'vikarma',
+        seedId,
+        echoId,
+        // 按码点截：长句的 will_do 不劈代理对，超了补 …（2026-11-16 复核建议）
+        expected: `${cutByCodePoints(willDoAll, 200)}${Array.from(willDoAll).length > 200 ? '…' : ''}`,
+        actual: String(args?.actual ?? '').slice(0, 200),
+        reason,
+        sessionId: agentSessionId(exec?.agent),
+        cwd: agentCwd(exec?.agent),
+      }
+      try {
+        appendJsonLine(files.vikarma, row)
+      } catch (err) {
+        return { ok: false, id: seedId, note: `违熏写不进去：${String(err?.message ?? err).slice(0, 120)}` }
+      }
+      vikarmaAt.set(seedId, {
+        at: now,
+        reason,
+        count: (vikarmaAt.get(seedId)?.count ?? 0) + 1,
+      })
+      vikarmaAgg.total += 1
+      vikarmaAgg.byReason[reason] = (vikarmaAgg.byReason[reason] ?? 0) + 1
+      // 原话层留痕，跟 forget 一个路数
+      try {
+        appendJsonLine(files.lines, {
+          id: seedId,
+          at: now,
+          kind: node.kind,
+          text: `违熏：${reason}${args?.actual ? ` —— ${String(args.actual).slice(0, 80)}` : ''}`,
+          note: 'vikarma',
+          sessionId: agentSessionId(exec?.agent),
+          cwd: agentCwd(exec?.agent),
+        })
+      } catch {
+        /* 原话层写不进去不影响违熏已记 */
+      }
+      log(`违熏 ${seedId} · ${reason} · echo=${echoId || '（未关联）'}`)
+      return {
+        ok: true,
+        id: row.id,
+        note: `「${String(node.text).slice(0, 40)}」这次没做到（${reason}）—— 下次 recall 翻到它时行尾会提醒`,
+      }
+    },
+  })
+
   ctx.effect(() => {
     const disposers = []
     // 第二层隔离的拒绝回执按各工具的 output schema 给 —— 范围外调用也得是合规回执，
@@ -2795,8 +3068,9 @@ export function apply(ctx, baseConfig = {}) {
         note: OUT_OF_SCOPE_NOTE,
       }),
       emotion_tune: () => ({ ok: false, id: '', emotion: '', from: 0, to: 0, note: OUT_OF_SCOPE_NOTE }),
+      vikarma: () => ({ ok: false, id: '', note: OUT_OF_SCOPE_NOTE }),
     }
-    for (const raw of [rememberTool, recallTool, forgetTool, listTool, emotionStateTool, emotionTuneTool]) {
+    for (const raw of [rememberTool, recallTool, forgetTool, listTool, emotionStateTool, emotionTuneTool, vikarmaTool]) {
       try {
         // 第二层隔离：就算工具 somehow 出现在范围外的会话里，调用也过不去。
         // remember 自己还会再查一次（那是第三层，管写）。
@@ -2824,7 +3098,7 @@ export function apply(ctx, baseConfig = {}) {
     }
     log(
       disposers.length
-        ? `工具挂上了：remember / recall / forget / memory_list / emotion_state / emotion_tune（${disposers.length} 过）`
+        ? `工具挂上了：remember / recall / forget / memory_list / emotion_state / emotion_tune / vikarma（${disposers.length} 过）`
         : '工具一个都没挂上',
     )
     return () => {
@@ -2985,6 +3259,11 @@ export function apply(ctx, baseConfig = {}) {
     } catch {
       /* 同上 */
     }
+    // 熏习势力统计：算一次，echoes 与 display 两块共用 —— scanMs 是
+    // 「衰减只在读时算」的代价观测点（2026-11-16 复核：别只量一半）
+    const echoStatsT0 = performance.now()
+    const eStats = echoStats(now)
+    const echoScanMs = Math.round((performance.now() - echoStatsT0) * 100) / 100
     // status 这层拿不到具体的会话（没有 agent），契合这一路按「没有当前目录」算；
     // 排名仍用激活度 —— 跟真机会话里看到的顺序一致（差的那点只是 fit 的目录分量）。
     const scoreOf = activationScorer(null, now)
@@ -3192,14 +3471,40 @@ export function apply(ctx, baseConfig = {}) {
         echoWindowDays: Math.round(ECHO_WINDOW_MS / 86400000),
       },
       echoes: (() => {
-        const counts = echoCounts(now)
+        // count = 次数（给人看），strength = 熏习势力（真信号）—— 按 strength 排。
+        // scanMs 是熏习扫描的耗时（衰减只在读时算的代价观测点）：跑两周看它，
+        // 超预期再上增量索引（行号→字节偏移），现在不动。
         let total = 0
-        for (const c of counts.values()) total += c
-        const top = [...counts.entries()]
-          .sort((a, b) => b[1] - a[1])
+        for (const s of eStats.values()) total += s.count
+        const top = [...eStats.entries()]
+          .sort((a, b) => b[1].strength - a[1].strength)
           .slice(0, 5)
-          .map(([id, count]) => ({ id, count }))
-        return { windowDays: Math.round(ECHO_WINDOW_MS / 86400000), total, top }
+          .map(([id, s]) => ({ id, count: s.count, strength: Number(s.strength.toFixed(2)) }))
+        return { windowDays: Math.round(ECHO_WINDOW_MS / 86400000), total, top, scanMs: echoScanMs }
+      })(),
+      // 展示观测（不算现行，只记账）：谁常挂但从不被想起 —— 死重或 recall 词表覆盖不到的候选。
+      // cold = 展示 ≥3 天但熏习势力为 0 的条。只观测，不改排名；跑两周看分布。
+      // 覆盖范围：只记【我记得的】段的 pick（习惯/好奇/自我段另有段，不在此列）；
+      // 「天」是 UTC 日；clipSection 截断在 pick 之后，被预算截掉的行也计展示（略高估，见 philosophy.md）。
+      display: (() => {
+        const rows = []
+        let total = 0
+        for (const [id, days] of displayDays) {
+          total += days.size
+          rows.push({ id, days: days.size })
+        }
+        rows.sort((a, b) => b.days - a.days)
+        const cold = rows.filter((r) => r.days >= 3 && !eStats.has(r.id)).slice(0, 5)
+        return { total, top: rows.slice(0, 5), cold }
+      })(),
+      // 违熏（校正质量的账，不进复现轴）：总数、按原因分布、违熏最多的种子
+      // —— 从内存索引聚合（vikarma.jsonl 只增不减，别每 5 秒整本解析）
+      vikarma: (() => {
+        const top = [...vikarmaAt.entries()]
+          .map(([seedId, v]) => ({ seedId, count: v.count, lastAt: v.at }))
+          .sort((a, b) => b.count - a.count)
+          .slice(0, 5)
+        return { total: vikarmaAgg.total, byReason: { ...vikarmaAgg.byReason }, top }
       })(),
       wake: {
         enabled: cfg.enabled && cfg.wakeEnabled !== false && cfg.fastEnabled !== false,
@@ -3212,8 +3517,21 @@ export function apply(ctx, baseConfig = {}) {
       },
       sealed,
       workspaces: listWorkspaces(),
-      rawLines: readJsonLines(files.lines, 0).length,
-      rawEchoes: readJsonLines(files.echo, 0).length,
+      // 计数走 countLines（只数行不 parse）—— status 每几秒被拉一次，别为它整本解析
+      rawLines: countLines(files.lines),
+      rawEchoes: countLines(files.echo),
+      // 统一时间锚的原始数据（2026-11-16 起收集，跑两周看三者差值和分布）：
+      // 上次写账本（这里）/ 上次有情绪（emotion.lastAt）/ 上次被叫醒（wake.lastWakeAt）
+      // —— 三者语义不同，先别统一，等分布说话
+      lastLineAt: (() => {
+        try {
+          const last = tailLines(files.lines, 1)[0]
+          const at = Number(JSON.parse(last ?? '')?.at)
+          return Number.isFinite(at) && at > 0 ? new Date(at).toISOString() : null
+        } catch {
+          return null
+        }
+      })(),
       config: { effective: cfg, editable: Object.keys(EDITABLE) },
       paths: files,
       logs: tailLines(files.log, 8),
