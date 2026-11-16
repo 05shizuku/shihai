@@ -37,6 +37,19 @@ test('loadStickers：目录不存在 → 空表，不抛', () => {
   assert.deepEqual(r.list, [])
 })
 
+test('loadStickers：manifest 的 file 带路径符/指到库外 → 跳过（2026-11-16 补的防穿越）', () => {
+  const { dir } = makeLib([
+    row('正常', '001-ok.jpg'),
+    row('相对穿越', '..\\escape.jpg'),
+    row('绝对路径', 'C:\\Windows\\evil.jpg'),
+    row('file协议', 'file:///E:/evil.jpg'),
+    row('子目录', 'sub\\deep.jpg'),
+  ])
+  writeFileSync(join(dir, '001-ok.jpg'), 'x')
+  const r = loadStickers(dir)
+  assert.deepEqual([...r.byName.keys()], ['正常'], '只收文件名干净、真在库里的那张')
+})
+
 test('loadStickers：dir 为 null → 空表，不抛', () => {
   const r = loadStickers(null)
   assert.equal(r.byName.size, 0)

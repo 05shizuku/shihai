@@ -63,7 +63,8 @@ test('醒着：饥饿涨、精力掉', () => {
   const st = { ...defaultState(at(10, 0).getTime()), hunger: 30, energy: 80 }
   const next = advance(st, at(12, 0).getTime(), { ...sleepOpts, maxCatchUpHours: 24 })
   assert.equal(Math.round(next.hunger * 10) / 10, 42)
-  assert.equal(Math.round(next.energy * 10) / 10, 66)
+  // 精力按 live 的模型（2026-11-12 定的）：醒着掉 4/时——没有 lastActiveAt 时不算「安静」
+  assert.equal(Math.round(next.energy * 10) / 10, 72)
 })
 
 test('睡着：精力回、饥饿涨得慢', () => {
@@ -149,6 +150,31 @@ test('吃过了就不再算错过', () => {
   assert.deepEqual(missedMeals(at(11, 0), MEALS, ate), [])
 })
 
+// ---------- 跨午夜的饭窗（2026-11-15 修：宵夜 23:00+120min 曾被午夜整个裁断） ----------
+
+const NIGHT_MEALS = [...MEALS, { id: 'supper', label: '宵夜', at: '23:00', windowMinutes: 120 }]
+
+test('跨午夜的饭窗：凌晨那截还在窗里，照样能吃', () => {
+  assert.equal(mealDue(at(0, 30), NIGHT_MEALS, defaultState(at(0, 30).getTime()))?.id, 'supper', '00:30 时宵夜还在窗内')
+  assert.equal(mealDue(at(1, 30), NIGHT_MEALS, defaultState(at(1, 30).getTime())), null, '01:30 过了宵夜窗')
+})
+
+test('跨午夜的饭窗：凌晨吃的宵夜记在前一天的槽上', () => {
+  const st = eatMeal(defaultState(at(0, 30).getTime()), NIGHT_MEALS[3], tierOf(9, TIERS), at(0, 30).getTime())
+  assert.ok(st.mealsToday.includes('2026-10-30:supper'), `键要用前一天的日期：${JSON.stringify(st.mealsToday)}`)
+  // 吃过了，02:00 就不该再记错过
+  assert.deepEqual(missedMeals(at(2, 0), NIGHT_MEALS, st), [])
+})
+
+test('跨午夜的饭窗：没吃的话凌晨窗一关就记错过，键是前一天的槽', () => {
+  const missed = missedMeals(at(2, 0), NIGHT_MEALS, defaultState(at(2, 0).getTime()))
+  assert.ok(missed.includes('宵夜'), '窗关了要记下来')
+  // 23:30 窗又开了：今晚这顿不该被算成错过
+  const st = { ...defaultState(at(23, 30).getTime()), missedKeys: [], missed: [] }
+  assert.equal(mealDue(at(23, 30), NIGHT_MEALS, st)?.id, 'supper', '23:30 宵夜到点了')
+  assert.deepEqual(missedMeals(at(23, 30), NIGHT_MEALS, defaultState(at(23, 30).getTime())).filter((l) => l === '宵夜'), [], '今晚的窗开着，宵夜不算错过')
+})
+
 test('老状态只有 missed 没有 missedKeys 时，不重复扣一次', () => {
   // 装新版本时 state.json 里是 {"missed":["早饭"]}，没有 missedKeys
   const legacy = { ...defaultState(at(11, 0).getTime()), missed: ['早饭'], mood: 10, sadness: 0 }
@@ -230,7 +256,10 @@ test('detectTopUp：只认涨，不认掉；没有基准不算；掉到零也不
   assert.equal(detectTopUp(null, 9), 0) // 第一次看到，只记基准
   assert.equal(detectTopUp(undefined, 9), 0)
   assert.equal(detectTopUp('', 9), 0)
-  assert.equal(detectTopUp(0, 9), 0) // 基准是零 → 不认（没法判断是添了还是刚读到）
+  // 2026-11-15 修正：基准是零也认 —— prev=0 只在上一次真的读到 0 时才会出现
+  // （首次读到只记基准不触发），锅底最空的时候他充值正是最该记的那顿。
+  // 旧口径（0→9 不认）语义相反，已改。
+  assert.equal(detectTopUp(0, 9), 9)
   assert.equal(detectTopUp(3.74, 3.745), 0) // 小于 0.01 的抖动不算
   assert.equal(detectTopUp(3.74, null), 0) // 读不到 → 不算
 })

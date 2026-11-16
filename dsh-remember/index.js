@@ -27,7 +27,7 @@
  * 零依赖是刻意的：link: 装着，Node 从真实路径往上找不到 profile 里的包。
  */
 
-import { readdirSync } from 'node:fs'
+import { copyFileSync, readdirSync, rmSync } from 'node:fs'
 import { dirname, isAbsolute, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
@@ -57,11 +57,14 @@ import {
   recordSkill,
   relSealLeft,
   relTime,
+  anchorSelfNode,
   renderCuriositySection,
   renderHabitSection,
   renderLine,
   renderSection,
   renderSelfSection,
+  renderUnsettledSection,
+  restoreSelfNode,
   score,
   searchNodes,
   selfWeight,
@@ -73,6 +76,8 @@ import {
   summaryOf,
   supersedeSelf,
   touchNode,
+  UNSETTLED_SLOTS,
+  unsettledNodes,
 } from './lib/memory.js'
 import { EDITABLE, applyConfigPatch, describePatch } from './lib/config.js'
 import {
@@ -110,6 +115,7 @@ import {
   emotionCoefficients,
   emotionDelta,
   emotionEventId,
+  emotionFeelPhrase,
   emotionRelTime,
   emotionTuneId,
   foldEmotion,
@@ -130,6 +136,7 @@ import {
   readJsonLines,
   readJsonLinesFrom,
   readJsonSafe,
+  readJsonSafeSticky,
   readTextSafe,
   resolveDshHome,
   tailLines,
@@ -184,6 +191,12 @@ export const DEFAULTS = {
   selfMaxChars: 400,
   /** 自我层要不要挂（关掉就只剩「我记得的」） */
   selfEnabled: true,
+  /** 「还没定的」段：doubt（还没认下的我）+ open（没结的事）合成一个摊位（饭桶②） */
+  unsettledEnabled: true,
+  /** 「还没定的」段顺序（紧跟自我段后面） */
+  unsettledSectionOrder: 8665,
+  /** 「还没定的」段最长多少字 */
+  unsettledMaxChars: 240,
   /** 习惯层要不要挂（快通路那一段） */
   habitEnabled: true,
   /** 习惯段那一段的顺序（排在自我段后面、账本段前面） */
@@ -334,7 +347,62 @@ export function apply(ctx, baseConfig = {}) {
 
   // ---------------------------------------------------------------- 账本
 
-  let nodes = normNodes(isObj(readJsonSafe(files.memory, null)) ? readJsonSafe(files.memory, {}).nodes : [], Date.now())
+  // 账本启动读，三道护栏（2026-11-12：自我段瞬时断供六回现行，形状全是「读账本的段空、
+  // 读快层的段照常」；病根＝apply() 重跑时的整本读撞上瞬时读冲突——sync 镜像每分钟拷
+  // 数据目录、原子换名在飞的那一瞬读会炸）：①重试六次每次隔一拍 ②进程内粘住上一份好的
+  // ③盘上快照（上次成功读的整本，写失败就算了）。三层全空才真回空表。
+  // 坏账本自愈（2026-11-15 审查，自 shihai 合并）：三道护栏全空之后严格再读一遍——
+  // 还认不出账就是真损坏：先滚 .corrupt 备份、亮红灯；备份没成，saveNodes 拒绝覆盖写（保原文）。
+  let memoryBroken = false
+  let memoryBackupOk = false
+  let nodes = normNodes((function loadBook() {
+    const snapFile = join(dataDir, 'memory.snapshot.json')
+    let book = null
+    let corruptWhy = null
+    for (let i = 0; i < 6; i += 1) {
+      book = readJsonSafeSticky(files.memory, null)
+      if (isObj(book)) {
+        try { atomicWriteJson(snapFile, book) } catch { /* 快照写不动就算了 */ }
+        return book
+      }
+      const until = Date.now() + 100
+      while (Date.now() < until) { /* 瞬时读冲突：等一拍再试 */ }
+    }
+    try {
+      const raw = readTextSafe(files.memory, '')
+      if (raw.trim()) {
+        try {
+          const parsed = JSON.parse(raw)
+          if (isObj(parsed) && Array.isArray(parsed.nodes)) {
+            book = parsed // 六连败后严格读反而成了——瞬时冲突结束，拿它当好账本
+          } else {
+            corruptWhy = 'JSON 认得但形状不对（要 {…, nodes:[…]}）'
+          }
+        } catch (err) {
+          corruptWhy = `解析失败：${String(err?.message ?? err).slice(0, 120)}`
+        }
+        if (corruptWhy) {
+          memoryBroken = true
+          try {
+            const stamp = new Date().toISOString().replace(/[:.]/g, '-')
+            const bak = `${files.memory}.corrupt-${stamp}.bak`
+            copyFileSync(files.memory, bak)
+            memoryBackupOk = true
+            log(`账本 memory.json 读不出能认的账（${corruptWhy}）。原文已备份到 ${bak} —— 恢复靠它，别删；这次启动按空账本算。`)
+          } catch (bakErr) {
+            log(`账本 memory.json 损坏且备份失败（${String(bakErr?.message ?? bakErr).slice(0, 120)}）—— 本次运行拒绝覆盖写节点表，请先手动备份 ${files.memory}。`)
+          }
+          return null
+        }
+        if (book) {
+          try { atomicWriteJson(snapFile, book) } catch { /* 快照写不动就算了 */ }
+          return book
+        }
+      }
+    } catch { /* 读文件本身出问题——按三道护栏的兜底走 */ }
+    const snap = readJsonSafe(snapFile, null)
+    return isObj(snap) ? snap : null
+  })()?.nodes ?? [], Date.now())
   const meta = {
     startedAt: Date.now(),
     lastRenderAt: null,
@@ -381,11 +449,20 @@ export function apply(ctx, baseConfig = {}) {
   const echoAt = new Map()
   /** 回声去重：同一组条 10 分钟内不重复记（一次对话里连翻几下是同一次醒） */
   const echoDedupe = new Map()
+  /** 染色限流索引（id -> 最近一次 {at, dominant, level}）：echo.jsonl 里的 recolor 行（饭桶④） */
+  const recolorAt = new Map()
   loadEchoIndex(Date.now())
 
   function saveNodes() {
+    // 坏账本没备份成功就拒绝覆盖写（自 shihai 合并，2026-11-15 审查）——宁可这条记不上，不能把原文冲掉
+    if (memoryBroken && !memoryBackupOk) {
+      meta.saveError = 'memory.json 上次解析失败且备份没成 —— 拒绝覆盖写（保原文）'
+      log(`账本不写入：${meta.saveError}`)
+      return
+    }
     try {
       atomicWriteJson(files.memory, { version: 1, updatedAt: Date.now(), nodes })
+      memoryBroken = false // 写成一次 = 盘上的坏文件已经被好的换掉，红灯解除
       meta.savedAt = Date.now()
       meta.saveError = null
     } catch (err) {
@@ -447,6 +524,22 @@ export function apply(ctx, baseConfig = {}) {
       })
     } catch (err) {
       log(`自我层渲染失败：${String(err?.message ?? err).slice(0, 200)}`)
+      return ''
+    }
+  }
+
+  /** 「还没定的」那一段：doubt（还没认下的我）+ open（没结的事）合成一个摊位，固定晒一条（饭桶②）。 */
+  function currentUnsettledSection(now = Date.now()) {
+    const cfg = getCfg()
+    if (!cfg.enabled || cfg.unsettledEnabled === false) return ''
+    try {
+      return renderUnsettledSection(nodes, {
+        now,
+        maxChars: clamp(cfg.unsettledMaxChars, 80, 2000),
+        title: '还没定的',
+      })
+    } catch (err) {
+      log(`「还没定的」段渲染失败：${String(err?.message ?? err).slice(0, 200)}`)
       return ''
     }
   }
@@ -567,7 +660,7 @@ export function apply(ctx, baseConfig = {}) {
     if (!cfg.enabled || cfg.fastEnabled === false) return 0
     const source = fastSourcePath(cfg)
     if (!source) return 0
-    const state = readJsonSafe(files.fastCursor, {})
+    const state = readJsonSafeSticky(files.fastCursor, {})
     const sameSource = String(state.source ?? '') === source
     const offset = sameSource ? Number(state.offset) || 0 : 0
     let got = null
@@ -727,7 +820,7 @@ export function apply(ctx, baseConfig = {}) {
     const sources = intentSourcePaths(cfg)
     if (!sources.length) return 0
     const cap = clamp(cfg.intentMaxEvents, 0, 5000)
-    const rawState = readJsonSafe(files.intentCursor, {})
+    const rawState = readJsonSafeSticky(files.intentCursor, {})
     // v2 形状 { version:2, files:{ [文件名]:{offset,copied,at} } }；
     // v1 形状 { source, offset, copied } 归到它文件名下 —— 老游标不浪费。
     const state = {}
@@ -850,14 +943,18 @@ export function apply(ctx, baseConfig = {}) {
    * dedupeKey 决定「这算同一件事吗」：意图层/快层按源+引用（同一件事只记一次），
    * 账本被翻按 30 分钟一桶（同一条隔半小时再被翻，算新的）。
    */
-  function noteEmotion({ source, ref, at, kind, intensity, detailKind, text, dedupeKey }) {
+  function noteEmotion({ source, ref, at, kind, intensity, detailKind, text, dedupeKey, lines, seenKeys }) {
     const cfg = getCfg()
     if (!cfg.enabled || cfg.emotionEnabled === false) return null
     const now = Date.now()
     const ts = Number(at) || now
     const key = dedupeKey ?? `${source}|${ref}`
-    const lines = emotionLines()
-    if (lines.some((l) => l.kind === 'event' && l.key === key)) return null
+    if (seenKeys?.has(key)) return null
+    // 批量收事件时（pullEmotion）把账本行一次性读好传进来 —— 2026-11-13 抓到过：
+    // 这里每件事都重读整本情绪账（4MB），几万件事×4MB=一次 /status 四十多秒，
+    // 宿主全站的请求都排队在它后面（设置页三盏灯全 timed out 的根因）。
+    const local = Array.isArray(lines) ? lines : emotionLines()
+    if (local.some((l) => l.kind === 'event' && l.key === key)) return null
     // kind 是这件事本来的类型（意图的 ask/praise…、快层的 meal/topup…）——
     // 认情绪认的是它。漏了它就什么也认不出（2026-11-06 真机抓到过：一行都不写）。
     const hit = recognizeEmotion({
@@ -869,7 +966,7 @@ export function apply(ctx, baseConfig = {}) {
       detailKind,
     })
     if (!hit) return null
-    const table = emotionCoefficients(lines)
+    const table = emotionCoefficients(local)
     // 传原始事件（带 kind）—— emotionDelta 里面还要再认一遍，认的是同一件事
     const d = emotionDelta({ source, ref: String(ref ?? ''), kind, intensity: hit.intensity, detailKind, at: ts }, { table, now })
     if (!d || !d.delta) return null
@@ -891,6 +988,9 @@ export function apply(ctx, baseConfig = {}) {
       log(`情绪流记不进去：${String(err?.message ?? err).slice(0, 200)}`)
       return null
     }
+    // 记成了就同步进外面传进来的那本，同一批里后面的事才去重得到
+    if (Array.isArray(lines)) lines.push(line)
+    seenKeys?.add(key)
     return line
   }
 
@@ -903,6 +1003,12 @@ export function apply(ctx, baseConfig = {}) {
     if (!cfg.enabled || cfg.emotionEnabled === false) return 0
     let added = 0
     try {
+      // 整本情绪账只读一次，几十件事共用 —— 每件事重读 4MB 是 43 秒 /status 的根因
+      const lines = emotionLines()
+      const seenKeys = new Set()
+      for (const l of lines) {
+        if (l.kind === 'event' && l.key) seenKeys.add(l.key)
+      }
       for (const ev of intentAllEvents(now)) {
         const line = noteEmotion({
           source: 'intent',
@@ -911,6 +1017,8 @@ export function apply(ctx, baseConfig = {}) {
           kind: ev.kind,
           intensity: ev.intensity,
           text: ev.text,
+          lines,
+          seenKeys,
         })
         if (line) added += 1
       }
@@ -922,6 +1030,8 @@ export function apply(ctx, baseConfig = {}) {
           kind: ev.kind,
           detailKind: ev.detail?.kind,
           text: ev.text,
+          lines,
+          seenKeys,
         })
         if (line) added += 1
       }
@@ -1000,9 +1110,17 @@ export function apply(ctx, baseConfig = {}) {
     try {
       for (const file of [files.lines, files.echo]) {
         for (const row of readJsonLines(file, 0)) {
-          if (!row || row.kind !== 'echo' || !Array.isArray(row.refs)) continue
+          if (!row) continue
           const at = Number(row.at) || 0
           if (!at) continue
+          if (row.kind === 'recolor' && row.ref) {
+            // 染色限流索引：一条最近一次「现在想起它」是什么时候、什么颜色
+            const key = String(row.ref)
+            const prev = recolorAt.get(key)
+            if (!prev || at > prev.at) recolorAt.set(key, { at, dominant: String(row.dominant ?? ''), level: Number(row.level) || 0 })
+            continue
+          }
+          if (row.kind !== 'echo' || !Array.isArray(row.refs)) continue
           for (const rid of row.refs) {
             const key = String(rid ?? '').trim()
             if (!key) continue
@@ -1061,6 +1179,41 @@ export function apply(ctx, baseConfig = {}) {
     } catch {
       return false
     }
+  }
+
+  /** 染色层（whale-card P0-4）：翻到旧事时心里有颜色，才在条目后补一句「现在想起它」。
+   * 限流（饭桶④）：一条一周最多染一次 + 情绪明显变了才染。正文一字不动，只在 echo.jsonl 记行。 */
+  const RECOLOR_GAP_MS = 7 * 24 * 60 * 60 * 1000
+  const RECOLOR_LEVEL_DELTA = 0.3
+  function recolorRecall(list, state, now = Date.now()) {
+    const out = new Map()
+    if (!state || state.dominant === 'calm') return out
+    const ids = list.filter((n) => !isSealed(n, now, 'out')).slice(0, 5).map((n) => n.id)
+    for (const id of ids) {
+      const last = recolorAt.get(id)
+      const changed =
+        !last || state.dominant !== last.dominant || Math.abs(state.level - (last.level || 0)) >= RECOLOR_LEVEL_DELTA
+      if (!changed) continue
+      if (last && now - last.at < RECOLOR_GAP_MS) continue
+      try {
+        appendJsonLine(files.echo, {
+          id: `rc_${now.toString(36)}_${String(id).slice(-4)}`,
+          at: now,
+          kind: 'recolor',
+          ref: id,
+          dominant: state.dominant,
+          level: state.level,
+          note: emotionFeelPhrase(state),
+          source: 'recall',
+        })
+        recolorAt.set(id, { at: now, dominant: state.dominant, level: state.level })
+        const note = emotionFeelPhrase(state)
+        if (note) out.set(id, note)
+      } catch {
+        /* 染色失败不挡 recall */
+      }
+    }
+    return out
   }
 
   /**
@@ -1432,6 +1585,7 @@ export function apply(ctx, baseConfig = {}) {
     // 自我段排在账本段前面：先知道我是谁，再看记得什么
     if (cfg.selfEnabled !== false) {
       add('dsh-remember:self', clamp(cfg.selfSectionOrder, 1000, 9999), () => currentSelfSection())
+      add('dsh-remember:unsettled', clamp(cfg.unsettledSectionOrder, 1000, 9999), () => currentUnsettledSection())
     }
     // 好奇段：排在自我段之后 —— 我想知道什么，是「我」之后的下一层
     if (cfg.curiosityEnabled !== false) {
@@ -1532,6 +1686,10 @@ export function apply(ctx, baseConfig = {}) {
       'kind=self 写的是「我是谁／我在意／我不做」这类自我陈述，用 slot 指定槽位' +
       '（identity 我是谁／cares 我在意／refuses 我不做，也可自己起新槽位名）：' +
       '同槽位写新值，旧的那条会退下（不删，还翻得到，但不再在开头跟自己顶嘴）。' +
+      '挂了锚的槽例外（anchor 门）：anchor=true 挂锚必须先答三年问（anchor_why：这条三年后我还认不认、凭什么），' +
+      '答不上来不给挂；锚在位时不被没挂锚的新值顶掉，一个槽最多一条锚；' +
+      '换锚是大事——先让她点头，再带 replace_anchor=true + 三年问；退下的锚用 restore 传 id 随时捡回来。' +
+      '顶位门（whale-card P0-2）：同槽位写新值比在位的轻时，默认不顶、先挂「还没定的」旁边；掂过之后还是想顶就带 confirmed=true。' +
       'kind=habit 写的是「在某个情境里我会照着做的事」，用 context 指定情境：' +
       '同一个情境再写一次 = 这个习惯又发生了一次（第 2 次习惯成立，第 3 次起走快通路，' +
       '不再跟别的条抢开头的位置）。' +
@@ -1557,6 +1715,29 @@ export function apply(ctx, baseConfig = {}) {
         required: false,
         description:
           'kind=self 时占哪个槽位：identity 我是谁／cares 我在意／refuses 我不做；也可以自己起新的槽位名（英文或中文都行，同一个名字归同一个槽位）。',
+      },
+      anchor: {
+        type: 'boolean',
+        required: false,
+        description:
+          'kind=self 专用：把这条挂成槽位的锚。挂锚必须答三年问（anchor_why）——「这条三年后我还认不认」，答不上来不给挂。一个槽最多一条锚。',
+      },
+      anchor_why: {
+        type: 'string',
+        required: false,
+        description: '三年问的回答：这条自我陈述三年后还认不认、凭什么。挂锚（anchor=true）时必填。',
+      },
+      replace_anchor: {
+        type: 'boolean',
+        required: false,
+        description:
+          'kind=self 专用：槽位已有锚时换锚用（配 anchor=true + anchor_why）。换锚是大事——先让她点头，再动手。旧锚退下但能 restore 捡回来。',
+      },
+      restore: {
+        type: 'string',
+        required: false,
+        description:
+          'kind=self 专用：把退下的某条自我陈述捡回来（传它的 id），它重新替这个槽说话。挂锚的条随时能捡；没挂锚的条在槽位有锚时捡不动。',
       },
       context: {
         type: 'string',
@@ -1590,6 +1771,17 @@ export function apply(ctx, baseConfig = {}) {
         required: false,
         description:
           '第三问：我会不会因此做得不一样。kind=curiosity 时换个问法：下一步打算怎么试。',
+      },
+      known: {
+        type: 'string',
+        required: false,
+        description: '第四问：我知道了什么——这件事本身就够了，不用硬编改变；答上这条也算「想过了」。',
+      },
+      confirmed: {
+        type: 'boolean',
+        required: false,
+        description:
+          'kind=self 专用：想顶掉分量更重的旧我时才带（true = 我知道我在顶）。不带时，比在位的轻的新条自动挂「还没定的」，不硬顶。',
       },
       tags: { type: 'string', required: false, description: '几个词，方便以后捞。逗号或空格分开。' },
       refs: {
@@ -1676,7 +1868,7 @@ export function apply(ctx, baseConfig = {}) {
             st === 'answered'
               ? '这个问题已经解答了：退出活跃表（还在账本里，翻得到；同主题再写就回来）'
               : st === 'thinking'
-                ? `第 ${c.hits} 次惦记；还没答三问，先不进开头（答一问我才挂它）`
+                ? `第 ${c.hits} 次惦记；还没答四问，先不进开头（答一问我才挂它）`
                 : `第 ${c.hits} 次惦记`
           log(`好奇又惦记了一遍 ${c.id} · ${c.context} · 第 ${c.hits} 次 · ${st}`)
           return { ok: true, id: c.id, note: tail }
@@ -1728,7 +1920,7 @@ export function apply(ctx, baseConfig = {}) {
                 ? '第 2 次，这个习惯成立了'
                 : `第 ${h.hits} 次`
           // 上了快通路也得答过三问才真的挂得上 —— 回执要说清楚，别让人以为已经在开头里了
-          const note = hasThought(h) ? tail : `${tail}；但还没答三问，先不进开头（答一问我才挂它）`
+          const note = hasThought(h) ? tail : `${tail}；但还没答四问，先不进开头（答一问我才挂它）`
           log(`习惯又发作了一次 ${h.id} · ${h.context} · 第 ${h.hits} 次 · ${st}`)
           return { ok: true, id: h.id, note }
         }
@@ -1787,7 +1979,39 @@ export function apply(ctx, baseConfig = {}) {
                   : `第 ${cs} 处情境都成过 —— 这条技能站得很稳`
                 : `还是那处情境（${where ? where.slice(-40) : '没记地方'}）里又用了一次 —— 这条技能成立（两处情境都成过）`
           log(`技能又成了一次 ${k.id} · ${k.context} · ${cs} 处情境 · ${st}`)
-          return { ok: true, id: k.id, note: hasThought(k) ? tail : `${tail}；但还没答三问，先不进开头` }
+          return { ok: true, id: k.id, note: hasThought(k) ? tail : `${tail}；但还没答四问，先不进开头` }
+        }
+      }
+      // 把退下的自我条捡回来（饭桶五条之五：捡回来要出声，没人知道等于没捡）
+      if (kind === 'self' && args?.restore) {
+        const res = restoreSelfNode(nodes, String(args.restore ?? '').trim(), now)
+        if (!res.restored) {
+          return { ok: false, id: String(args?.restore ?? ''), note: res.note }
+        }
+        nodes = res.nodes
+        saveNodes()
+        try {
+          appendJsonLine(files.lines, {
+            id: res.restored.id,
+            at: now,
+            kind: 'self',
+            slot: res.restored.slot,
+            weight: res.restored.weight,
+            text: `把 ${res.restored.id} 捡回来了：${res.restored.text}`,
+            sessionId: agentSessionId(agent),
+            cwd: agentCwd(agent),
+            note: 'remember-restore',
+          })
+        } catch (err) {
+          log(`原话层写不进去：${String(err?.message ?? err).slice(0, 200)}`)
+        }
+        log(`捡回来 ${res.restored.id} · 我·${slotLabel(res.restored.slot)} · ${res.restored.text.slice(0, 60)}`)
+        return {
+          ok: true,
+          id: res.restored.id,
+          note: `把 ${res.restored.id} 捡回来了：它重新替「${slotLabel(res.restored.slot)}」说话${
+            res.restored.anchor ? '（锚也回来了）' : ''
+          }`,
         }
       }
       const node = makeNode(
@@ -1795,6 +2019,8 @@ export function apply(ctx, baseConfig = {}) {
           text,
           kind,
           slot: args?.slot,
+          anchor: args?.anchor === true,
+          anchorWhy: args?.anchor_why,
           context,
           hits: kind === 'habit' || kind === 'curiosity' ? 1 : 0,
           answered: kind === 'curiosity' && args?.answered === true,
@@ -1804,18 +2030,74 @@ export function apply(ctx, baseConfig = {}) {
           changes: args?.changes,
           conflicts: args?.conflicts,
           willDo: args?.will_do,
+          known: args?.known,
           tags: args?.tags,
           refs: args?.refs,
         },
         now,
       )
       if (!node) return { ok: false, id: '', note: '没组成一条。' }
-      // 自我层：同槽位写新值 → 旧的退下（不删，翻得到，只是不再自称）
+      // 自我层：同槽位写新值 → 旧的退下（不删，翻得到，只是不再自称）。
+      // 挂了锚的槽例外（anchor 门，饭桶一条）：锚在位时不被没挂锚的新值顶掉；
+      // 挂锚必须答三年问；换锚要 replace_anchor（先让她点头，这是规矩不是开关）。
       let supersededIds = []
+      const anchorNotes = []
       if (node.kind === 'self') {
-        const res = supersedeSelf(nodes, node.slot, node.id, now)
-        nodes = res.nodes
-        supersededIds = res.superseded
+        const wantAnchor = args?.anchor === true
+        const existing = anchorSelfNode(nodes, node.slot, now)
+        const replaces = Boolean(wantAnchor && existing && args?.replace_anchor === true)
+        if (wantAnchor && !node.anchorWhy) {
+          node.anchor = false
+          anchorNotes.push(
+            '想挂锚先答三年问（anchor_why：这条三年后你还认不认、凭什么）——答不上来不给挂，这条先记成普通一条',
+          )
+        } else if (wantAnchor && existing && !replaces) {
+          node.anchor = false
+          anchorNotes.push(
+            `这个槽已有锚「${existing.text.slice(0, 40)}」（${existing.id}）——一个槽最多一条锚；` +
+              '要换锚先让她点头，再带 replace_anchor=true + 三年问',
+          )
+        } else {
+          node.anchor = wantAnchor
+          if (replaces) {
+            anchorNotes.push(
+              `换锚：旧锚「${existing.text.slice(0, 40)}」（${existing.id}）退下——restore ${existing.id} 随时能捡回来`,
+            )
+          } else if (wantAnchor) {
+            anchorNotes.push('挂锚：三年问答了，这条现在替这个槽说话')
+          } else if (existing) {
+            anchorNotes.push(`这个槽有锚在位（${existing.id}）：这条没挂锚，记在旁边，不顶锚`)
+          }
+        }
+        // 顶位门（whale-card P0-2）：槽里在位的比这条重、又没带 confirmed → 不硬顶，
+        // 这条先挂「还没定的」（doubt 槽）——我的身份允许重写，但要掂过才行。
+        let redirected = false
+        if (!wantAnchor && !existing && args?.confirmed !== true) {
+          const holder = activeSelfNodes(nodes, now).find((n) => normSlot(n.slot) === node.slot && !n.anchor)
+          if (holder && selfWeight(holder, now) > node.weight) {
+            node.slot = UNSETTLED_SLOTS[0]
+            redirected = true
+            anchorNotes.push(
+              `这条比「${slotLabel(holder.slot)}」位上那条轻，先挂在「还没定的」旁边；掂过之后还是想顶：confirmed=true`,
+            )
+          }
+        }
+        // 锚在位而这条没挂成锚 → 不退位；重定向到「还没定的」的也不退位；其余照旧：新的把旧的顶下来
+        const gateBlocking = Boolean(existing && node.id !== existing.id && !node.anchor) || redirected
+        if (!gateBlocking) {
+          const res = supersedeSelf(nodes, node.slot, node.id, now)
+          nodes = res.nodes
+          supersededIds = res.superseded
+        }
+      }
+      // 染色层（whale-card P0-4）：写下这条时我心里是什么颜色——只记当时那一眼，正文一个字不动
+      try {
+        const emo = emotionState(now)
+        if (emo && emo.dominant && emo.dominant !== 'calm') {
+          node.moodAt = { dominant: emo.dominant, level: emo.level }
+        }
+      } catch {
+        /* 折不出情绪就不染，别挡住记账 */
       }
       try {
         appendJsonLine(files.lines, {
@@ -1830,7 +2112,10 @@ export function apply(ctx, baseConfig = {}) {
           changes: node.changes,
           conflicts: node.conflicts,
           willDo: node.willDo,
+          known: node.known,
           answered: node.answered,
+          anchor: node.anchor,
+          anchorWhy: node.anchorWhy,
           tags: node.tags,
           refs: node.refs,
           contexts: node.contexts,
@@ -1862,6 +2147,7 @@ export function apply(ctx, baseConfig = {}) {
       const notes = []
       if (!hasThought(node)) notes.push('没写三问，只进了原话层，不会挂到明天开头')
       if (supersededIds.length) notes.push(`${slotLabel(node.slot)}这个槽位上旧的 ${supersededIds.length} 条退下了（还在，翻得到）`)
+      notes.push(...anchorNotes)
       // refs 指回快层的一条事 = 那件事被掂量过了（从「只有发生的时间」变成「有分量的一条」）
       const fastRefs = (node.refs ?? []).filter((r) => String(r).startsWith('f_'))
       if (fastRefs.length) {
@@ -1885,12 +2171,12 @@ export function apply(ctx, baseConfig = {}) {
       }
       if (node.kind === 'skill') {
         notes.push(`第 1 处情境（${node.contexts?.[0]?.where ? String(node.contexts[0].where).slice(-40) : '没记地方'}）记下了；换个情境再写一次它就成立（两处不同的地方各成过一次才算手艺，不是碰巧）`)
-        if (!hasThought(node)) notes.push('还没答三问：先不进开头（答一问我才挂它）')
+        if (!hasThought(node)) notes.push('还没答四问：先不进开头（答一问我才挂它）')
       }
       if (node.kind === 'curiosity') {
         notes.push(`第 1 次惦记「${node.context}」；同一个主题再写一次就是又惦记了一遍（次数 +1）`)
         if (node.answered) notes.push('这个已经解答了：不挂活跃表（还在账本里，翻得到；同主题再写就回来）')
-        else if (!hasThought(node)) notes.push('还没答三问：先不进开头（答一问我才挂它）')
+        else if (!hasThought(node)) notes.push('还没答四问：先不进开头（答一问我才挂它）')
       }
       return {
         ok: true,
@@ -1946,7 +2232,7 @@ export function apply(ctx, baseConfig = {}) {
       const limit = clamp(args?.limit ?? 5, 1, 50)
       const kind = args?.kind ? normKind(args.kind) : ''
       // 原文优先，但有字数闸：每条截到 recallItemMax，一次总共 recallMaxChars。
-      // （同行提的第三条：工具返回会进对话历史，每轮都带着 —— 我自己能管住的是别一次掏太多。）
+      // （吴晓观提的第三条：工具返回会进对话历史，每轮都带着 —— 我自己能管住的是别一次掏太多。）
       const cfg = getCfg()
       const wantFull = Boolean(args?.full)
       const itemMax = wantFull ? 0 : clamp(cfg.recallItemMax ?? 400, 100, 4000)
@@ -1981,15 +2267,26 @@ export function apply(ctx, baseConfig = {}) {
           }).map((h) => h.node)
       if (kind) list = list.filter((n) => normKind(n.kind) === kind)
       if (!wantSealed) list = list.filter((n) => !isSealed(n, now, dir))
+      // 染色层（whale-card P0-4）：这次翻账时心里有颜色、且到了再染的时机，才在条目后带一句
+      let recolors = new Map()
+      if (list.length) {
+        try {
+          recolors = recolorRecall(list, emotionState(now), now)
+        } catch {
+          /* 折不出情绪就不染 */
+        }
+      }
       let clipped = 0
       const items = list.map((n) => {
         const t = String(n.text ?? '')
+        const recolor = recolors.get(n.id)
+        const suffix = recolor ? `\n（现在想起它：${recolor}）` : ''
         if (itemMax && t.length > itemMax) {
           clipped += 1
           const cut = { ...n, text: `${t.slice(0, itemMax)}…（原文还有 ${t.length - itemMax} 字，要全文说 full=true）` }
-          return `${n.id} ${renderLine(cut, now, { byId: dir })}`
+          return `${n.id} ${renderLine(cut, now, { byId: dir })}${suffix}`
         }
-        return `${n.id} ${renderLine(n, now, { byId: dir })}`
+        return `${n.id} ${renderLine(n, now, { byId: dir })}${suffix}`
       })
       // 唤醒回弹：按词翻到的都记一笔「被想起」（原话层只增不改；节点本身不动）。
       let echoed = false
@@ -2695,6 +2992,9 @@ export function apply(ctx, baseConfig = {}) {
       ok: true,
       now: new Date(now).toISOString(),
       plugin: { name, version: VERSION, startedAt: new Date(meta.startedAt).toISOString(), uptimeMs: now - meta.startedAt, dataDir },
+      // 账本健康（自 shihai 合并，2026-11-16）：损坏红灯别只写在日志里，面板要看得见。
+      // broken=读不出能认的账；backupOk=原文已滚 .bak（真丢了还能找回来）
+      ledger: { broken: memoryBroken, backupOk: memoryBackupOk },
       injection: {
         enabled: cfg.enabled,
         targetRoot: cfg.targetRoot,
@@ -2706,6 +3006,8 @@ export function apply(ctx, baseConfig = {}) {
         section: currentSection(now),
         selfEnabled: cfg.selfEnabled !== false,
         selfSection: currentSelfSection(now),
+        unsettledEnabled: cfg.unsettledEnabled !== false,
+        unsettledSection: currentUnsettledSection(now),
         curiosityEnabled: cfg.curiosityEnabled !== false,
         curiositySection: currentCuriositySection(now),
         habitEnabled: cfg.habitEnabled !== false,
@@ -2718,8 +3020,10 @@ export function apply(ctx, baseConfig = {}) {
           label: slotLabel(n.slot),
           text: n.text.slice(0, 300),
           weight: Number(selfWeight(n, now).toFixed(3)),
+          anchor: Boolean(n.anchor),
         })),
         seeds: SELF_SLOTS.map((s) => ({ key: s.key, label: s.label })),
+        unsettled: unsettledNodes(nodes, now).length,
       },
       habits: {
         fast: fastHabits(nodes, now, { limit: clamp(cfg.habitLimit, 0, 10) }).map((n) => ({
@@ -2808,6 +3112,8 @@ export function apply(ctx, baseConfig = {}) {
           label: state.label,
           level: state.level,
           levels: state.levels,
+          unresolved: Boolean(state.unresolved),
+          mixed: Array.isArray(state.mixed) ? state.mixed : [],
           total: state.total,
           lastAt: state.lastAt ? new Date(state.lastAt).toISOString() : null,
           /** 系数表：种子 + 账上改过的（tune 行只增不改） */
@@ -2932,6 +3238,40 @@ export function apply(ctx, baseConfig = {}) {
           send(res, 200, { ok: true, accepted: result.accepted, rejected: result.rejected, effective: next })
         }),
       ],
+      [
+        '/selftest',
+        guarded(async (req, res) => {
+          if (String(req.method ?? 'GET').toUpperCase() !== 'POST') {
+            send(res, 405, { ok: false, error: '只收 POST' })
+            return
+          }
+          // 设置页「测一下」：读写探针，不往真账本里塞测试条。
+          // ① 账读得到（summaryOf 跑通）②数据目录写得进（探针文件写进去验一遍再删）。
+          const t0 = Date.now()
+          try {
+            const s = summaryOf(nodes, t0)
+            let probeWritten = false
+            const probe = `${files.memory}.selftest-probe.json`
+            try {
+              atomicWriteJson(probe, { at: t0, probe: true })
+              probeWritten = readJsonSafe(probe, null)?.at === t0
+            } finally {
+              try { rmSync(probe, { force: true }) } catch { /* 删不掉不算失败，别留锁 */ }
+            }
+            send(res, 200, {
+              ok: probeWritten,
+              ms: Date.now() - t0,
+              ledger: { total: s.total, alive: s.alive, sealed: s.sealed },
+              dataDir: files.memory,
+              note: probeWritten
+                ? `读写都通：账上 ${s.total} 条（活着 ${s.alive}），数据目录写得进。`
+                : `账读得到（${s.total} 条）但数据目录写不进——查一下磁盘权限或杀软。`,
+            })
+          } catch (err) {
+            send(res, 200, { ok: false, ms: Date.now() - t0, note: `自检没过：${String(err?.message ?? err).slice(0, 200)}` })
+          }
+        }),
+      ],
     ]
     const disposers = []
     for (const [path, handler] of routes) {
@@ -2945,7 +3285,7 @@ export function apply(ctx, baseConfig = {}) {
     }
     log(
       disposers.length
-        ? `设置页数据接口已挂上：/dsh-remember/status、/dsh-remember/config（${disposers.length} 条）`
+        ? `设置页数据接口已挂上：/dsh-remember/status、/dsh-remember/config、/dsh-remember/selftest（${disposers.length} 条）`
         : '设置页数据接口一条都没挂上',
     )
     ctx.effect(() => () => {

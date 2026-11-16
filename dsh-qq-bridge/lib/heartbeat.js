@@ -16,8 +16,11 @@ export const HEARTBEAT_INTERVAL_MS = 60 * 1000
 /** 超过这么久没写，就当它哑了（默认 3 分钟 = 三次没写） */
 export const HEARTBEAT_STALE_MS = 3 * 60 * 1000
 
-/** 攒一条心跳内容（数字都收成有限数，坏值给 0 / null） */
-export function heartbeatInfo({ version = '', startedAt = 0, now = Date.now(), pending = 0, ws = null } = {}) {
+/** 攒一条心跳内容（数字都收成有限数，坏值给 0 / null）。
+ *  silentMs —— 多久没收到任何 WS 消息了（null = 未知）；lastEventAt —— 最后一条 WS 事件的时刻。
+ *  （2026-11-15 补的：原来心跳只说「进程活着」，半开连接哑掉时看门狗分不清
+ *  「没事干」和「哑了」—— 现在把 WS 活性和静默时长一起记进去。） */
+export function heartbeatInfo({ version = '', startedAt = 0, now = Date.now(), pending = 0, ws = null, silentMs = null, lastEventAt = 0 } = {}) {
   const t = Number(now)
   const s = Number(startedAt)
   return {
@@ -27,6 +30,8 @@ export function heartbeatInfo({ version = '', startedAt = 0, now = Date.now(), p
     uptimeMs: Number.isFinite(t) && Number.isFinite(s) ? Math.max(0, t - s) : 0,
     pending: Math.max(0, Math.floor(Number(pending) || 0)),
     ws: ws === null || ws === undefined ? null : Boolean(ws),
+    silentMs: silentMs == null ? null : Math.max(0, Math.floor(Number(silentMs) || 0)),
+    lastEventAt: Math.max(0, Math.floor(Number(lastEventAt) || 0)),
   }
 }
 

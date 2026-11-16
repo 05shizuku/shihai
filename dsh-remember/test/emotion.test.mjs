@@ -10,6 +10,7 @@ import {
   emotionEventId,
   emotionRelTime,
   foldEmotion,
+  emotionFeelPhrase,
   intensityScale,
   normEmotionLine,
   recognizeEmotion,
@@ -144,12 +145,13 @@ test('折状态：只认 event 行，tune 行不进状态', () => {
   assert.equal(s.dominant, 'calm')
 })
 
-test('相对时间：六档', () => {
+test('相对时间：七档（24-48 是昨天，48-72 是前天）', () => {
   assert.equal(emotionRelTime(NOW, NOW), '刚刚')
   assert.equal(emotionRelTime(NOW - 5 * 60000, NOW), '不久前')
   assert.equal(emotionRelTime(NOW - 30 * 60000, NOW), '一会儿前')
   assert.equal(emotionRelTime(NOW - 5 * 3600000, NOW), '今天早些时候')
-  assert.equal(emotionRelTime(NOW - 30 * 3600000, NOW), '前天')
+  assert.equal(emotionRelTime(NOW - 30 * 3600000, NOW), '昨天')
+  assert.equal(emotionRelTime(NOW - 60 * 3600000, NOW), '前天')
   assert.equal(emotionRelTime(NOW - 72 * 3600000, NOW), '前几天')
 })
 
@@ -181,4 +183,67 @@ test('foldEmotion：几轴同时满格时，主导用没 clamp 的原始和挑�
   assert.equal(s.dominant, 'tense') // 原始和 tense（3 件）比 warm（2 件）高
   assert.equal(s.label, '紧绷')
   assert.equal(s.level, 1)
+})
+
+// ===== whale-card P1-5（饭桶⑤）：说感觉，不报数字 =====
+
+test('emotionFeelPhrase：混着说混着，认不出说说不上来，没事就空串', () => {
+  assert.equal(emotionFeelPhrase(null), '')
+  assert.equal(emotionFeelPhrase({ dominant: 'calm' }), '', '真没动静就是没事')
+  assert.equal(emotionFeelPhrase({ dominant: 'calm', unresolved: true }), '这我说不上来', '有事过但认不出')
+  assert.equal(emotionFeelPhrase({ dominant: 'warm', levels: { warm: 0.3 } }), '心里有点被暖着')
+  assert.equal(
+    emotionFeelPhrase({
+      dominant: 'down',
+      levels: { down: 0.3, tense: 0.2 },
+      mixed: [
+        { emotion: 'down', level: 0.3 },
+        { emotion: 'tense', level: 0.2 },
+      ],
+    }),
+    '心里混着：沉，还有点紧',
+    '两种同时过线就说混着',
+  )
+})
+
+test('renderEmotionNote（P1-5）：认不出说「说不上来」，不写「平静」也不报小数', () => {
+  assert.equal(renderEmotionNote(null), '')
+  assert.equal(renderEmotionNote({ dominant: 'calm' }), '', 'calm 没动静就不出笔记')
+  const unsure = renderEmotionNote({ dominant: 'calm', unresolved: true })
+  assert.ok(unsure.includes('说不上来'), `实际 ${unsure}`)
+  assert.ok(!unsure.includes('0.'), '笔记里没有小数')
+  const mixed = renderEmotionNote({
+    dominant: 'down',
+    levels: { down: 0.3, tense: 0.2 },
+    mixed: [
+      { emotion: 'down', level: 0.3 },
+      { emotion: 'tense', level: 0.2 },
+    ],
+  })
+  assert.ok(mixed.includes('混着'), `实际 ${mixed}`)
+  assert.ok(mixed.includes('（上次的笔记）'), '还是上次的笔记的口气')
+  assert.ok(!mixed.includes('0.'), '不报小数')
+})
+
+test('foldEmotion：mixed / unresolved 一起折出来', () => {
+  const at = NOW - 5 * 60_000
+  const lines = [
+    { at, kind: 'event', emotion: 'down', delta: 0.3, intensity: 3, text: 'down-1' },
+    { at, kind: 'event', emotion: 'tense', delta: 0.2, intensity: 3, text: 'tense-1' },
+  ]
+  const s = foldEmotion(lines, { now: NOW })
+  assert.equal(s.dominant, 'down')
+  assert.equal(s.unresolved, false, '认得出就不叫 unresolved')
+  assert.equal(s.mixed.length, 2, '两条都过线')
+  assert.equal(s.mixed[0].emotion, 'down')
+  assert.equal(s.mixed[1].emotion, 'tense')
+})
+
+test('foldEmotion：有事过但全淡得认不出 → unresolved（说不上来，不是「平静」）', () => {
+  const line = { at: NOW, kind: 'event', emotion: 'pleased', delta: 0.06, intensity: 1, text: '淡淡的高兴' }
+  const later = foldEmotion([line], { now: NOW + 240 * 60000 }) // pleased 半衰期 60 分，4 个半衰期后剩 1/16
+  assert.equal(later.dominant, 'calm')
+  assert.equal(later.total, 1, '事件发生过（total 数的是事件）')
+  assert.equal(later.unresolved, true, '有事过、认不出 → unresolved')
+  assert.ok(later.levels.pleased < 0.05, `实际 ${later.levels.pleased}`)
 })

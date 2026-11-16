@@ -185,8 +185,8 @@ const bridgeMessages = join(dir, 'messages.jsonl')
 writeFileSync(
   bridgeMessages,
   [
-    { at: Date.now() - 30 * 1000, chatType: 'private', userId: '1000001', nickname: '小鱼.', text: '晚安', mid: '9001' },
-    { at: Date.now() - 10 * 1000, chatType: 'private', userId: '1000001', nickname: '小鱼.', text: '你太厉害了！', mid: '9002' },
+    { at: Date.now() - 30 * 1000, chatType: 'private', userId: '2316650553', nickname: '猫羽雫.', text: '晚安', mid: '9001' },
+    { at: Date.now() - 10 * 1000, chatType: 'private', userId: '2316650553', nickname: '猫羽雫.', text: '你太厉害了！', mid: '9002' },
   ]
     .map((e) => JSON.stringify(e))
     .join('\n') + '\n',
@@ -205,14 +205,16 @@ try {
   // 还没记事的时候：段文本是空的，但段落该挂还是要挂
   h.created.forEach((fn) => fn(h.agent))
   const sec = (name) => h.sections.find((s) => s.name === name)
-  eq(h.sections.length, 4, '四个段都挂进了 system prompt（「我」「好奇」「习惯」在前，账本在后）')
+  eq(h.sections.length, 5, '五个段都挂进了 system prompt（「我」「还没定的」「好奇」「习惯」在前，账本在后）')
   eq(h.sections[0].name, 'dsh-remember:self', '第一段是「我」')
-  eq(h.sections[1].name, 'dsh-remember:curiosity', '第二段是「好奇」')
-  eq(h.sections[2].name, 'dsh-remember:habit', '第三段是「习惯」（快通路）')
-  eq(h.sections[3].name, 'dsh-remember', '第四段是「我记得的」')
-  ok(Number(h.sections[0].order) < Number(h.sections[1].order), '「我」排在「好奇」前面')
-  ok(Number(h.sections[1].order) < Number(h.sections[2].order), '「好奇」排在「习惯」前面')
-  ok(Number(h.sections[2].order) < Number(h.sections[3].order), '「习惯」排在「我记得的」前面')
+  eq(h.sections[1].name, 'dsh-remember:unsettled', '第二段是「还没定的」')
+  eq(h.sections[2].name, 'dsh-remember:curiosity', '第三段是「好奇」')
+  eq(h.sections[3].name, 'dsh-remember:habit', '第四段是「习惯」（快通路）')
+  eq(h.sections[4].name, 'dsh-remember', '第五段是「我记得的」')
+  ok(Number(h.sections[0].order) < Number(h.sections[1].order), '「我」排在「还没定的」前面')
+  ok(Number(h.sections[1].order) < Number(h.sections[2].order), '「还没定的」排在「好奇」前面')
+  ok(Number(h.sections[2].order) < Number(h.sections[3].order), '「好奇」排在「习惯」前面')
+  ok(Number(h.sections[3].order) < Number(h.sections[4].order), '「习惯」排在「我记得的」前面')
   eq(String(sec('dsh-remember:self').text()), '', '「我」空着的时候不挂空话')
   eq(String(sec('dsh-remember:curiosity').text()), '', '「好奇」空着的时候不挂空话')
   eq(String(sec('dsh-remember:habit').text()), '', '习惯空着的时候不挂空话')
@@ -282,7 +284,7 @@ try {
 
   // 同槽位写新值 → 旧的退下（不删、翻得到）
   const s2 = await h.tools.get('remember').execute(
-    { text: '我是记账的那个，但还没名字', kind: 'self', slot: 'identity', weight: 0.85, changes: '名字这件事我不抢' },
+    { text: '我是记账的那个，但还没名字', kind: 'self', slot: 'identity', weight: 0.95, changes: '名字这件事我不抢' },
     exec,
   )
   ok(s2.ok && s2.note.includes('退下'), `同槽位写新值，旧的要退下（回执 ${s2.note}）`)
@@ -305,6 +307,61 @@ try {
   )
   ok(s4.ok && s4.note.includes('三问'), '没答三问的自我条要提醒')
   ok(!String(sec('dsh-remember:self').text()).includes('还没想清楚在意什么'), '没答三问的自我条不挂上去')
+
+  // ------------------------------------------------------------ anchor 门（饭桶一条）
+  // 挂锚必须答三年问；锚在位时不被没挂锚的新值顶掉；一个槽最多一条锚；换锚要 replace_anchor；捡回来要出声
+  const a1 = await h.tools.get('remember').execute(
+    { text: '我想挂个锚但没答三年问', kind: 'self', slot: 'identity', anchor: true, weight: 0.8, changes: '想过' },
+    exec,
+  )
+  ok(a1.ok && String(a1.note).includes('三年问'), '没答三年问：不给挂，回执说明白')
+  const a2 = await h.tools.get('remember').execute(
+    {
+      text: '我是记账的那个，写下来的才算数',
+      kind: 'self',
+      slot: 'identity',
+      anchor: true,
+      anchor_why: '三年后写下来的还是算数',
+      weight: 0.9,
+      changes: '锚定身份',
+    },
+    exec,
+  )
+  ok(a2.ok && String(a2.note).includes('挂锚：'), '答了三年问：挂上了')
+  const a3 = await h.tools.get('remember').execute(
+    { text: '再来一条想当锚的', kind: 'self', slot: 'identity', anchor: true, anchor_why: '现编的理由', weight: 0.8, changes: '想过' },
+    exec,
+  )
+  ok(a3.ok && String(a3.note).includes('一个槽最多一条锚'), '槽里有锚：第二条不给挂')
+  ok(
+    String(sec('dsh-remember:self').text()).includes('写下来的才算数') &&
+      !String(sec('dsh-remember:self').text()).includes('再来一条想当锚的'),
+    '锚在位：后来的锚顶不掉',
+  )
+  const a4 = await h.tools.get('remember').execute(
+    { text: '没挂锚的随手写', kind: 'self', slot: 'identity', weight: 0.8, changes: '想过' },
+    exec,
+  )
+  ok(a4.ok && String(a4.note).includes('不顶锚'), '没挂锚的写进有锚的槽：记在旁边')
+  ok(!String(sec('dsh-remember:self').text()).includes('没挂锚的随手写'), '锚没被随手写顶掉')
+  const a5 = await h.tools.get('remember').execute(
+    {
+      text: '她点过头的新锚',
+      kind: 'self',
+      slot: 'identity',
+      anchor: true,
+      anchor_why: '三年后还认（她点过头）',
+      replace_anchor: true,
+      weight: 0.9,
+      changes: '换锚',
+    },
+    exec,
+  )
+  ok(a5.ok && String(a5.note).includes('换锚'), 'replace_anchor + 三年问：换锚成功')
+  ok(String(sec('dsh-remember:self').text()).includes('她点过头的新锚'), '新锚替槽位说话')
+  const a6 = await h.tools.get('remember').execute({ kind: 'self', restore: a2.id, text: '把旧锚捡回来' }, exec)
+  ok(a6.ok && String(a6.note).includes('捡回来了'), 'restore：把退下的锚捡回来')
+  ok(String(sec('dsh-remember:self').text()).includes('写下来的才算数'), '捡回来之后旧锚重新说话')
 
   // ------------------------------------------------------------ 习惯／快通路
   // 习惯的身份 = 情境。同一个情境写第 2 次 = 成立，第 3 次 = 上快通路。
@@ -484,8 +541,8 @@ try {
 
   // 账本列表
   const list = await h.tools.get('memory_list').execute({}, exec)
-  ok(list.ok && list.summary.includes('一共 11 条'), `列表说得清账本多大（${list.summary}）`)
-  ok(list.summary.includes('我 4'), '列表的分类里有「我」这一格')
+  ok(list.ok && list.summary.includes('一共 16 条'), `列表说得清账本多大（${list.summary}）`)
+  ok(list.summary.includes('我 9'), '列表的分类里有「我」这一格')
   ok(list.summary.includes('习惯 2'), '列表的分类里有「习惯」这一格')
   ok(list.summary.includes('好奇 3'), '列表的分类里有「好奇」这一格')
   ok(list.items.some((x) => x.includes('现在我是：')), '列表开头先说「现在我是」')
@@ -501,7 +558,7 @@ try {
   eq(res1.statusCode, 200, 'GET /status 200')
   const status = JSON.parse(res1.body)
   ok(status.ok && status.plugin.name === 'dsh-remember', '状态里有插件名')
-  eq(status.summary.total, 11, '状态里的条数对')
+  eq(status.summary.total, 16, '状态里的条数对')
   ok(typeof status.injection.section === 'string', '状态里给得出当前段文本')
   ok(status.injection.selfSection.includes('【我】'), '状态里也给得出「我」那一段')
   ok(status.injection.curiositySection.includes('【好奇】'), '状态里也给得出「好奇」那一段')
@@ -520,6 +577,66 @@ try {
   ok(status.curiosity.list[0]?.topic && status.curiosity.list[0]?.topic.length > 0, '好奇那几条带主题')
   ok(typeof status.curiosity.list[0]?.hits === 'number', '好奇那几条带惦记次数')
   ok('next' in (status.curiosity.list[0] ?? {}), '好奇那几条带下一步打算怎么试')
+
+  // ------------------------------------------------------------ 四问 known：第四问
+  const wKnown = await h.tools.get('remember').execute(
+    { text: '协议端是 NapCat，桥靠它收消息', kind: 'fact', known: '原来桥用这个收' },
+    exec,
+  )
+  ok(wKnown.ok && wKnown.id, 'known 第四问：收下了')
+  const wKnownBack = await h.tools.get('recall').execute({ query: 'NapCat' }, exec)
+  ok(wKnownBack.ok && wKnownBack.items.some((x) => x.includes('协议端是 NapCat')), 'known 条目翻得回来')
+
+  // ------------------------------------------------------------ 顶位门：轻的不许直接顶
+  const wT1 = await h.tools.get('remember').execute(
+    { text: '我在意的是他什么时候回来', kind: 'self', slot: 'cares', weight: 0.9, changes: '想过' },
+    exec,
+  )
+  ok(wT1.ok, 'cares 槽先立一条重的')
+  const wT2 = await h.tools.get('remember').execute(
+    { text: '也许更在意群里的热闹', kind: 'self', slot: 'cares', weight: 0.5, changes: '想过' },
+    exec,
+  )
+  ok(wT2.ok && String(wT2.note).includes('还没定的'), '轻的想顶位：被拦下，挂到「还没定的」旁边')
+  ok(String(wT2.note).includes('confirmed=true'), '回执教人怎么正式顶')
+  ok(String(sec('dsh-remember:unsettled').text()).includes('也许更在意群里的热闹'), '「还没定的」段晒得出这条')
+  ok(String(sec('dsh-remember:self').text()).includes('他什么时候回来'), '重的还在位')
+  const wT3 = await h.tools.get('remember').execute(
+    { text: '也许更在意群里的热闹', kind: 'self', slot: 'cares', weight: 0.5, changes: '想清楚了', confirmed: true },
+    exec,
+  )
+  ok(wT3.ok && !String(wT3.note).includes('还没定的'), 'confirmed=true：想清楚了也能正式顶位')
+  ok(String(sec('dsh-remember:self').text()).includes('也许更在意群里的热闹'), '顶位之后新条替槽位说话')
+
+  // ------------------------------------------------------------ 淡了留声
+  // 用一个没有在位者的自长槽：refuses 槽已有 0.7 的那条，0.2 的写进去会被顶位门拦下
+  const wF1 = await h.tools.get('remember').execute(
+    { text: '不替别人保守秘密', kind: 'self', slot: 'boundary', weight: 0.2, changes: '想过' },
+    exec,
+  )
+  ok(wF1.ok, '轻 self 收下了')
+  ok(String(sec('dsh-remember:self').text()).includes('我最近没怎么想起'), '快淡没的条在【我】段尾部留声')
+
+  // ------------------------------------------------------------ 染色层：想起时心里什么颜色
+  const wC1 = await h.tools.get('remember').execute(
+    { text: '染色层试验条：早上的门', changes: '试一下染色' },
+    exec,
+  )
+  ok(wC1.ok && wC1.id, '染色试验条收下')
+  const wCR1 = await h.tools.get('recall').execute({ query: '早上的门' }, exec)
+  const wCR2 = await h.tools.get('recall').execute({ query: '早上的门' }, exec)
+  const wHasRecolor = [wCR1, wCR2].some((r) => r.ok && r.items.some((x) => x.includes('（现在想起它：')))
+  ok(wHasRecolor, '染色层：recall 的条目带上「现在想起它」的尾注')
+
+  // ------------------------------------------------------------ 设置页：新字段都在
+  const wResU = fakeRes()
+  await statusRoute.handler(fakeReq('GET'), wResU)
+  const wStU = JSON.parse(wResU.body)
+  eq(wStU.summary.total, 22, '新增景之后的总条数对')
+  ok('unresolved' in wStU.emotion, '状态里说得出「说不上来」')
+  ok(Array.isArray(wStU.emotion.mixed), '状态里带得出「混着」')
+  ok(wStU.injection.unsettledEnabled !== false && typeof wStU.injection.unsettledSection === 'string', '「还没定的」段接进设置页')
+  ok((wStU.self.unsettled ?? 0) >= 1, '设置页数得出「还没定的」几条')
 
   // 快层：抄过来的秒级事件（不是节点，没有分量，但翻得到）
   ok(status.fast && typeof status.fast.total === 'number', '状态里说得出快层有几条')
@@ -561,7 +678,7 @@ try {
 
   // 盘上的东西
   const memory = JSON.parse(readFileSync(join(dataDir, 'memory.json'), 'utf8'))
-  eq(memory.nodes.length, 11, 'memory.json 里有十一条节点')
+  eq(memory.nodes.length, 22, 'memory.json 里有二十二条节点（含 anchor 门那五条和 v0.18 新景六条）')
   const lines = readFileSync(join(dataDir, 'lines.jsonl'), 'utf8').split('\n').filter(Boolean)
   ok(lines.length >= 19, `原话层只增不改（${lines.length} 行：十次 remember + 三次 forget + 六次好奇）`)
   ok(DEFAULTS.injectLimit === 3, '默认每次挂三条')
@@ -1012,7 +1129,7 @@ try {
   ok(status6.wake?.cooldownMinutes === 30 && typeof status6.wake?.beats === 'number', `叫醒的冷却和拍数在（beats=${status6.wake?.beats}）`)
 
   // ---------------------------------------------------------------- 翻账的字数闸（v0.16.0）
-  // 同行三条意见里的第一、二条是真的：给的是原文，limit 是每一路的上限。
+  // 吴晓观三条意见里的第一、二条是真的：给的是原文，limit 是每一路的上限。
   // 我加的是字数闸：每条截到 recallItemMax、一次总共 recallMaxChars，省了什么写在 note 里。
   // 放在最后写 —— 前面有断言在数节点条数。
   const gateTag = '闸测试靶'

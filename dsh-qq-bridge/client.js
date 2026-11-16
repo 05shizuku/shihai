@@ -5,7 +5,7 @@
  * 这里只做两件事：
  *   ① 看：跑没跑、挂起几条、消息流几册、隔离栅栏现在是什么口径；
  *   ② 改：连接 / 白名单 / 行为 / 消息流 / 隔离三口子 —— 白名单字段，服务端（lib/report.js）再校验一遍。
- * token 只显示「配没配」，值不回显也不让在这里改（要改直接改 config.json）。
+ * token 值不回显：首屏向导里可以新填（留空 = 不改，保存时跳过这个键），老值只在 config.json 里。
  * 改动写进 config.json，热重载/重启后生效 —— 页面上写清楚，不装作即时生效。
  */
 window.__ModuleLoader__.load({
@@ -51,6 +51,19 @@ window.__ModuleLoader__.load({
       ]))
     }
 
+    /** 折叠区：跟「记得」「身体」页签同一个规矩（2026-11-15 小白改版）。 */
+    function foldSection(title, hint, open, onToggle, ...children) {
+      return h('div', { style: C.card },
+        h('div', { style: C.row },
+          h('button', { style: C.btn, onClick: onToggle }, `${open ? '▾' : '▸'} ${title}`),
+          hint ? h('span', { style: C.meta }, hint) : null,
+        ),
+        open
+          ? h('div', { style: { display: 'flex', flexDirection: 'column', gap: 14, marginTop: 8 } }, ...children.filter(Boolean))
+          : null,
+      )
+    }
+
     function textRow(label, value, onChange, placeholder) {
       return h('label', { style: { display: 'flex', flexDirection: 'column', gap: 3 } },
         h('span', { style: C.label }, label),
@@ -81,6 +94,20 @@ window.__ModuleLoader__.load({
         .split(/[\n,;，；]+/)
         .map((s) => s.trim())
         .filter(Boolean)
+    }
+
+    /** 表单里隔离目录那一行读成数组（对齐 dsh-remember）。 */
+    function rootsOf(form) {
+      return splitLines(form?.denyRoots)
+    }
+
+    /** 勾上／取消一个工作区路径，返回新的多行文本。 */
+    function toggleRoot(text, path) {
+      const roots = splitLines(text)
+      const i = roots.indexOf(path)
+      if (i >= 0) roots.splice(i, 1)
+      else roots.push(path)
+      return roots.join('\n')
     }
 
     function formFrom(effective) {
@@ -133,14 +160,14 @@ window.__ModuleLoader__.load({
       const [busy, setBusy] = useState(false)
       const [note, setNote] = useState('')
 
-      const load = useCallback(async () => {
+      const load = useCallback(async (force) => {
         try {
           const r = await fetch(`${API}/status`, { headers: { accept: 'application/json' } })
           const j = await r.json().catch(() => ({}))
           if (!r.ok) throw new Error(j.error || `HTTP ${r.status}`)
           setStatus(j)
           setError('')
-          setForm((prev) => prev ?? formFrom(j?.config?.effective))
+          setForm((prev) => (force ? formFrom(j?.config?.effective) : (prev ?? formFrom(j?.config?.effective))))
         } catch (err) {
           setError(`${err?.message ?? err}（桥可能没起，或这一页没被信任栅栏放行）`)
         }
@@ -169,12 +196,70 @@ window.__ModuleLoader__.load({
             ? `有 ${rejected.length} 项没改成功：${rejected.map((x) => `${x.key}（${x.reason}）`).join('；')}`
             : `改了：${(j.accepted ?? []).join('、') || '（没有变化）'}。写进了 config.json，热重载/重启后生效。`)
           await load()
+          try { window.dispatchEvent(new CustomEvent('dsh-shihai:config-changed', { detail: { plugin: 'bridge' } })) } catch { /* ignore */ }
         } catch (err) {
           setNote(`没改成：${err?.message ?? err}`)
         } finally {
           setBusy(false)
         }
       }, [form, load])
+
+      // 首屏折叠区 + 四步向导（2026-11-15 小白改版）
+      const [folds, setFolds] = useState({ advanced: false, observatory: false })
+      const toggleFold = useCallback((k) => setFolds((prev) => ({ ...prev, [k]: !prev[k] })), [])
+      const [tokenInput, setTokenInput] = useState('')
+      const [test, setTest] = useState(null)
+      const [testBusy, setTestBusy] = useState(false)
+      const runSelfTest = useCallback(async () => {
+        setTestBusy(true)
+        setTest(null)
+        try {
+          const r = await fetch(`${API}/selftest`, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json', accept: 'application/json' },
+            body: JSON.stringify({
+              onebotHttp: form?.onebotHttp ?? '',
+              // token 框填了就用新值试；留空 = 用 config.json 里已配好的
+              httpToken: (tokenInput ?? '').trim(),
+            }),
+          })
+          const j = await r.json().catch(() => ({}))
+          setTest(j)
+        } catch (err) {
+          setTest({ ok: false, note: `没连上：${err?.message ?? err}` })
+        } finally {
+          setTestBusy(false)
+        }
+      }, [form, tokenInput])
+
+      // 带着向导里新填的 token 一起保存（留空 = 不碰 token 键）
+      const saveWithToken = useCallback(async () => {
+        if (!form) return
+        const t = (tokenInput ?? '').trim()
+        if (!t) { await save(); return }
+        setBusy(true)
+        setNote('')
+        try {
+          const r = await fetch(`${API}/config`, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json', accept: 'application/json' },
+            body: JSON.stringify({ ...formToPatch(form), httpToken: t }),
+          })
+          const j = await r.json().catch(() => ({}))
+          if (!r.ok && !j.rejected) throw new Error(j.error || `HTTP ${r.status}`)
+          const rejected = Array.isArray(j.rejected) ? j.rejected : []
+          setNote(rejected.length
+            ? `有 ${rejected.length} 项没改成功：${rejected.map((x) => `${x.key}（${x.reason}）`).join('；')}`
+            : '改了（token 在内）。写进了 config.json，热重载/重启后生效。')
+          setTokenInput('')
+          await load()
+          try { window.dispatchEvent(new CustomEvent('dsh-shihai:config-changed', { detail: { plugin: 'bridge' } })) } catch { /* ignore */ }
+        } catch (err) {
+          setNote(`没改成：${err?.message ?? err}`)
+        } finally {
+          setBusy(false)
+        }
+      }, [form, load, save, tokenInput])
 
       const head = h('div', null,
         h('h2', { style: C.h2 }, 'QQ 薄桥'),
@@ -196,6 +281,60 @@ window.__ModuleLoader__.load({
       const ml = status.messageLog ?? { enabled: false, stats: [] }
       const fence = status.fence ?? {}
 
+      // 目标会话单选（2026-11-15 她提的：别让新手手打 sessionId）
+      const targetRadios = () => {
+        const sessions = Array.isArray(status.sessions) ? status.sessions : []
+        const kids = [
+          h('label', { key: 'tgt-auto', style: { ...C.row, gap: 8, fontSize: 13 } },
+            h('input', { type: 'radio', name: 'wj-target', checked: !form.sessionId, onChange: () => set('sessionId')('') }),
+            '自动（最近活跃那条）'),
+        ]
+        for (const s of sessions) {
+          kids.push(h('label', { key: `tgt-${s.sessionId}`, style: { ...C.row, gap: 8, fontSize: 13 } },
+            h('input', { type: 'radio', name: 'wj-target', checked: form.sessionId === s.sessionId, onChange: () => set('sessionId')(s.sessionId) }),
+            `${s.title}${s.origin ? `（${s.origin}）` : ''}`))
+        }
+        if (!sessions.length) kids.push(h('span', { style: C.meta }, '还没读到会话清单——保持「自动」就行'))
+        return kids
+      }
+
+      // 首屏健康卡：一句人话说清桥的现状
+      const healthCard = card('桥现在怎么样',
+        h('p', { style: { ...C.sub, fontSize: 14.5, color: 'var(--dsw-alias-label-primary)' } },
+          status.running
+            ? '● 在跑：白名单有人，消息在递'
+            : '○ 待机——白名单还空着（下面第 3 步填上就活）'),
+        h('p', { style: C.sub },
+          `等回的挂起 ${status.pendingSize ?? 0} 条 · 消息流 ${ml.enabled ? `${ml.stats.length} 册` : '关着'} · 家在 ${status.homeDir ?? '—'}`),
+      )
+
+      // 四步向导：地址 → token → 谁能说话 → 测试 + 保存
+      const wizardCard = card('第一次接上？四步走',
+        h('p', { style: C.cardTitle }, '第 1 步 · OneBot 在哪'),
+        textRow('HTTP 动作口', form.onebotHttp, set('onebotHttp'), 'http://127.0.0.1:3000'),
+        h('p', { style: { ...C.cardTitle, marginTop: 8 } }, '第 2 步 · token（没设就留空）'),
+        h('div', { style: C.row },
+          h('input', { style: { ...C.input, width: 240 }, type: 'password', value: tokenInput, placeholder: '留空 = 用已配好的', onChange: (e) => setTokenInput(e.target.value) }),
+          h('span', { style: C.meta }, `现在：${status.config?.effective?.httpToken || '未配置'}`),
+        ),
+        h('p', { style: { ...C.cardTitle, marginTop: 8 } }, '第 3 步 · 谁能跟我说话（空着桥就待机）'),
+        areaRow('允许私聊的 QQ 号（每行一个）', form.allowUsers, set('allowUsers')),
+        areaRow('允许记录的群号（每行一个；群里 @ 我才会递话）', form.allowGroups, set('allowGroups')),
+        h('p', { style: { ...C.cardTitle, marginTop: 8 } }, '话递到哪个会话（勾一个；不勾 = 最近活跃那条）'),
+        ...targetRadios(),
+        h('p', { style: { ...C.cardTitle, marginTop: 8 } }, '第 4 步 · 试一试，再保存'),
+        h('div', { style: C.row },
+          h('button', { style: C.btn, disabled: testBusy, onClick: runSelfTest }, testBusy ? '连着看…' : '测试连接'),
+          h('button', { style: C.btn, disabled: busy, onClick: saveWithToken }, busy ? '在写…' : '保存'),
+          note ? h('span', { style: C.ok }, note) : null,
+        ),
+        test
+          ? (test.ok
+            ? h('p', { style: C.ok }, `✅ ${test.note ?? '连上了'}（${test.ms ?? '—'} 毫秒）——地址和 token 是通的，保存后热重载就用它跑`)
+            : h('p', { style: C.err }, `❌ ${test.note ?? '没连上'}`))
+          : h('p', { style: C.meta }, '「测试连接」用上面填的地址和 token 现场连一次（试的是还没保存的值），通了再保存。'),
+      )
+
       const statusCard = card('运行状态',
         kv([
           ['插件', h('span', { style: C.mono }, `dsh-qq-bridge ${status.plugin?.version ?? ''}`)],
@@ -211,19 +350,12 @@ window.__ModuleLoader__.load({
           : null,
       )
 
-      const connectCard = card('连接',
-        textRow('OneBot HTTP 动作口', form.onebotHttp, set('onebotHttp'), 'http://127.0.0.1:3000'),
+      const connectCard = card('连接（进阶）',
         textRow('OneBot WS 事件口', form.onebotWs, set('onebotWs'), 'ws://127.0.0.1:3001'),
         textRow('桥自己的号（防自环，可空）', form.selfUin, set('selfUin')),
-        textRow('目标会话（可空 = 最近活跃那条）', form.sessionId, set('sessionId')),
+        textRow('目标会话（进阶：直接填 sessionId；一般用上面第 3 步的勾选）', form.sessionId, set('sessionId')),
         textRow('话前缀（认「这轮是替 QQ 回的」的记号）', form.promptPrefix, set('promptPrefix')),
-        h('p', { style: C.label }, 'token 的配没配：' +
-          `HTTP ${status.config?.effective?.httpToken || '未配置'} · WS ${status.config?.effective?.wsToken || '未配置'}（值不回显，要改直接改 config.json）`),
-      )
-
-      const whitelistCard = card('白名单',
-        areaRow('允许私聊的 QQ 号（每行一个；空 = 一个字都不递）', form.allowUsers, set('allowUsers')),
-        areaRow('允许记录的群号（每行一个；群 @ 我才会递话）', form.allowGroups, set('allowGroups')),
+        h('p', { style: C.label }, `WS token 的配没配：${status.config?.effective?.wsToken || '未配置'}（值不回显，要改直接改 config.json）`),
       )
 
       const behaviorCard = card('行为',
@@ -240,26 +372,33 @@ window.__ModuleLoader__.load({
       )
 
       const fenceCard = card('会话隔离',
-        h('p', { style: C.label }, '先 denyRoots（黑名单，优先于一切）→ 再 allowRoots（填了就只放行名单）→ 最后 targetRoot（兜底根，留空不收窄）。管的是数据文件（消息流/挂起/seen/日志）；config.json 豁免。'),
+        h('p', { style: C.label }, '勾上的工作区完全隔离：那里的会话不碰桥的数据（消息流/挂起/日志）。黑名单优先，白名单次之，最后是兜底根。'),
+        ...(status.workspaces ?? []).map((w) =>
+          h('label', { key: `ws-${w.path}`, style: { ...C.row, gap: 6, fontSize: 13 } },
+            h('input', {
+              type: 'checkbox',
+              checked: rootsOf(form).indexOf(w.path) >= 0,
+              onChange: () => setForm({ ...form, denyRoots: toggleRoot(form?.denyRoots, w.path) }),
+            }),
+            `${w.title || w.path}${w.sessions ? ` · ${w.sessions} 条会话` : ''}`)),
+        (status.workspaces ?? []).length
+          ? null
+          : h('p', { style: C.sub }, '没读到工作区清单，直接在下面写目录也一样。'),
+        areaRow('隔离目录（denyRoots，勾上面会写进来）', form.denyRoots, set('denyRoots')),
         textRow('targetRoot（兜底放行根，可空）', form.targetRoot, set('targetRoot')),
         areaRow('allowRoots（显式白名单，每行一个；可空）', form.allowRoots, set('allowRoots')),
-        areaRow('denyRoots（黑名单，每行一个）', form.denyRoots, set('denyRoots')),
         h('p', { style: { ...C.mono, fontSize: 11.5, color: 'var(--dsw-alias-label-tertiary)', whiteSpace: 'pre-wrap' } },
           `现在：deny=${(fence.denyRoots ?? []).join(',') || '无'} allow=${(fence.allowRoots ?? []).join(',') || '无'} target=${fence.targetRoot || '未收窄'}`),
       )
 
+      // 2026-11-15 小白改版：首屏（健康+四步向导）→ 折叠区
       return h('div', { style: C.wrap },
         head,
-        statusCard,
-        connectCard,
-        whitelistCard,
-        behaviorCard,
-        messageLogCard,
-        fenceCard,
-        h('div', { style: C.row },
-          h('button', { style: C.btn, onClick: save, disabled: busy }, busy ? '在写…' : '保存（写 config.json，热重载后生效）'),
-          note ? h('p', { style: C.ok }, note) : null,
-        ),
+        healthCard,
+        wizardCard,
+        foldSection('连接进阶与行为（一般不用碰）', 'WS 口 · 防自环 · 目标会话 · 行为 · 消息流 · 隔离栅栏', !!folds.advanced, () => toggleFold('advanced'),
+          connectCard, behaviorCard, messageLogCard, fenceCard),
+        foldSection('观测台', '运行状态明细', !!folds.observatory, () => toggleFold('observatory'), statusCard),
       )
     }
 

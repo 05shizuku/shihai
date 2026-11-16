@@ -5,7 +5,7 @@
  * 原话层是 append-only，一行一条，坏了也只坏一行。
  */
 
-import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readSync, renameSync, statSync, writeFileSync } from 'node:fs'
+import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, readSync, renameSync, statSync, writeFileSync, writeSync } from 'node:fs'
 import { appendFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, join, normalize, resolve, sep } from 'node:path'
@@ -42,11 +42,71 @@ export function readJsonSafe(file, fallback = null) {
   }
 }
 
+/**
+ * 读坏了沿用上一份好的 —— 段构建宁可旧一拍，不能空一轮。
+ *
+ * 2026-11-12 晚：自我段（【我】【还没定的】【我记得的】）瞬时断供连续四回现行，
+ * 形状全是「读账本的段消失、读快层的段照常」，一两轮后原样回来。
+ * 病根＝memory.json 读的瞬间撞上镜像/拷贝（sync 每分钟一轮），readJsonSafe
+ * 返回 null → 节点表空 → 段空 → billion-context 锚相似度跌破 0.7 整个换锚。
+ * 这层兜底：读成功就记进 lastGood，读失败/读出 null 就还上一份好的。
+ * 原子写（tmp+rename）保证读到的要么是旧整本要么是新整本，粘住只救瞬时故障。
+ */
+const lastGoodJson = new Map()
+
+export function readJsonSafeSticky(file, fallback = null) {
+  try {
+    const raw = readFileSync(file, 'utf8')
+    const value = JSON.parse(raw)
+    if (value != null) {
+      lastGoodJson.set(file, value)
+      return value
+    }
+    return lastGoodJson.get(file) ?? fallback
+  } catch {
+    return lastGoodJson.get(file) ?? fallback
+  }
+}
+
+/**
+ * 原子写：tmp + rename，**先 fsync 再 rename**。
+ * 「写一半断电」要真兜得住，得保证数据落盘之后才换名 —— 不 fsync 的话，
+ * rename 成功了、内容还躺在页缓存里，掉电就是空文件（2026-11-15 审查修的）。
+ * fsync 失败就抛：tmp 留着、原文件没动，下一次写重来。
+ */
 export function atomicWriteJson(file, data, mode = 0o600) {
   ensureDir(dirname(file))
   const tmp = `${file}.${process.pid}.${Date.now()}.tmp`
-  writeFileSync(tmp, `${JSON.stringify(data, null, 2)}\n`, { encoding: 'utf8', mode })
+  const body = `${JSON.stringify(data, null, 2)}\n`
+  const fd = openSync(tmp, 'w', mode)
+  try {
+    writeSync(fd, Buffer.from(body, 'utf8'))
+    try {
+      fsyncSync(fd)
+    } catch {
+      /* 个别文件系统不支持对文件 fsync —— 内容已写，rename 照走 */
+    }
+  } finally {
+    closeSync(fd)
+  }
   renameSync(tmp, file)
+}
+
+/**
+ * 只数行数，不解析 —— 设置页轮询只为报个计数，别为它把整本账 JSON.parse 一遍。
+ * 坏行也占一行（跟 readJsonLines 的输入一致，只是少了容错差）。
+ */
+export function countLines(file) {
+  try {
+    const raw = readFileSync(file, 'utf8')
+    let n = 0
+    for (let i = 0; i < raw.length; i += 1) {
+      if (raw.charCodeAt(i) === 10) n += 1
+    }
+    return raw.length && !raw.endsWith('\n') ? n + 1 : n
+  } catch {
+    return 0
+  }
 }
 
 /** 原话层：一行一条 JSON，只加不改 */

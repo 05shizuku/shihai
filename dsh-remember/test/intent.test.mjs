@@ -92,14 +92,14 @@ test('normalizeForIntent 去掉零宽字符和多余空白', () => {
 
 test('makeIntentEvent：空文本给 null，正常文本字段齐全', () => {
   assert.equal(makeIntentEvent('   '), null)
-  const e = makeIntentEvent('晚安', { at: 1000, source: 'qq', chatType: 'private', from: '1000001' })
+  const e = makeIntentEvent('晚安', { at: 1000, source: 'qq', chatType: 'private', from: '2316650553' })
   assert.equal(e.at, 1000)
   assert.equal(e.kind, 'farewell')
   assert.equal(e.intensity, 3)
   assert.equal(e.text, '晚安')
   assert.equal(e.source, 'qq')
   assert.equal(e.chatType, 'private')
-  assert.equal(e.from, '1000001')
+  assert.equal(e.from, '2316650553')
   assert.ok(Array.isArray(e.matched))
 })
 
@@ -151,8 +151,8 @@ test('一条桥消息能认成意图事件：身份、类型、强度都对得�
   const row = {
     at: 1700000000000,
     chatType: 'private',
-    userId: '1000001',
-    nickname: '小鱼.',
+    userId: '2316650553',
+    nickname: '猫羽雫.',
     text: '晚安',
     mid: '9001',
   }
@@ -160,10 +160,10 @@ test('一条桥消息能认成意图事件：身份、类型、强度都对得�
   assert.ok(ev)
   assert.equal(ev.kind, 'farewell')
   assert.equal(ev.intensity, 3)
-  assert.equal(ev.from, '1000001')
+  assert.equal(ev.from, '2316650553')
   assert.equal(ev.mid, '9001')
   assert.equal(ev.chatType, 'private')
-  assert.equal(ev.nickname, '小鱼.')
+  assert.equal(ev.nickname, '猫羽雫.')
   assert.equal(ev.id, intentIdFromMessage(row))
   // 空消息、坏时间：一律不认
   assert.equal(intentEventFromMessage({ ...row, text: '  ' }), null)
@@ -184,14 +184,15 @@ test('索引：同一条只留一份，新的在前，满了挤最老的', () =>
   assert.equal(capped[0].id, 'i_z')
 })
 
-test('相对时间不写数字：刚刚／不久前／一会儿前／今天早些时候／前天／前几天', () => {
+test('相对时间不写数字：刚刚／不久前／一会儿前／今天早些时候／昨天／前天／前几天', () => {
   const now = 1700000000000
   const at = (mins) => now - mins * 60000
   assert.equal(intentRelTime(at(0), now), '刚刚')
   assert.equal(intentRelTime(at(10), now), '不久前')
   assert.equal(intentRelTime(at(30), now), '一会儿前')
   assert.equal(intentRelTime(at(600), now), '今天早些时候')
-  assert.equal(intentRelTime(at(60 * 30), now), '前天')
+  assert.equal(intentRelTime(at(60 * 30), now), '昨天')
+  assert.equal(intentRelTime(at(60 * 50), now), '前天')
   assert.equal(intentRelTime(at(60 * 60 * 5), now), '前几天')
   assert.equal(intentRelTime('坏时间', now), '')
 })
@@ -221,13 +222,13 @@ test('按词翻意图事件：词打在正文、类型、标签、来源、来�
 
 test('按场翻意图事件（v0.15.0 分册）：群号点名、private 只翻私聊、词加场一起用', () => {
   const events = [
-    { id: 'i_g1', at: 100, kind: 'praise', intensity: 3, text: '群里的夸', source: 'qq-bridge', chatType: 'group', groupId: '222222222', from: '231' },
+    { id: 'i_g1', at: 100, kind: 'praise', intensity: 3, text: '群里的夸', source: 'qq-bridge', chatType: 'group', groupId: '781084960', from: '231' },
     { id: 'i_g2', at: 150, kind: 'ask', intensity: 2, text: '另一群的问', source: 'qq-bridge', chatType: 'group', groupId: '10000', from: '777' },
     { id: 'i_p1', at: 200, kind: 'share', intensity: 3, text: '私聊的分享', source: 'qq-bridge', chatType: 'private', groupId: '', from: '231' },
   ]
   // 群号点名：只翻那个群的
-  assert.equal(searchIntentEvents(events, '', { group: '222222222' }).length, 1)
-  assert.equal(searchIntentEvents(events, '', { group: '222222222' })[0].id, 'i_g1')
+  assert.equal(searchIntentEvents(events, '', { group: '781084960' }).length, 1)
+  assert.equal(searchIntentEvents(events, '', { group: '781084960' })[0].id, 'i_g1')
   // private 只翻私聊
   assert.equal(searchIntentEvents(events, '', { group: 'private' }).length, 1)
   assert.equal(searchIntentEvents(events, '', { group: 'private' })[0].id, 'i_p1')

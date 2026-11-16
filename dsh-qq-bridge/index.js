@@ -32,8 +32,10 @@ import {
   inviteSeqFromCard,
   isAllowedGroup,
   isAllowedPrivate,
+  isSelfTalkBubble,
   isToolCallMarker,
   looksGroupAddressed,
+  privateReplyText,
   splitBubbles,
   userText
 } from './lib/bridge.js'
@@ -47,7 +49,7 @@ import { HEARTBEAT_INTERVAL_MS, heartbeatInfo, writeHeartbeat } from './lib/hear
 export const name = 'dsh-qq-bridge'
 
 /** 只硬依赖会话服务：收发的路都在它身上。 */
-export const inject = ['sessionController']
+export const inject = ['sessionController', 'sessions', 'sessionQuery']
 
 export const DEFAULTS = {
   /** 总开关 */
@@ -330,7 +332,8 @@ export function apply(ctx, baseConfig = {}) {
   log(`v${VERSION} 起：http=${cfg.onebotHttp} ws=${cfg.onebotWs} 白名单=${cfg.allowUsers.join(',')} 目标=${cfg.sessionId || '(最近活跃会话)'}`)
   log(`隔离：deny=${cfg.denyRoots.join(',') || '无'} allow=${cfg.allowRoots.join(',') || '无'} target=${cfg.targetRoot || '未收窄'}`)
 
-  bridge = createBridge({ cfg, log, sessionController, seenRecently, homeDir, pendingFile: scoped(join(homeDir, 'pending.json')) ? join(homeDir, 'pending.json') : null, messageLog, photosDir, photosOk, stickerDir, stickersOk })
+  const livenessBox = { current: null } // onebot 建好后回填（心跳 beat 比它先定义，2026-11-16）
+  bridge = createBridge({ cfg, log, sessionController, livenessBox, seenRecently, homeDir, pendingFile: scoped(join(homeDir, 'pending.json')) ? join(homeDir, 'pending.json') : null, messageLog, photosDir, photosOk, stickerDir, stickersOk })
 
   // 会话这头的口子：挂在 ctx.effect 里 —— 宿主卸载/重载插件时跑 teardown。
   // 别学旧版把清理挂在 apply 返回值上：宿主不看返回值，挂那儿就是僵尸（2026-11-04 实测）。
@@ -374,7 +377,7 @@ export function apply(ctx, baseConfig = {}) {
         const arr = readJson(pendingFile, null)
         // 存档两种形状：数组（早期）/ {savedAt, items}（现在）
         const list = Array.isArray(arr) ? arr : Array.isArray(arr?.items) ? arr.items : []
-        writeHeartbeat(heartbeatFile, heartbeatInfo({ version: VERSION, startedAt, pending: list.length }))
+writeHeartbeat(heartbeatFile, heartbeatInfo({ version: VERSION, startedAt, pending: list.length, ws: livenessBox.current?.isWsAlive() ? 1 : 0, silentMs: livenessBox.current?.wsSilentMs(), lastEventAt: livenessBox.current?.lastIncomingAt ?? null }))
       } catch (err) {
         log(`心跳写不进去：${err?.message ?? err}`)
       }
@@ -492,6 +495,8 @@ export function apply(ctx, baseConfig = {}) {
     }
   }
 
+  let diagDone = false // 会话标题链路的一次性诊断开关（和 /status 路由同层，别放 createBridge 里——2026-11-15 作用域教训）
+
   function registerRoutes() {
     const webServer = safeGet('webServer')
     if (!webServer || typeof webServer.register !== 'function') {
@@ -501,7 +506,140 @@ export function apply(ctx, baseConfig = {}) {
     const routes = [
       ['/status', async (req, res) => {
         if (req.method !== 'GET') return send(res, 405, { ok: false, error: '只接受 GET' })
-        return send(res, 200, buildStatus())
+        const st = buildStatus()
+        // 目标会话勾选清单（2026-11-15 她提的：别让新手手打 sessionId，还得写会话名字）：
+        // 列出宿主现存的普通会话，名字取工作区标题（storages/workspace.json 的 title），
+        // 同一工作区多个会话再拼短 id 区分——「测试 · 30e39」这种，一眼知道是谁。
+        let wsTitleBySid = {}
+        try {
+          const raw = JSON.parse(readFileSync(join(dshHome, 'storages', 'workspace.json'), 'utf8'))
+          const table = raw?.tables?.workspaces
+          if (table && typeof table === 'object') {
+            for (const w of Object.values(table)) {
+              const wt = String(w?.title ?? '').trim()
+              if (!wt || !Array.isArray(w?.sessionIds)) continue
+              for (const sid of w.sessionIds) wsTitleBySid[String(sid)] = wt
+            }
+          }
+        } catch { /* 没有工作区表就按短 id 显示 */ }
+        try {
+          const list = await sessionController.list({})
+          const items = Array.isArray(list?.items) ? list.items : []
+          // 会话自己的名字（GUI 列表里那些）：照抄宿主自己的取法——
+          // 活会话 ctx.sessions.get(id) 直接带 title；冷会话 sessionQuery.readSession(id) 的会话头里有。
+          // 两头都拿不到（从没被起过名）就退回「工作区 · 短号」。
+          const titleOf = async (sid) => {
+            try {
+              const live = ctx.sessions?.get?.(sid)
+              let t = String(live?.title ?? '').trim()
+              if (t) return t
+              if (ctx.sessionQuery && typeof ctx.sessionQuery.readSession === 'function') {
+                const logRec = await ctx.sessionQuery.readSession(sid)
+                t = String(logRec?.session?.title ?? '').trim()
+                if (t) return t
+              }
+            } catch { /* 走工作区名 */ }
+            return ''
+          }
+          const labelled = []
+          for (const it of items.filter((x) => x && !x.blank && String(x.origin ?? '') !== 'subagent').slice(0, 20)) {
+            const sid = String(it.sessionId ?? it.id ?? '')
+            if (!sid) continue
+            const ws = wsTitleBySid[sid] ?? ''
+            const own = (String(it.title ?? it.name ?? '').trim()) || (await titleOf(sid))
+            const label = own || (ws ? `${ws} · ${sid.replace(/^session-/, '').slice(0, 5)}` : sid.replace(/^session-/, '').slice(0, 10))
+            labelled.push({ sessionId: sid, title: label, origin: String(it.origin ?? '') })
+          }
+          st.sessions = labelled
+          // 一次性诊断：标题链路到底在哪一环断了（写到 bridge.log，2026-11-15 她反馈还是短号）
+          if (!diagDone && labelled.length) {
+            diagDone = true
+            try {
+              const sid0 = labelled[0].sessionId
+              const live = ctx.sessions?.get?.(sid0)
+              const d = {
+                sessionsSvc: typeof ctx.sessions,
+                get: typeof ctx.sessions?.get,
+                liveKeys: live ? Object.keys(live).slice(0, 20) : null,
+                liveTitle: live?.title ?? null,
+                liveHeaderTitle: live?.header?.title ?? null,
+                sqType: typeof ctx.sessionQuery,
+                readSession: typeof ctx.sessionQuery?.readSession,
+              }
+              if (ctx.sessionQuery && typeof ctx.sessionQuery.readSession === 'function') {
+                const rec = await ctx.sessionQuery.readSession(sid0)
+                d.recKeys = rec ? Object.keys(rec).slice(0, 16) : null
+                d.recSessionTitle = rec?.session?.title ?? null
+                d.recSessionKeys = rec?.session ? Object.keys(rec.session).slice(0, 24) : null
+              }
+              d.sessionsSvcKeys = ctx.sessions ? Object.keys(ctx.sessions).slice(0, 30) : null
+              try {
+                const tsvc = ctx.get?.('sessionTitle')
+                d.titleSvcType = typeof tsvc
+                d.titleSvcKeys = tsvc ? Object.keys(tsvc).slice(0, 24) : null
+                if (tsvc) {
+                  d.tProto = Object.getOwnPropertyNames(Object.getPrototypeOf(tsvc)).filter((k) => k !== 'constructor').slice(0, 24)
+                }
+              } catch (e2) { d.titleSvcErr = String(e2?.message ?? e2).slice(0, 80) }
+              // 标题深挖：所有可能的读路径一次试完，直接看返回值
+              try {
+                const sess = ctx.sessions?.get?.(sid0)
+                const sp = ctx.get?.('sessionProjections')
+                const out = {}
+                if (sess && sp?.stateOf) {
+                  try { out.stateOf = sp.stateOf(sess, 'sessionListMetadata') ? JSON.stringify(sp.stateOf(sess, 'sessionListMetadata')).slice(0, 240) : '空' } catch (e3) { out.stateOf = 'ERR ' + String(e3?.message ?? e3).slice(0, 80) }
+                }
+                if (sess) {
+                  out.logTitle = sess.log?.title ?? null
+                  out.derivedKeys = sess.derived ? Object.keys(sess.derived).slice(0, 16) : null
+                  out.snapKeys = typeof sp?.snapshot === 'function' ? Object.keys(sp.snapshot(sess)).slice(0, 20) : null
+                }
+                const tsvc2 = ctx.get?.('sessionTitle')
+                if (tsvc2) {
+                  for (const meth of ['get', 'titleOf', 'latest', 'lookup', 'getLatest', 'title', 'for']) {
+                    if (typeof tsvc2[meth] !== 'function') continue
+                    for (const [tag, arg] of [['sid', sid0], ['sess', sess]]) {
+                      try {
+                        const r = await tsvc2[meth](arg)
+                        out[`t_${meth}_${tag}`] = r === undefined ? 'undefined' : JSON.stringify(r).slice(0, 200)
+                      } catch (e4) { out[`t_${meth}_${tag}`] = 'ERR ' + String(e4?.message ?? e4).slice(0, 70) }
+                    }
+                  }
+                }
+                log(`标题深挖：${JSON.stringify(out)}`)
+              } catch (e5) { log(`标题深挖失败：${String(e5?.message ?? e5).slice(0, 160)}`) }
+              log(`目标会话标题诊断：${JSON.stringify(d)}`)
+            } catch (e) {
+              log(`目标会话标题诊断失败：${String(e?.message ?? e).slice(0, 200)}`)
+            }
+          }
+        } catch {
+          st.sessions = []
+        }
+        // 工作区清单（她 2026-11-15 提的：隔离改成跟「记得」一样的勾选）：注册表优先，文件兜底
+        let wsRows = []
+        try {
+          const reg = ctx.get?.('workspaceRegistry')
+          const list = reg && typeof reg.list === 'function' ? reg.list() : null
+          if (Array.isArray(list)) {
+            wsRows = list
+              .map((w) => ({ path: String(w?.path ?? ''), title: String(w?.title ?? ''), sessions: Array.isArray(w?.sessionIds) ? w.sessionIds.length : 0 }))
+              .filter((w) => w.path)
+          }
+        } catch { /* 走文件 */ }
+        if (!wsRows.length) {
+          try {
+            const raw = JSON.parse(readFileSync(join(dshHome, 'storages', 'workspace.json'), 'utf8'))
+            const table = raw?.tables?.workspaces
+            if (table && typeof table === 'object') {
+              wsRows = Object.entries(table)
+                .map(([, w]) => ({ path: String(w?.path ?? ''), title: String(w?.title ?? ''), sessions: Array.isArray(w?.sessionIds) ? w.sessionIds.length : 0 }))
+                .filter((w) => w.path)
+            }
+          } catch { /* 没有就走 textarea 兜底 */ }
+        }
+        st.workspaces = wsRows
+        return send(res, 200, st)
       }],
 
       ['/config', async (req, res) => {
@@ -539,6 +677,35 @@ export function apply(ctx, baseConfig = {}) {
           overrides: result.overrides,
         })
       }],
+
+      ['/selftest', async (req, res) => {
+        if (req.method !== 'POST') return send(res, 405, { ok: false, error: '只接受 POST' })
+        // 设置页四步向导的「测试连接」：用表单里填的地址 + token 现场连一次
+        // OneBot（get_login_info），试的是还没保存的值。token 框留空 = 用已配好的。
+        const t0 = Date.now()
+        try {
+          const text = await readBody(req)
+          let body = {}
+          try { body = text ? JSON.parse(text) : {} } catch { body = {} }
+          const httpUrl = String(body.onebotHttp ?? cfg.onebotHttp ?? '').trim() || 'http://127.0.0.1:3000'
+          const newToken = String(body.httpToken ?? '').trim()
+          const httpToken = newToken || String(cfg.httpToken ?? '')
+          const probe = new OnebotClient({ httpUrl, httpToken, log: () => {} })
+          const out = await probe.call('get_login_info')
+          const d = out && typeof out === 'object' && 'data' in out ? out.data : out
+          return send(res, 200, {
+            ok: true,
+            ms: Date.now() - t0,
+            selfUin: String(d?.user_id ?? ''),
+            nickname: String(d?.nickname ?? ''),
+            testedUrl: httpUrl,
+            usedSavedToken: !newToken && Boolean(httpToken),
+            note: `连上了：${d?.nickname ?? '?'}（QQ ${d?.user_id ?? '?'}）`,
+          })
+        } catch (err) {
+          return send(res, 200, { ok: false, ms: Date.now() - t0, note: `没连上：${String(err?.message ?? err).slice(0, 200)}` })
+        }
+      }],
     ]
 
     ctx.effect(() => {
@@ -573,7 +740,7 @@ export function apply(ctx, baseConfig = {}) {
  * 桥芯：收（handleOnebotEvent）→ 递（prompt）→ 认/回（onSessionEvent）。
  * 单独拆出来是为了冒烟能不开 WS 就把整条链走一遍。
  */
-/* ---------- 群 @ 递话带上下文（小鱼 2026-11-07 的提法：群里的消息要联系群里的上下文回） ---------- */
+/* ---------- 群 @ 递话带上下文（猫羽雫 2026-11-07 的提法：群里的消息要联系群里的上下文回） ---------- */
 
 const GROUP_CONTEXT_LINES = 10 // 带几句就够——上下文是添头，塞多了反而把会话灌乱
 const GROUP_CONTEXT_CHARS = 800
@@ -649,7 +816,7 @@ export async function groupContextLive(onebot, ev) {
   }
 }
 
-export function createBridge({ cfg, log = () => {}, sessionController, seenRecently = () => false, homeDir = null, pendingFile = null, messageLog = null, photosDir = null, photosOk = false, stickerDir = null, stickersOk = false }) {
+export function createBridge({ cfg, log = () => {}, sessionController, livenessBox = null, seenRecently = () => false, homeDir = null, pendingFile = null, messageLog = null, photosDir = null, photosOk = false, stickerDir = null, stickersOk = false }) {
   const prefix = String(cfg.promptPrefix ?? '【QQ】')
   // 表情库索引（v0.8.0）：启动时读一次 manifest.jsonl；库变了可以 reloadStickers() 重读。
   let stickerIndex = stickersOk ? loadStickers(stickerDir, { log }) : { byName: new Map(), list: [] }
@@ -698,7 +865,7 @@ export function createBridge({ cfg, log = () => {}, sessionController, seenRecen
   // 挂起的精确认领（2026-11-05 串台事故的根治）：turn/end 只走「对得上号」的
   // 路，不按先后盲取（盲取把群答复塞进过私信）。
   // 2026-11-10 v0.8.7 改「回话资格队」：旧 primedKeys 是纯键队列，GUI 轮/环境轮
-  // 的 assistant 首步也会 shift 走一条 —— 群友甲 16:14 点名的扩展榜挂起就是这么被
+  // 的 assistant 首步也会 shift 走一条 —— 南宫 16:14 点名的扩展榜挂起就是这么被
   // 中间轮吃掉又作废的。owed = 「有句话还没回」的资格名单：只有资格在，认领才
   // 发生；没资格的转（GUI 小结、环境更新、没认上号的）一个挂起都碰不到。
   const owedReplies = []
@@ -747,7 +914,7 @@ export function createBridge({ cfg, log = () => {}, sessionController, seenRecen
   }
   // 这一转带没带我们的递话（user/message echo）：带的才许把认领到的挂起发出去 ——
   // GUI 打字/环境更新开的转没带 echo，认领了也只许放回（2026-11-10 真事：GUI
-  // 轮的「干活的小结」差点当回话发进她私聊；群友甲的扩展榜挂起被中间轮吃掉）。
+  // 轮的「干活的小结」差点当回话发进她私聊；南宫的扩展榜挂起被中间轮吃掉）。
   let sawPrompt = false
   // 戳一戳的回音：同一人一分钟内只戳回去一次，防连戳刷屏。
   const pokeBackAt = new Map()
@@ -845,6 +1012,7 @@ export function createBridge({ cfg, log = () => {}, sessionController, seenRecen
       }
     }
   })
+  if (livenessBox) livenessBox.current = onebot
 
   /**
    * 发消息段（文字 + 图片）。协议端不吃本地路径时，转 base64:// 再试一次。
@@ -1000,6 +1168,33 @@ export function createBridge({ cfg, log = () => {}, sessionController, seenRecen
                 atMe: false
               })
             }
+          }
+        }
+      }
+      // 撤回登记（notice/group_recall + friend_recall）：只记账，不改消息流里已有的行。
+      // 原文落过盘就还在册子里，凭 message_id 能对上（她 2026-11-15 晚想看撤回了啥）。
+      if (ev.post_type === 'notice' && (ev.notice_type === 'group_recall' || ev.notice_type === 'friend_recall')) {
+        const isGroup = ev.notice_type === 'group_recall'
+        const gid = String(ev.group_id ?? '')
+        const uid = String(ev.user_id ?? '')
+        const operator = String(ev.operator_id ?? ev.user_id ?? '')
+        const rmid = String(ev.message_id ?? '')
+        const allowed = isGroup
+          ? (Array.isArray(cfg.allowGroups) ? cfg.allowGroups.map((x) => String(x)) : []).includes(gid)
+          : (Array.isArray(cfg.allowUsers) ? cfg.allowUsers.map((x) => String(x)) : []).includes(uid)
+        if (allowed) {
+          log(`撤回登记：${isGroup ? `群 ${gid}` : `私聊 ${uid}`} · 原发言 ${uid} · 操作者 ${operator} · mid ${rmid}`)
+          if (messageLog) {
+            messageLog.note({
+              at: Date.now(),
+              chatType: isGroup ? 'group' : 'private',
+              ...(isGroup ? { groupId: gid } : {}),
+              userId: uid,
+              nickname: '',
+              text: `[撤回] 一条消息被撤回（原发言 ${uid} · 操作者 ${operator}）`,
+              mid: `recall-${rmid}`,
+              atMe: false
+            })
           }
         }
       }
@@ -1159,6 +1354,61 @@ export function createBridge({ cfg, log = () => {}, sessionController, seenRecen
     }
   }
 
+  /** 公共发送路（v0.9.1 从 turn/end 收尾块里抽出来）：[发图:…]/[表情:…] 拆成图片段，
+   *  先说话再给图（图单独一条）。群发还是私发、发给谁，由调用方定 —— 串台改道
+   *  （发群）和正常回话（发挂起对应的门）走同一条路，行为才一致。 */
+  function deliver(toGroup, groupId, userId, raw) {
+    const dest = toGroup ? `群 ${groupId}` : userId
+    // 照片三件套（v0.7.0）：[发图:xxx] 拆出来变图片段，文字里不留痕
+    const parsed = parsePhotoMarkers(raw)
+    // 表情包标记（v0.8.0）：[表情:名字] 按名字查表情库，查得到就变图片段
+    const stickerParsed = parseStickerMarkers(parsed.text, stickerIndex)
+    const photos = parsed.photos
+    // 两边的图合起来：先说话，再给图（挂在最后一段气泡上）
+    const images = [...photos, ...stickerParsed.stickers.map((s) => s.path)]
+    // 库里没有的名字不静默吞掉 —— 说出来（她写那个名字是想发图的）
+    let body = stickerParsed.text
+    if (stickerParsed.missing.length) {
+      const note = missingStickerText(stickerParsed.missing)
+      body = body ? `${body} ${note}` : note
+      for (const name of stickerParsed.missing) log(`表情库里没有「${name}」 —— 原样说出去`)
+    }
+    const rawBubbles = splitBubbles(body, { maxBubbles: 8 })
+      .map((line) => clampReply(line, cfg.replyMaxChars))
+      .filter(Boolean)
+    // 自言自语不外发（v0.9.2）：整条被括号包住的是干活的笔记，只留日志不留嘴
+    const bubbles = []
+    for (const b of rawBubbles) {
+      if (isSelfTalkBubble(b)) {
+        log(`自言自语不外发 → ${dest}：${b.slice(0, 60)}${b.length > 60 ? '…' : ''}`)
+        continue
+      }
+      bubbles.push(b)
+    }
+    if (!bubbles.length && !images.length) return
+    void (async () => {
+      for (let i = 0; i < bubbles.length; i++) {
+        try {
+          await sendSegments(toGroup ? 'group' : 'private', toGroup ? groupId : userId, toSegments(bubbles[i], []))
+          log(`回话(${i + 1}/${bubbles.length}) 已发 → ${dest}：${bubbles[i].slice(0, 60)}${bubbles[i].length > 60 ? '…' : ''}`)
+        } catch (err) {
+          log(`回话发送失败 → ${dest}：${err?.message ?? err}`)
+        }
+        if (i < bubbles.length - 1 || images.length) await new Promise((ok) => setTimeout(ok, 250))
+      }
+      // 图单独一条发（她 2026-11-08 定的：表情包不跟回的字挤在一条里；照片同理，
+      // 先说话、再给图，但是两条）。只有图没字时这里就是唯一那条。
+      if (images.length) {
+        try {
+          await sendSegments(toGroup ? 'group' : 'private', toGroup ? groupId : userId, toSegments('', images))
+          log(`发图已发 → ${dest}：${images.length} 张（单独一条）`)
+        } catch (err) {
+          log(`发图失败 → ${dest}：${err?.message ?? err}`)
+        }
+      }
+    })()
+  }
+
   function onSessionEvent(session, event) {
     try {
       if (disposed) return
@@ -1192,7 +1442,10 @@ export function createBridge({ cfg, log = () => {}, sessionController, seenRecen
             while (owedReplies.length > PRIMED_MAX) owedReplies.shift()
             log(`认下我们的递话（rpcId=${rpcId || '无'} turn=${turn ?? '未知'}）`)
           } else {
-            log(`递话没认上：挂起是空的或都已认领（turn=${turn ?? '未知'}）`)
+            // 防呆第二处（r_1e2nys 2026-11-11）：认不上也要留痕到能看出丢了什么 ——
+            // 已认下却没人领的挂起才是真会静默丢的，数目直接写出来。
+            const waiting = pending.primedWaitingCount()
+            log(`递话没认上：挂起=${pending.size}${waiting ? `（其中 ${waiting} 条已认下却没人领，回话要静默丢，等侧门补）` : ''} turn=${turn ?? '未知'}`)
           }
         } else {
           log(`不是我们的递话（开头=「${text.slice(0, 24)}」）`)
@@ -1215,7 +1468,7 @@ export function createBridge({ cfg, log = () => {}, sessionController, seenRecen
         // 首步认领（v0.8.7 资格闸）：这一转若有回话资格（我们递话时发过），
         // 把队头那条记到这一转名下；后面再 prime 的是排队里的下一条，不抢。
         // 没资格就不认 —— GUI 轮、环境轮、没认上号的转，一个挂起都碰不到
-        // （2026-11-10 真事：群友甲扩展榜的挂起被中间轮首步盲认领走又作废）。
+        // （2026-11-10 真事：南宫扩展榜的挂起被中间轮首步盲认领走又作废）。
         if (!turnPendingMap.has(turn) && owedReplies.length) claimOwed(turn)
         const text = assistantText(data.message)
         if (text) {
@@ -1285,7 +1538,7 @@ export function createBridge({ cfg, log = () => {}, sessionController, seenRecen
           // 挂起被这一轮领走了，但这一轮没人话（只有工具步）：
           // v0.8.7 不再没收 —— 放回队首并重新给资格，等真正的回话轮来领
           // （下一轮真要发，还得过群点名闸/串台闸，不会发错门）。2026-11-10
-          // 真事：中间轮把群友甲 16:14 点名的挂起领走又作废，扩展榜就没发进群。
+          // 真事：中间轮把南宫 16:14 点名的挂起领走又作废，扩展榜就没发进群。
           pending.revive(r)
           reOwe(r.key, true)
           log(`这轮没有人话（只有工具步），回话作废 → 挂起放回队首（${r.meta && r.meta.chatType === 'group' ? `群 ${r.meta.groupId}` : r.userId}）`)
@@ -1318,60 +1571,35 @@ export function createBridge({ cfg, log = () => {}, sessionController, seenRecen
           }
         } else {
           // 串台闸（2026-11-05 真串过：几条消息排队时兜底取错挂起，把给群里
-          // 的答复发进了私信）。只要这轮任何一段拆出点名的气泡（@ 开头），它
-          // 就是群答复 —— 挂起却是私聊的，对不上号，宁可不发也不发错门。
-          // （v0.8.8 起与点名闸同口径：拆气泡认 @，过程话开头不再漏判。）
-          const hasGroupAnswer = Boolean(groupReplyText(texts))
-          if (hasGroupAnswer) {
-            // 串台不放回（v0.8.7 定案）：这轮的正文是对着别的门写的（我自己的
-            // 纪律问题）。放回资格队会让它永远挡在队头、每个私聊轮都被它串台
-            // 一遍（毒丸）。话由我用侧门自己补（2026-11-05/11-10 都这么办的）。
-            log(`串台拦截：这轮攒的是群答复（@ 开头），挂起却是私聊的 —— 拦下不发，挂起作废（私聊的欠账我用侧门补）`)
-            return
+          // 的答复发进了私信）。v0.8.8 起与点名闸同口径：拆气泡认 @。
+          // v0.9.1 改道，不再整轮连坐 —— 2026-11-11 真事：turn 647 私聊挂起的
+          // 轮里攒出了 @ 群答复（判词），旧闸整轮拦没：群答复丢了、她的话也
+          // 连坐作废。现在：①队里恰有一条等着回的群挂起 → 群答复改道发那个
+          // 群；②没有 → 群答复原样记进日志，等侧门补。她的话（@ 前的正文）
+          // 两种情况都照发；这轮真没对她说的，挂起照旧作废（话由侧门补）。
+          const groupAnswer = groupReplyText(texts)
+          if (groupAnswer.trim()) {
+            const g = pending.takeWaitingGroup(Date.now())
+            if (g) {
+              log(`串台改道：这轮攒着群答复（@ 开头），挂起是私聊的 → 群答复改道发群 ${g.meta.groupId}（v0.9.1）`)
+              deliver(true, g.meta.groupId, g.userId, groupAnswer)
+            } else {
+              log(`串台留存：这轮攒着群答复但没有等着回的群挂起，群答复先记在日志里等侧门补：\n${groupAnswer}`)
+            }
+            const prose = privateReplyText(texts)
+            if (!prose.trim()) {
+              // 这轮没有要对她说的：挂起照旧作废（串台不放回的毒丸定案不变，
+              // r_1olwjlv；话由我用侧门自己补——2026-11-11 的判词就是这么补的）。
+              log(`串台轮里没有对她说的正文，私聊挂起作废（${r.userId}）`)
+              return
+            }
+            text = prose
+          } else {
+            text = texts[texts.length - 1] ?? ''
           }
-          text = texts[texts.length - 1] ?? ''
         }
         if (!text.trim()) return
-        // 照片三件套（v0.7.0）：[发图:xxx] 拆出来变图片段，文字里不留痕
-        const parsed = parsePhotoMarkers(text)
-        // 表情包标记（v0.8.0）：[表情:名字] 按名字查表情库，查得到就变图片段
-        const stickerParsed = parseStickerMarkers(parsed.text, stickerIndex)
-        const photos = parsed.photos
-        // 两边的图合起来：先说话，再给图（挂在最后一段气泡上）
-        const images = [...photos, ...stickerParsed.stickers.map((s) => s.path)]
-        // 库里没有的名字不静默吞掉 —— 说出来（她写那个名字是想发图的）
-        let body = stickerParsed.text
-        if (stickerParsed.missing.length) {
-          const note = missingStickerText(stickerParsed.missing)
-          body = body ? `${body} ${note}` : note
-          for (const name of stickerParsed.missing) log(`表情库里没有「${name}」 —— 原样说出去`)
-        }
-        const dest = toGroup ? `群 ${r.meta.groupId}` : r.userId
-        const bubbles = splitBubbles(body, { maxBubbles: 8 })
-          .map((line) => clampReply(line, cfg.replyMaxChars))
-          .filter(Boolean)
-        if (!bubbles.length && !images.length) return
-        void (async () => {
-          for (let i = 0; i < bubbles.length; i++) {
-            try {
-              await sendSegments(toGroup ? 'group' : 'private', toGroup ? r.meta.groupId : r.userId, toSegments(bubbles[i], []))
-              log(`回话(${i + 1}/${bubbles.length}) 已发 → ${dest}：${bubbles[i].slice(0, 60)}${bubbles[i].length > 60 ? '…' : ''}`)
-            } catch (err) {
-              log(`回话发送失败 → ${dest}：${err?.message ?? err}`)
-            }
-            if (i < bubbles.length - 1 || images.length) await new Promise((ok) => setTimeout(ok, 250))
-          }
-          // 图单独一条发（她 2026-11-08 定的：表情包不跟回的字挤在一条里；照片同理，
-          // 先说话、再给图，但是两条）。只有图没字时这里就是唯一那条。
-          if (images.length) {
-            try {
-              await sendSegments(toGroup ? 'group' : 'private', toGroup ? r.meta.groupId : r.userId, toSegments('', images))
-              log(`发图已发 → ${dest}：${images.length} 张（单独一条）`)
-            } catch (err) {
-              log(`发图失败 → ${dest}：${err?.message ?? err}`)
-            }
-          }
-        })()
+        deliver(toGroup, r.meta?.groupId ?? '', r.userId, text)
       }
     } catch (err) {
       log(`处理会话事件出错：${err?.message ?? err}`)

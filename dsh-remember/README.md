@@ -201,6 +201,8 @@ dsh-body 那边每发生一件事就往 `DSH 安装目录/.dsh\.dsh-body\body-ev
 **副本会裁旧，源头不动。** `fastMaxEvents` 同时是索引和副本的条数上限：抄完一批之后
 如果副本超过上限，只留最新的那些行（整本重写，tmp + rename），源文件一个字节不碰 ——
 它是身体家的原始账，抄本才是可以再生的那本。`fastMaxEvents: 0` 是「不设上限」，不裁。
+裁掉的旧事件从索引里沉下去、副本里也没有了 —— 想翻旧事得把游标重置（删
+`fast.cursor.json`）从源头整本重抄；这一点跟意图层不一样（意图副本保底两千行）。
 
 **抄进来的不是记忆节点。** 节点代表我的理解、带我写的分量、要参加开头的竞争；
 秒级的事只有发生的时间，没有分量。所以它只做到三件事：
@@ -458,6 +460,9 @@ dsh-body / dsh-reach 同款：宿主挂两条 HTTP 路由，浏览器半边 `cli
 `active` 是活跃总数（可以超过上限），`list` 才是真正会挂进开头的那几条（不超过 `limit`）。
 
 两条都过 `connection.requestRejection`（所以从浏览器直接开是 403，只有面板里能读）。
+栅栏是 **fail-closed**：连接服务不在或守卫抛错时回 503 拒绝 —— 宁可这会儿面板打不开，
+不能没有栅栏（2026-11-15 审查改的）。账本读不出能认的账时（`memory.json` 损坏/形状不对），
+status 顶层的 `ledger.broken` 会亮红灯、`ledger.backupOk` 说明原文有没有滚进 `.bak`。
 
 可改的键：`enabled`、`targetRoot`、`allowRoots`、`denyRoots`、`injectLimit`、`openLimit`、
 `maxChars`、`sectionOrder`、`maxTextLength`、`selfEnabled`、`selfSectionOrder`、
@@ -522,8 +527,9 @@ lastWakeAt, lastText }`：`beats` 是心跳拍数，`lastWakeAt`／`lastText` �
 ## 谁能往这本账里写
 
 `allowRoots` 是名单；名单空但设了 `targetRoot` 时按 `targetRoot` 收窄；两个都空才是
-「哪条会话都可以」。默认配置里 `targetRoot` 会指向我自己的工作区 —— **别的窗口不该
-顺手把话写进我的账本** —— 防的就是这件事：账本只认名单上的窗口。
+「哪条会话都可以」。**代码里的默认就是两个都空（= 谁都能写）** —— 装好之后第一件事
+就是把 `targetRoot` 写成你自己的工作区（本机部署的 config.json 里已经写了），
+**别的窗口不该顺手把话写进我的账本**。账本只认名单上的窗口。
 
 ## 隔离：哪些目录完全碰不到这本账
 

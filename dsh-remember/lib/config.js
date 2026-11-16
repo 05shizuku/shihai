@@ -24,6 +24,10 @@ export const EDITABLE = {
   selfEnabled: 'boolean',
   selfSectionOrder: 'number',
   selfMaxChars: 'number',
+  /** 「还没定的」段：doubt（还没认下的我）+ open（没结的事）合成一个摊位（饭桶②） */
+  unsettledEnabled: 'boolean',
+  unsettledSectionOrder: 'number',
+  unsettledMaxChars: 'number',
   /** 习惯／快通路 */
   habitEnabled: 'boolean',
   habitSectionOrder: 'number',
@@ -112,6 +116,8 @@ function inRange(key, value) {
     recallItemMax: [100, 4000],
     selfSectionOrder: [1000, 9999],
     selfMaxChars: [80, 2000],
+    unsettledSectionOrder: [1000, 9999],
+    unsettledMaxChars: [80, 2000],
     habitSectionOrder: [1000, 9999],
     habitMaxChars: [80, 2000],
     habitLimit: [0, 10],

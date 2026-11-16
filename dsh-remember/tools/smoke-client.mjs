@@ -71,7 +71,7 @@ ok(typeof mod.apply === 'function', 'exports.apply 是函数')
 ok(Array.isArray(mod.inject) && mod.inject.includes('slots'), 'exports.inject 里带 slots')
 
 // ---------------------------------------------------------------- 注册 slot
-let registered = null
+const registered = []
 let slotName = ''
 const fakeCtx = {
   slots: {
@@ -80,19 +80,25 @@ const fakeCtx = {
       return fn()
     },
     register: (opts, component) => {
-      registered = { slot: slotName, opts, component }
+      registered.push({ slot: slotName, opts, component })
       return () => {}
     },
   },
   effect: (fn) => fn(),
 }
 mod.apply(fakeCtx)
-ok(registered?.slot === 'settings.section', '注册进 settings.section')
-ok(registered?.opts?.name === 'settings.section', 'slot 名是 settings.section')
-ok(registered?.opts?.id === 'dsh-remember', 'slot id 是 dsh-remember')
-ok(registered?.opts?.order === 9.6, 'slot order 是 9.6（避开 bili 的 9 和 reach 的 9.5）')
-ok(registered?.opts?.label?.() === '记得', "slot label 是「记得」")
-ok(registered?.component === mod.RememberSection, 'slot 组件就是 RememberSection')
+const rememberSlot = registered.find((r) => r.opts?.id === 'dsh-remember')
+const hubSlot = registered.find((r) => r.opts?.id === 'dsh-shihai-hub')
+ok(rememberSlot?.slot === 'settings.section', '注册进 settings.section')
+ok(rememberSlot?.opts?.name === 'settings.section', 'slot 名是 settings.section')
+ok(rememberSlot?.opts?.id === 'dsh-remember', 'slot id 是 dsh-remember')
+ok(rememberSlot?.opts?.order === 9.6, 'slot order 是 9.6（避开 bili 的 9 和 reach 的 9.5）')
+ok(rememberSlot?.opts?.label?.() === '记得', "slot label 是「记得」")
+ok(rememberSlot?.component === mod.RememberSection, 'slot 组件就是 RememberSection')
+ok(registered.length === 2, 'apply 注册了两个槽（记得 + 识海总控）')
+ok(hubSlot?.slot === 'settings.section' && hubSlot?.opts?.order === 9.0, '总控槽 order 是 9.0（排在「记得」前面）')
+ok(hubSlot?.opts?.label?.() === '识海', "总控槽 label 是「识海」")
+ok(hubSlot?.component === mod.HubSection, '总控槽组件就是 HubSection')
 
 // ---------------------------------------------------------------- 表单
 const status = {
@@ -173,15 +179,15 @@ const status = {
   sealed: [],
   rawLines: 1,
   workspaces: [
-    { id: 'w1', path: 'E:\\示例\\Plugin', title: 'Plugin', sessions: 2, isolated: false },
-    { id: 'w2', path: 'E:\\示例\\dsh-fish\\home', title: '示例的家', sessions: 3, isolated: true },
+    { id: 'w1', path: 'E:\\大肥鱼\\Plugin', title: 'Plugin', sessions: 2, isolated: false },
+    { id: 'w2', path: 'E:\\大肥鱼\\dsh-fish\\home', title: '大肥鱼的家', sessions: 3, isolated: true },
   ],
   config: {
     effective: {
       enabled: true,
-      targetRoot: 'E:\\示例\\Plugin',
-      allowRoots: ['E:\\示例\\Plugin'],
-      denyRoots: ['E:\\示例\\dsh-fish\\home'],
+      targetRoot: 'E:\\大肥鱼\\Plugin',
+      allowRoots: ['E:\\大肥鱼\\Plugin'],
+      denyRoots: ['E:\\大肥鱼\\dsh-fish\\home'],
       injectLimit: 3,
       openLimit: 2,
       maxChars: 900,
@@ -224,8 +230,8 @@ const status = {
 
 const form = mod.formFrom(status)
 ok(form.enabled === true, 'formFrom: enabled')
-ok(form.targetRoot === 'E:\\示例\\Plugin', 'formFrom: targetRoot')
-ok(form.allowRoots === 'E:\\示例\\Plugin', 'formFrom: allowRoots 一行一个')
+ok(form.targetRoot === 'E:\\大肥鱼\\Plugin', 'formFrom: targetRoot')
+ok(form.allowRoots === 'E:\\大肥鱼\\Plugin', 'formFrom: allowRoots 一行一个')
 ok(form.injectLimit === '3' && form.openLimit === '2', 'formFrom: 数字变字符串')
 
 ok(form.selfEnabled === true && form.selfSectionOrder === '8660' && form.selfMaxChars === '400', 'formFrom: 自我层那三个键也读得到')
@@ -236,7 +242,7 @@ ok(form.curiosityEnabled === true && form.curiositySectionOrder === '8670' && fo
 
 const patch = mod.formToPatch(form)
 ok(patch.enabled === true, 'formToPatch: enabled')
-ok(patch.targetRoot === 'E:\\示例\\Plugin', 'formToPatch: targetRoot')
+ok(patch.targetRoot === 'E:\\大肥鱼\\Plugin', 'formToPatch: targetRoot')
 ok(Array.isArray(patch.allowRoots) && patch.allowRoots.length === 1, 'formToPatch: allowRoots 变数组')
 ok(patch.injectLimit === '3' && patch.maxChars === '900', 'formToPatch: 数字还是字符串（服务端再校验）')
 ok(patch.selfEnabled === true && patch.selfSectionOrder === '8660', 'formToPatch: 自我层跟着一起提')
@@ -265,13 +271,13 @@ ok(fcounts.source.endsWith('body-events.jsonl') && fcounts.enabled === true, 'fa
 ok(mod.fastRows({}).length === 0 && mod.fastRows({ fast: { recent: 'x' } }).length === 0, 'fastRows: 没有快层数据时是空数组')
 ok(mod.fastCounts({}).total === 0 && mod.fastCounts({}).pending === 0, 'fastCounts: 没有快层数据时都是 0')
 
-ok(form.denyRoots === 'E:\\示例\\dsh-fish\\home', 'formFrom: denyRoots 一行一个')
+ok(form.denyRoots === 'E:\\大肥鱼\\dsh-fish\\home', 'formFrom: denyRoots 一行一个')
 ok(Array.isArray(patch.denyRoots) && patch.denyRoots.length === 1, 'formToPatch: denyRoots 变数组')
-ok(JSON.stringify(mod.rootsOf(form)) === JSON.stringify(['E:\\示例\\dsh-fish\\home']), 'rootsOf: 读出隔离目录')
+ok(JSON.stringify(mod.rootsOf(form)) === JSON.stringify(['E:\\大肥鱼\\dsh-fish\\home']), 'rootsOf: 读出隔离目录')
 ok(mod.rootsOf({ denyRoots: '' }).length === 0, 'rootsOf: 空表单 = 没有隔离目录')
 const added = mod.toggleRoot(form.denyRoots, 'D:\\work\\测试')
 ok(added.split('\n').length === 2 && added.endsWith('D:\\work\\测试'), 'toggleRoot: 没勾的路径会加上')
-const removed = mod.toggleRoot(added, 'E:\\示例\\dsh-fish\\home')
+const removed = mod.toggleRoot(added, 'E:\\大肥鱼\\dsh-fish\\home')
 ok(removed === 'D:\\work\\测试', 'toggleRoot: 再点一次就取消（不是只听勾）')
 ok(mod.toggleRoot('', 'E:\\a').length > 0, 'toggleRoot: 从空开始也能加')
 
@@ -292,6 +298,53 @@ const text = flat(tree)
 ok(text.includes('记得'), '初渲染里有「记得」')
 ok(text.includes('正在读…'), '还没有数据时显示「正在读…」')
 
+// ---------------------------------------------------------------- 识海总控（纯函数）
+const hubStatuses = {
+  remember: { j: { ok: true, plugin: { version: '0.19.0' }, summary: { total: 42 } } },
+  bridge: { j: { ok: true, plugin: { version: '0.9.1' }, running: true } },
+  body: { error: 'HTTP 503' },
+}
+const pills = mod.hubPills(hubStatuses)
+ok(pills.length === 3, 'hubPills: 三盏灯')
+ok(pills[0].ok === true && pills[0].note === '账本 42 条', 'hubPills: 记忆灯看账本条数')
+ok(pills[1].ok === true && pills[1].note === '桥接着', 'hubPills: 桥灯看 running')
+ok(pills[2].ok === false && pills[2].note === '没起来（HTTP 503）', 'hubPills: 没起来的灯不连坐，error 只取前 48 字')
+ok(mod.hubPills({ bridge: { j: { ok: true, running: false } } })[1].note === '桥没起', 'hubPills: 桥没起也照说')
+ok(mod.hubPills({})[0].ok === false && mod.hubPills({})[0].note === '没起来', 'hubPills: 什么都没有=没起来，不炸')
+
+const hubEff = {
+  enabled: true,
+  httpToken: '已配置（不回显）',
+  meals: [{ at: 1 }],
+  allowRoots: ['E:\\a', 'E:\\b'],
+  replyMaxChars: 900,
+  staleSeconds: 3600,
+}
+const { rows: hubR, hidden: hubHidden } = mod.hubRows(hubEff, { staleSeconds: 300 }, null)
+ok(hubR.length === 4 && hubHidden === 2, 'hubRows: 密钥和复杂值不搬进来（隐藏 2 个）')
+ok(hubR.find((r) => r.key === 'allowRoots')?.type === 'list', 'hubRows: 纯标量数组认成 list')
+ok(hubR.find((r) => r.key === 'staleSeconds')?.overridden === true, 'hubRows: overrides 里改过的标记「已改」')
+ok(hubR.find((r) => r.key === 'enabled')?.overridden === false, 'hubRows: 没改过的不标')
+const hubForm = mod.hubFormFrom(hubR)
+ok(hubForm.allowRoots === 'E:\\a，E:\\b', 'hubFormFrom: 列表摊平成逗号串')
+ok(hubForm.enabled === true && hubForm.replyMaxChars === 900, 'hubFormFrom: 布尔/数字原样')
+const hubP = mod.hubPatch(hubR, { ...hubForm, enabled: false, replyMaxChars: '1200', allowRoots: 'E:\\a、E:\\c、' })
+ok(hubP.enabled === false, 'hubPatch: 布尔翻转收进 patch')
+ok(hubP.replyMaxChars === 1200, 'hubPatch: 字符串数字变回数字')
+ok(JSON.stringify(hubP.allowRoots) === JSON.stringify(['E:\\a', 'E:\\c']), 'hubPatch: 顿号拆回去、尾巴空段丢掉')
+ok(hubP.staleSeconds === undefined, 'hubPatch: 没动的键不进 patch')
+ok(Object.keys(mod.hubPatch(hubR, hubForm)).length === 0, 'hubPatch: 原样表单 = 空 patch（没有改动）')
+
+// ---------------------------------------------------------------- 总控渲染（不炸 + 降级文案）
+hookSeed = [hubStatuses, {}, { remember: true }]
+hookCalls = 0
+const hubText = flat(mod.HubSection())
+ok(hubText.includes('识海总控'), '总控渲染出标题')
+ok(hubText.includes('状态灯每 5 秒自刷'), '总控渲染出状态灯行')
+ok(hubText.includes('没起来（HTTP 503）'), '身体的灯灰着并给出原因')
+ok(hubText.includes('正在读配置…'), '展开的记忆块还没读到配置时提示正在读')
+ok(!hubText.includes('保存（写回 识海记忆）'), '没读到配置时不画保存按钮（避免存空）')
+
 // ---------------------------------------------------------------- 有数据时的隔离卡
 const walk = (node, out = []) => {
   if (node == null || typeof node !== 'object') return out
@@ -307,7 +360,7 @@ const walk = (node, out = []) => {
 const withData = render([status, '', mod.formFrom(status), false, ''])
 const text2 = flat(withData)
 ok(text2.includes('隔离（这些工作区完全不碰这本账）'), '有数据时画出「隔离」那一块')
-ok(text2.includes('示例的家'), '隔离卡里列了「示例的家」这个工作区')
+ok(text2.includes('大肥鱼的家'), '隔离卡里列了「大肥鱼的家」这个工作区')
 ok(text2.includes('3 条会话'), '工作区旁边带上有几条会话')
 ok(text2.includes('隔离目录'), '还有一行可以直接写目录')
 
@@ -336,10 +389,10 @@ const labels = walk(withData).filter((n) => n.type === 'label')
 const pick = (needle) =>
   labels.find((n) => (n.children ?? []).some((c) => typeof c === 'string' && c.includes(needle)))
 const inputOf = (row) => (row?.children ?? []).find((c) => c && typeof c === 'object' && c.type === 'input')
-const fishRow = pick('示例的家')
+const fishRow = pick('大肥鱼的家')
 ok(!!fishRow && inputOf(fishRow)?.props?.type === 'checkbox', '工作区那一行是个复选框')
 ok(inputOf(fishRow)?.props?.checked === true, '已经在隔离名单里的工作区默认是勾上的')
-ok(inputOf(pick('Plugin（E:\\示例\\Plugin）'))?.props?.checked === false, '没在名单里的工作区是没勾的')
+ok(inputOf(pick('Plugin（E:\\大肥鱼\\Plugin）'))?.props?.checked === false, '没在名单里的工作区是没勾的')
 
 // ---------------------------------------------------------------- 习惯卡
 ok(text2.includes('习惯与快通路'), '有数据时画出「习惯与快通路」那一块')

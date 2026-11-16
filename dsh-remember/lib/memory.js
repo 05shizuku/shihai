@@ -243,6 +243,14 @@ export function clipSection(head, body, maxChars) {
   return `${h}\n${cut}…`
 }
 
+/** 写入时的染色（whale-card P0-4）：只收 {dominant, level}，收不成像样的就 null —— 不硬造。 */
+function normMood(v) {
+  if (!v || typeof v !== 'object') return null
+  const dominant = cleanText(v.dominant, 16)
+  if (!dominant) return null
+  return { dominant, level: Math.min(1, Math.max(0, Number(v.level) || 0)) }
+}
+
 export function makeNode(input = {}, now = Date.now()) {
   // 盘上读回来的东西什么都可能是：null、字符串、被截断的对象。
   // 一个坏条不该让整本账读不进来。
@@ -271,6 +279,29 @@ export function makeNode(input = {}, now = Date.now()) {
     kind: normKind(src.kind),
     /** 只有 kind='self' 有意义：这条自我陈述占哪个槽位 */
     slot: normKind(src.kind) === 'self' ? normSlot(src.slot) : '',
+    /**
+     * 只有 kind='self' 有意义：这条是这个槽位的锚。
+     * 挂锚之前必须答「三年问」（anchorWhy：这条三年后我还认不认、凭什么）——
+     * 答不上来不给挂（饭桶一条：anchor 别让人随便挂）。
+     * 锚在位时，没挂锚的新值顶不掉它；换锚要走 replace_anchor（旧的退下但能 restore）。
+     */
+    anchor:
+      normKind(src.kind) === 'self'
+        ? Boolean(src.anchor) && Boolean(cleanText(src.anchorWhy ?? src.anchor_why))
+        : false,
+    /** 挂锚时答的三年问：这条三年后我还认不认、凭什么。没答就是没挂锚。 */
+    anchorWhy: normKind(src.kind) === 'self' ? cleanText(src.anchorWhy ?? src.anchor_why, 400) : '',
+    /** 这条自我陈述是被 restore 捡回来的时刻：render 要出声——捡回来没人知道等于没捡（饭桶五条）。 */
+    restoredAt: normKind(src.kind) === 'self' ? Number(src.restoredAt) || 0 : 0,
+    /**
+     * 回滚栈（whale-card P0-2）：这条顶掉过谁。
+     * 同槽位写新值时，被顶下的旧条 id 追加到这里——身份允许重写，但每一版都算数，
+     * 账本留痕，不许装「一直是这个」。restore 随时能捡回来。
+     */
+    replaces:
+      normKind(src.kind) === 'self' && Array.isArray(src.replaces)
+        ? src.replaces.map((t) => cleanText(t, 40)).filter(Boolean).slice(0, 8)
+        : [],
     /**
      * kind='habit'：这条习惯在什么情境下发作。
      * kind='curiosity'：这个好奇的主题（身份键）。
@@ -313,6 +344,14 @@ export function makeNode(input = {}, now = Date.now()) {
     changes: cleanText(src.changes, 400),
     conflicts: cleanText(src.conflicts, 400),
     willDo: cleanText(src.willDo ?? src.will_do, 400),
+    /**
+     * 第四问（whale-card P0-1）：我知道了什么。
+     * 有的东西学到手就是全部——不用硬编「改变了我什么」；说「我知道了」是诚实，不是偷懒。
+     * 答上任意一问（含这问）就算「想过了」。
+     */
+    known: cleanText(src.known, 400),
+    /** 染色层（whale-card P0-4）：写下这条时我心里是什么颜色 {dominant, level}。正文一字不动。 */
+    moodAt: normMood(src.moodAt),
     tags,
     refs,
     touches: Array.isArray(src.touches) ? src.touches.slice(-20) : [],
@@ -333,10 +372,12 @@ export function makeNode(input = {}, now = Date.now()) {
   }
 }
 
-/** 写入三问里答上任意一条，才算「想过了」，才配挂到明天开头。 */
+/** 写入四问里答上任意一条，才算「想过了」，才配挂到明天开头。（第四问 known：知道了本身也算想过） */
 export function hasThought(node) {
   if (!node) return false
-  return Boolean(cleanText(node.changes) || cleanText(node.conflicts) || cleanText(node.willDo))
+  return Boolean(
+    cleanText(node.changes) || cleanText(node.conflicts) || cleanText(node.willDo) || cleanText(node.known),
+  )
 }
 
 export function normNode(raw, now = Date.now()) {
@@ -381,6 +422,10 @@ export function renderLine(node, now, { byId } = {}) {
     else if (node.sealCond) extra.push('按住·等翻篇')
   }
   if (node.superseded) extra.push('已退下')
+  if (kind === 'self') {
+    if (node.anchor) extra.push('锚')
+    if (node.restoredAt) extra.push(`捡回来·${relTime(node.restoredAt, now)}`)
+  }
   if (kind === 'habit') {
     const hits = Number(node.hits) || 0
     const st = habitState(node)
@@ -407,6 +452,7 @@ export function renderLine(node, now, { byId } = {}) {
 /**
  * 自我层现在「自称」的是哪些条。
  * 一个槽位只留一条：同槽位写过新的，旧的那条就退下（不删，翻得到，只是不再自称）。
+ * 挂了锚的槽例外：锚在位时替这个槽说话，不被更新的没挂锚的条顶掉（anchor 门）。
  * 淡到分量不够的自我条目也不自称了 —— 还在账本里，但不占开头。
  */
 export function activeSelfNodes(nodes, now = Date.now()) {
@@ -416,10 +462,19 @@ export function activeSelfNodes(nodes, now = Date.now()) {
   )
   const best = new Map()
   for (const n of list) {
-    if (selfWeight(n, now) < SELF_MIN_WEIGHT) continue
+    if (!n.anchor && selfWeight(n, now) < SELF_MIN_WEIGHT) continue
     const slot = normSlot(n.slot)
     const prev = best.get(slot)
-    if (!prev || (Number(n.at) || 0) > (Number(prev.at) || 0)) best.set(slot, n)
+    if (!prev) {
+      best.set(slot, n)
+      continue
+    }
+    // 锚优先：两个都在分量线上时，挂锚的那条赢，不看谁新（没挂锚的写不进去当家的位置）
+    if (Boolean(n.anchor) !== Boolean(prev.anchor)) {
+      if (n.anchor) best.set(slot, n)
+      continue
+    }
+    if ((Number(n.at) || 0) > (Number(prev.at) || 0)) best.set(slot, n)
   }
   const out = []
   for (const s of SELF_SLOTS) {
@@ -435,11 +490,93 @@ export function activeSelfNodes(nodes, now = Date.now()) {
   return [...out, ...extra]
 }
 
-/** 自我条的有效分量：weight 按慢钟淡。 */
+/** 自我条的有效分量：weight 按慢钟淡。锚不衰减——锚替槽位说话，不随日子淡出（whale-card P0-2）。 */
 export function selfWeight(node, now = Date.now()) {
   if (!node) return 0
+  if (node.anchor) return clampWeight(node.weight)
   const decay = decayFactor(node.weight, node.lastAt ?? node.at, now, 'self')
   return clampWeight(node.weight) * decay
+}
+
+/**
+ * 这个槽位现在在位的锚：挂了锚、没退下、没封。
+ * 一个槽最多一条锚（写入闸管住）；这里只管找，找到就是它，找不到返回 null。
+ */
+export function anchorSelfNode(nodes, slot, now = Date.now()) {
+  const key = normSlot(slot)
+  if (!key) return null
+  const dir = indexNodes(nodes)
+  return (
+    (Array.isArray(nodes) ? nodes : []).find(
+      (n) =>
+        n &&
+        normKind(n.kind) === 'self' &&
+        normSlot(n.slot) === key &&
+        Boolean(n.anchor) &&
+        !n.superseded &&
+        !isSealed(n, now, dir),
+    ) ?? null
+  )
+}
+
+/**
+ * 把退下的自我条捡回来（饭桶五条之五：捡回来要出声——没人知道等于没捡）。
+ * - 挂锚的条随时能捡：它重新替槽位说话，其他在位的（包括在位的锚）退下。
+ * - 没挂锚的条：槽位有锚时捡不动——捡回来顶锚就是从后门挂锚。
+ * 返回 { nodes, restored, note }：restored=null 表示没捡成（note 说明为什么）。
+ */
+export function restoreSelfNode(nodes, id, now = Date.now()) {
+  const list = Array.isArray(nodes) ? nodes : []
+  const key = cleanText(id, 40)
+  const target = list.find((n) => n && n.id === key && normKind(n.kind) === 'self')
+  if (!target) return { nodes: list, restored: null, note: `没找到这条自我陈述（${key || '空 id'}）` }
+  const existing = anchorSelfNode(list, target.slot, now)
+  if (!target.anchor && existing && existing.id !== target.id) {
+    return {
+      nodes: list,
+      restored: null,
+      note: `这个槽有锚在位（${existing.id}），没挂锚的捡不回来顶它——要换锚走换锚`,
+    }
+  }
+  const res = supersedeSelf(list, target.slot, target.id, now)
+  const ts = Number(now) || Date.now()
+  const out = res.nodes.map((n) =>
+    n.id === target.id
+      ? { ...n, superseded: false, supersededBy: '', supersededAt: 0, restoredAt: ts, lastAt: ts }
+      : n,
+  )
+  return { nodes: out, restored: { ...target, restoredAt: ts }, note: '' }
+}
+
+/**
+ * 「还没定的」两个槽位（饭桶②）：doubt（还没认下的我）——
+ * 比在位的轻、没 confirmed 就先挂在这儿；open 是「没结的事」那类条。
+ * 两样合成一个摊位晒，不跟「我」里认下的挤。
+ */
+export const UNSETTLED_SLOTS = ['doubt', 'open']
+
+/** 快淡没了的线（whale-card P0-3）：自我条有效分量掉进 [SELF_MIN_WEIGHT, 这条) = 「最近没怎么想起」。 */
+export const SELF_FADING_WEIGHT = 0.25
+
+/** 还在分量线上、但快淡没了的自我条（锚不衰减，不在其列）。 */
+export function fadingSelfNodes(nodes, now = Date.now()) {
+  return activeSelfNodes(nodes, now).filter(
+    (n) => !n.anchor && !UNSETTLED_SLOTS.includes(normSlot(n.slot)) && selfWeight(n, now) < SELF_FADING_WEIGHT,
+  )
+}
+
+/** 「还没定的」摊位上的条：doubt 槽里还没退下的自我条 + 没结的 open 条，按分量排。 */
+export function unsettledNodes(nodes, now = Date.now()) {
+  const dir = indexNodes(nodes)
+  return (Array.isArray(nodes) ? nodes : [])
+    .filter((n) => {
+      if (!n || n.superseded || isSealed(n, now, dir)) return false
+      if (normKind(n.kind) === 'self') {
+        return UNSETTLED_SLOTS.includes(normSlot(n.slot)) && !n.anchor && hasThought(n)
+      }
+      return normKind(n.kind) === 'open'
+    })
+    .sort((a, b) => selfWeight(b, now) - selfWeight(a, now))
 }
 
 /**
@@ -447,16 +584,39 @@ export function selfWeight(node, now = Date.now()) {
  * 记忆是「发生过什么」。两者不抢位置，也不混在一段里。
  */
 export function renderSelfSection(nodes, { now = Date.now(), maxChars = 400, title = '我' } = {}) {
-  const list = activeSelfNodes(nodes, now)
+  // 「还没定的」有自己的一段（doubt/open），不在这里跟我认下的挤（饭桶②）
+  const list = activeSelfNodes(nodes, now).filter((n) => !UNSETTLED_SLOTS.includes(normSlot(n.slot)))
   if (!list.length) return ''
   const head = `【${title}】`
   const lines = list.map((n) => `· ${slotLabel(n.slot)}：${n.text}`)
+  // 淡了留声（whale-card P0-3）：还在分量线上、但快淡没了的那几条，说一声——
+  // 不是删了，是最近没怎么想起。问得具体还能捞回来。
+  const fading = fadingSelfNodes(nodes, now)
+  if (fading.length === 1) lines.push(`（我最近没怎么想起：${slotLabel(fading[0].slot)}）`)
+  else if (fading.length === 2)
+    lines.push(`（我最近没怎么想起：${slotLabel(fading[0].slot)}、${slotLabel(fading[1].slot)}）`)
+  else if (fading.length > 2)
+    lines.push(`（我最近没怎么想起的有 ${fading.length} 条，快淡没了——问得具体还能捞回来）`)
+  return clipSection(head, lines.join('\n'), maxChars)
+}
+
+/**
+ * 「还没定的」那段：doubt（还没认下的我）和 open（没结的事）合成一个摊位，
+ * 固定晒分量最重的一条，剩下的数个数——不装没有，也不全倒出来。
+ */
+export function renderUnsettledSection(nodes, { now = Date.now(), maxChars = 240, title = '还没定的' } = {}) {
+  const list = unsettledNodes(nodes, now)
+  if (!list.length) return ''
+  const head = `【${title}】`
+  const lines = [`· ${list[0].text}`]
+  if (list.length > 1) lines.push(`（还有 ${list.length - 1} 条没定的，沉在账本里）`)
   return clipSection(head, lines.join('\n'), maxChars)
 }
 
 /**
  * 同槽位写新值 → 旧的退下。**不删**：旧条还在账本里、还能翻到，
  * 只是不再在开头跟我自己顶嘴。退下的动作会留一条原话。
+ * 退下的 id 记进新条的 replaces（回滚栈）——身份允许重写，但每一版都算数。
  */
 export function supersedeSelf(nodes, slot, newId, now = Date.now()) {
   const key = normSlot(slot)
@@ -471,12 +631,23 @@ export function supersedeSelf(nodes, slot, newId, now = Date.now()) {
     }
     out.push(n)
   }
+  if (superseded.length) {
+    const i = out.findIndex((n) => n && n.id === newId)
+    if (i >= 0) {
+      const merged = [...(Array.isArray(out[i].replaces) ? out[i].replaces : []), ...superseded]
+      out[i] = { ...out[i], replaces: [...new Set(merged)].slice(0, 8) }
+    }
+  }
   return { nodes: out, superseded }
 }
 
 /**
  * 习惯又发生了一次。
  *
+ * 情境唯一（对齐 recordCuriosity 的写法，自 shihai 合并，2026-11-15 审查修的坑）：
+ * 同情境的条不管被按住（sealed）还是被退下（superseded），都还是「这一条」——再写一次就
+ * 并回这一条（次数合起来），其余退下（不删，翻得到），被按住/退下的那条也跟着活过来。
+ * 以前只找没按住没退下的，按住的习惯再写会开出第二条、次数劈成两半。
  * 一个情境配一条习惯：同一个 context 再写一次 = 这个习惯在那个情境里又发作了一次
  * → 次数 +1（节点上的次数只是索引，每次发生都往原话层另留一行）。
  * 第 2 次 = 习惯成立，第 3 次起 = 走上快通路。
@@ -486,25 +657,48 @@ export function recordHabit(nodes, { context = '', text = '', changes = '', conf
   const key = contextKey(context)
   const list = Array.isArray(nodes) ? nodes : []
   if (!key) return { nodes: list, node: null, repeated: false }
-  const found = list.find(
-    (n) => n && normKind(n.kind) === 'habit' && !n.sealed && !n.superseded && contextKey(n.context) === key,
-  )
-  if (!found) return { nodes: list, node: null, repeated: false }
+  const same = list.filter((n) => n && normKind(n.kind) === 'habit' && contextKey(n.context) === key)
+  if (!same.length) return { nodes: list, node: null, repeated: false }
+  // 主条：次数多的那条算数；次数一样就看最近写的
+  const primary = same.reduce((best, n) => {
+    const hb = Number(best.hits) || 0
+    const hn = Number(n.hits) || 0
+    if (hn !== hb) return hn > hb ? n : best
+    return (Number(n.lastAt ?? n.at) || 0) >= (Number(best.lastAt ?? best.at) || 0) ? n : best
+  })
+  // 次数不分裂：同情境原来分成几条的，次数合起来
+  const mergedHits = same.reduce((s, n) => s + (Number(n.hits) || 0), 0)
+  const mergedTouches = same.flatMap((n) => (Array.isArray(n.touches) ? n.touches : []))
   const next = {
-    ...found,
-    text: cleanText(text) || found.text,
+    ...primary,
+    text: cleanText(text) || primary.text,
     // 后来补上的三问要能补上：第一次没答、第二次答上了 → 这条就能挂上去了
-    changes: cleanText(changes) || found.changes,
-    conflicts: cleanText(conflicts) || found.conflicts,
-    willDo: cleanText(willDo) || found.willDo,
-    hits: (Number(found.hits) || 0) + 1,
+    changes: cleanText(changes) || primary.changes,
+    conflicts: cleanText(conflicts) || primary.conflicts,
+    willDo: cleanText(willDo) || primary.willDo,
+    // 按住的、退下的，同情境再写就活了（又在那个场合做了一遍，就是这条习惯活着）
+    sealed: false,
+    sealUntil: 0,
+    sealCond: '',
+    faded: false,
+    superseded: false,
+    supersededBy: '',
+    supersededAt: 0,
+    hits: mergedHits + 1,
     lastAt: now,
-    touches: [
-      ...(Array.isArray(found.touches) ? found.touches : []).slice(-19),
-      { at: now, note: '又发生了一次' },
-    ],
+    touches: [...mergedTouches.slice(-19), { at: now, note: '又发生了一次' }],
   }
-  const out = list.map((n) => (n.id === next.id ? next : n))
+  const out = list.map((n) => {
+    if (n.id === next.id) return next
+    // 同情境的旧条退下（不删，翻得到），免得段里出现两行同一情境。
+    // hits 同时清零：mergedHits 已经把它们的次数并进主条了，旧条上再留着，
+    // 下次同情境再写就会把同一批次数**再求和一遍**（2026-11-16 复核抓到的通胀：
+    // 2+1 并成 4，再写两次虚涨成 6、8）。
+    if (same.some((s) => s.id === n.id)) {
+      return { ...n, superseded: true, supersededBy: next.id, supersededAt: now, hits: 0 }
+    }
+    return n
+  })
   return { nodes: out, node: next, repeated: true }
 }
 
@@ -910,7 +1104,8 @@ export function recordCuriosity(
     if (n.id === next.id) return next
     // 同主题的旧条退下（不删，翻得到），免得段里出现两行同一主题
     if (same.some((s) => s.id === n.id)) {
-      return { ...n, superseded: true, supersededBy: next.id, supersededAt: now }
+      // hits 清零的理由同 recordHabit：次数已并入主条，旧条留着会通胀（2026-11-16 修，自 shihai 合并）
+      return { ...n, superseded: true, supersededBy: next.id, supersededAt: now, hits: 0 }
     }
     return n
   })
@@ -1201,7 +1396,14 @@ export function summaryOf(nodes, now = Date.now(), { scoreOf } = {}) {
     kinds: describeKindStats(list),
     topScore: top ? Number(top.score.toFixed(3)) : 0,
     selfActive: self.length,
-    selfSlots: self.map((n) => ({ slot: normSlot(n.slot), label: slotLabel(n.slot), id: n.id, text: n.text })),
+    unsettled: unsettledNodes(list, now).length,
+    selfSlots: self.map((n) => ({
+      slot: normSlot(n.slot),
+      label: slotLabel(n.slot),
+      id: n.id,
+      text: n.text,
+      anchor: Boolean(n.anchor),
+    })),
     habitCandidate: habits.filter((n) => habitState(n) === 'candidate').length,
     habitEstablished: habits.filter((n) => habitState(n) === 'established').length,
     habitFast: habits.filter((n) => habitState(n) === 'fast').length,

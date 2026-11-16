@@ -88,6 +88,19 @@ window.__ModuleLoader__.load({
       ]))
     }
 
+    /** 折叠区：首屏只留最常用的，其余收进这里（跟「记得」页签同一个规矩）。 */
+    function foldSection(title, hint, open, onToggle, ...children) {
+      return h('div', { style: C.card },
+        h('div', { style: C.row },
+          h('button', { style: C.btn, onClick: onToggle }, `${open ? '▾' : '▸'} ${title}`),
+          hint ? h('span', { style: C.meta }, hint) : null,
+        ),
+        open
+          ? h('div', { style: { display: 'flex', flexDirection: 'column', gap: 14, marginTop: 8 } }, ...children.filter(Boolean))
+          : null,
+      )
+    }
+
     // ---------------------------------------------------------------- 配置表单
     /** 多行文本读成路径数组（换行 / 逗号 / 分号都算分隔，对齐 dsh-remember）。 */
     function splitPaths(v) {
@@ -149,14 +162,14 @@ window.__ModuleLoader__.load({
       const [busy, setBusy] = useState(false)
       const [note, setNote] = useState('')
 
-      const load = useCallback(async () => {
+      const load = useCallback(async (force) => {
         try {
           const r = await fetch(`${API}/status`, { headers: { accept: 'application/json' } })
           const j = await r.json().catch(() => ({}))
           if (!r.ok) throw new Error(j.error || `HTTP ${r.status}`)
           setStatus(j)
           setError('')
-          setForm((prev) => prev ?? formFrom(j))
+          setForm((prev) => (force ? formFrom(j) : (prev ?? formFrom(j))))
         } catch (err) {
           setError(`${err?.message ?? err}（插件可能还没重启，或者这一页没被信任栅栏放行）`)
         }
@@ -185,12 +198,32 @@ window.__ModuleLoader__.load({
             ? `有 ${rejected.length} 项没改成功：${rejected.map((x) => `${x.key}（${x.reason}）`).join('；')}`
             : `改了：${(j.accepted ?? []).join('、') || '（没有变化）'}。两秒内生效。`)
           await load()
+          try { window.dispatchEvent(new CustomEvent('dsh-shihai:config-changed', { detail: { plugin: 'body' } })) } catch { /* ignore */ }
         } catch (err) {
           setNote(`没改成：${err?.message ?? err}`)
         } finally {
           setBusy(false)
         }
       }, [form, load])
+
+      // 首屏折叠区（2026-11-14 小白改版，跟「记得」页签同款）
+      const [folds, setFolds] = useState({ adjust: false, observatory: false })
+      const toggleFold = useCallback((k) => setFolds((prev) => ({ ...prev, [k]: !prev[k] })), [])
+      const [test, setTest] = useState(null)
+      const [testBusy, setTestBusy] = useState(false)
+      const runSelfTest = useCallback(async () => {
+        setTestBusy(true)
+        setTest(null)
+        try {
+          const r = await fetch(`${API}/selftest`, { method: 'POST', headers: { accept: 'application/json' } })
+          const j = await r.json().catch(() => ({}))
+          setTest(j)
+        } catch (err) {
+          setTest({ ok: false, note: `没连上：${err?.message ?? err}` })
+        } finally {
+          setTestBusy(false)
+        }
+      }, [])
 
       const head = h('div', null,
         h('h2', { style: C.h2 }, '身体'),
@@ -215,6 +248,41 @@ window.__ModuleLoader__.load({
       const tp = status.topUp ?? {}
       const cfg = status.config?.effective ?? {}
       const tg = status.targets ?? {}
+
+      // 首屏健康卡：一句人话说清身体现状（小白第一眼只看这个）
+      const hbOk = hb.lastError == null && hb.ageMs != null && hb.ageMs <= (Number(hb.tickMs) || 300000) * 2
+      const healthCard = card('身体现在怎么样',
+        h('p', { style: { ...C.text, fontSize: 14.5 } },
+          hbOk
+            ? `● 心跳正常（每 ${fmtAge(hb.tickMs)} 一拍，上一拍 ${fmtAge(hb.ageMs)} 前）`
+            : hb.lastError
+              ? '● 心跳在报错（红字在下面）'
+              : '◐ 心跳还没落过地（刚起来？等一拍再看）'),
+        h('p', { style: C.sub },
+          `饿 ${num(rd.hunger, 0)}% · 精力 ${num(rd.energy, 0)}% · 心情 ${num((Number(rd.mood) || 0) + 50, 0)}% · 身体记在 ${status.plugin?.dataDir ?? '默认位置'}`),
+        hb.lastError ? h('p', { style: C.err }, `上次心跳出错：${hb.lastError}`) : null,
+        inj.lastError ? h('p', { style: C.err }, `注入出错：${inj.lastError}`) : null,
+      )
+
+      // 首屏快捷卡：加饭开关 + 测一下
+      const quickCard = card('最常用的两件事',
+        h('div', { style: C.row },
+          h('label', { style: { ...C.row, gap: 8, fontSize: 14 } },
+            h('input', { type: 'checkbox', checked: !!form?.topUpEnabled, onChange: (e) => setForm({ ...form, topUpEnabled: e.target.checked }) }),
+            '饭钱到线自动添饭'),
+          h('button', { style: C.btn, disabled: busy, onClick: save }, busy ? '保存中…' : '保存'),
+          note ? h('span', { style: C.ok }, note) : null,
+        ),
+        h('div', { style: C.row },
+          h('button', { style: C.btn, disabled: testBusy, onClick: runSelfTest }, testBusy ? '测着呢…' : '测一下：心跳和读写'),
+          test
+            ? (test.ok
+              ? h('span', { style: C.ok }, `✅ ${test.note ?? '都通'}（${test.ms ?? '—'} 毫秒）`)
+              : h('span', { style: C.err }, `❌ ${test.note ?? '自检没过'}`))
+            : h('span', { style: C.meta }, '按一下当场验证：心跳新鲜、数据目录写得进。'),
+        ),
+        h('p', { style: C.meta }, '其余配置都有默认值，不用动；要细调去下面两个折叠区。'),
+      )
 
       const heartbeatCard = card('运行状态',
         kv([
@@ -350,7 +418,15 @@ window.__ModuleLoader__.load({
           : h('p', { style: C.sub }, '还没有日志'),
       )
 
-      return h('div', { style: C.wrap }, head, heartbeatCard, readCard, configCard, logCard)
+      // 2026-11-14 小白改版（跟「记得」页签同款）：首屏 → 折叠区
+      return h('div', { style: C.wrap },
+        head,
+        healthCard,
+        quickCard,
+        foldSection('调整（一般不用碰）', '睡眠窗 · 三餐 · 补算 · 注入范围 · 隔离', !!folds.adjust, () => toggleFold('adjust'), configCard),
+        foldSection('观测台（咱们天天看的）', '运行状态 · 此刻读数 · 日志', !!folds.observatory, () => toggleFold('observatory'),
+          heartbeatCard, readCard, logCard),
+      )
     }
 
     // ---------------------------------------------------------------- 挂载

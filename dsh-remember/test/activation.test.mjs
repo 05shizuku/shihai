@@ -113,8 +113,8 @@ test('契合：真的刚发生过的事（事件池）对得上就高；自己�
 })
 
 test('契合：当前目录对得上（scope）、文件真的在（path）都算数', () => {
-  const node = { id: 'r_2', text: '去看 E:\\示例\\Plugin\\dsh-remember\\index.js 的接缝', tags: [] }
-  const cwd = 'E:\\示例\\Plugin\\dsh-remember'
+  const node = { id: 'r_2', text: '去看 E:\\大肥鱼\\Plugin\\dsh-remember\\index.js 的接缝', tags: [] }
+  const cwd = 'E:\\大肥鱼\\Plugin\\dsh-remember'
   const inScope = fitAxis(node, { cwd, roots: [cwd], events: [] })
   const nowhere = fitAxis(node, { cwd: '', roots: [], events: [] })
   assert.ok(inScope > nowhere, `目录对得上应更高：${inScope} vs ${nowhere}`)

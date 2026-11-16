@@ -11,7 +11,7 @@
  * 零依赖：只用 node 内置模块；图片段的形状直接借 lib/photos.js（不另写一套）。
  */
 import { readFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 import { toSegments } from './photos.js'
 
 /** 回话里的 [表情:名字] 标记。2026-11-07 真事：我把半角冒号打成了全角「：」，
@@ -80,7 +80,19 @@ export function loadStickers(dir, opts = {}) {
     if (!name || !file) continue
     const key = normalizeStickerName(name)
     if (!key) continue
-    const entry = { name, file, path: join(dirPath, file), note: String(row.note ?? '') }
+    // manifest 是人手写的：file 字段带路径符（../ 或绝对路径）就跳过 ——
+    // 图必须真在库里，不能让 manifest 把读图指到库外（2026-11-15 补的）
+    if (/[/\\]/.test(file)) {
+      log(`表情库：manifest 里的「${name}」file 带路径（${file.slice(0, 60)}）—— 只认文件名，跳过`)
+      continue
+    }
+    const path = join(dirPath, file)
+    const norm = (p) => resolve(String(p ?? '')).replace(/[\\/]+$/, '').toLowerCase()
+    if (!norm(path).startsWith(norm(dirPath))) {
+      log(`表情库：manifest 里的「${name}」指到库外了 —— 跳过`)
+      continue
+    }
+    const entry = { name, file, path, note: String(row.note ?? '') }
     list.push(entry)
     if (byName.has(key)) {
       log(`表情库：名字重了「${name}」（先到的那份算数，后来的不覆盖）`)

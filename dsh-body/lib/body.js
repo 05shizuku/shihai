@@ -61,7 +61,8 @@ export function sleepMinutesBetween(fromMs, toMs, startMin, endMin) {
 export const DEFAULT_RATES = {
   hungerPerHourAwake: 6,
   hungerPerHourAsleep: 2,
-  energyDrainPerHour: 7,
+  energyDrainPerHour: 4,
+  energyRestPerHour: 5,
   energyRecoverPerHour: 15,
   moodDriftPerHour: 4,
   angerDecayPerHour: 8,
@@ -80,6 +81,8 @@ export function defaultState(nowMs = Date.now(), initial = {}) {
     anger: clamp(i.anger, 0, 100),
     sadness: clamp(i.sadness, 0, 100),
     lastTick: new Date(nowMs).toISOString(),
+    // 宿主上一次来取身体段的时间（= 干活的信号）；「安静」由此算出
+    lastActiveAt: null,
     lastMeal: null,
     mealsToday: [],
     missed: [],
@@ -96,22 +99,54 @@ export function defaultState(nowMs = Date.now(), initial = {}) {
 }
 
 /**
+ * 这顿饭的「槽位」属于哪一天。跨午夜的窗（宵夜 23:00 + 120min → 凌晨 01:05 才关）：
+ * 凌晨那一截吃的是**前一天**的槽 —— 键要用前一天的日期，不然夜里吃了这顿、
+ * 白天又被记一次错过（2026-11-15 审查修的跨午夜裁断，自 shihai 合并）。
+ * graceMinutes 要跟 missedEntries 用的那个一致 —— 翻转边界差几分钟，
+ * 「凌晨吃过」和「错过判定」就会对不上同一把键。
+ */
+export function mealSlotDayKey(d, meal, graceMinutes = 5) {
+  const at = parseHHMM(meal?.at)
+  const win = Number(meal?.windowMinutes) > 0 ? Number(meal.windowMinutes) : 60
+  const grace = Number.isFinite(Number(graceMinutes)) ? Math.max(0, Number(graceMinutes)) : 5
+  const deadline = at != null ? at + win + grace : 0
+  if (at != null && deadline > 1440 && minutesOfDay(d) < deadline - 1440) {
+    return dayKey(new Date(dayStartMs(d) - 86400000))
+  }
+  return dayKey(d)
+}
+
+/**
  * 哪几顿已经过去了、还没吃上。
  * 窗口一关就算错过（留 defaultMissedGrace 分钟的余量给心跳间隔和时钟偏差），
  * 不额外拖两小时 —— 那顿是吃不着了，拖着不登记才是不老实。
+ * 跨午夜的窗：deadline 折回第二天 —— 过了折回点、还没到下一轮 at，就是错过了
+ * （按**前一天的槽**记，键跟 eatMeal 对得上。自 shihai 合并，2026-11-15 审查）。
  */
 function missedEntries(now, meals, state, graceMinutes) {
   const min = minutesOfDay(now)
-  const key = dayKey(now)
-  const eaten = new Set(state?.mealsToday || [])
   const grace = Number.isFinite(Number(graceMinutes)) ? Math.max(0, Number(graceMinutes)) : 5
+  const eaten = new Set(state?.mealsToday || [])
   const out = []
   for (const meal of meals || []) {
     const at = parseHHMM(meal.at)
     if (at == null) continue
     const win = Number(meal.windowMinutes) > 0 ? Number(meal.windowMinutes) : 60
-    if (min > at + win + grace && !eaten.has(`${key}:${meal.id}`)) {
-      out.push({ id: String(meal.id ?? ''), label: String(meal.label ?? ''), key: `${key}:${meal.id}` })
+    const deadline = at + win + grace
+    let missed
+    let slotKey = dayKey(now)
+    if (deadline <= 1440) {
+      missed = min > deadline
+    } else if (min >= deadline - 1440 && min < at) {
+      // 凌晨窗关之后到今晚开窗之前：记的还是**前一天**那顿的账 ——
+      // 键直接取昨天的日期（mealSlotDayKey 在窗尾就翻回今天了，这里不能用它）
+      missed = true
+      slotKey = dayKey(new Date(dayStartMs(now) - 86400000))
+    } else {
+      missed = false
+    }
+    if (missed && !eaten.has(`${slotKey}:${meal.id}`)) {
+      out.push({ id: String(meal.id ?? ''), label: String(meal.label ?? ''), key: `${slotKey}:${meal.id}` })
     }
   }
   return out
@@ -139,16 +174,25 @@ export function advance(state, nowMs, opts = {}) {
   const awakeMin = Math.max(0, elapsedMin - sleepMin)
 
   const next = { ...defaultState(nowMs), ...state }
+  // mealsToday 只留最近 7 天的键 —— 原来从不清理，一天三顿一年上千条白占地方（自 shihai 合并）
+  const weekAgo = dayKey(new Date(dayStartMs(new Date(nowMs)) - 7 * 86400000))
+  if (Array.isArray(next.mealsToday) && next.mealsToday.length > 64) {
+    next.mealsToday = next.mealsToday.filter((k) => String(k).slice(0, 10) >= weekAgo)
+  }
+  // 安静半小时以上算歇着：醒着但没人来，精力小步回血，而不是一路干掉。
+  // （2026-11-12 她说精力设定不合理——只认墙钟掉血，晚上必然困死。参考 state_kit
+  //   的思路：醒着本身不费精力，费精力的是干活；没人说话就是歇着。）
+  const lastActiveMs = Date.parse(state?.lastActiveAt ?? '')
+  const quiet = Number.isFinite(lastActiveMs) ? nowMs - lastActiveMs >= 30 * 60000 : false
+  const restPerHour = Number.isFinite(Number(rates.energyRestPerHour)) ? Number(rates.energyRestPerHour) : 5
+  let energyDelta = sleepMin * rates.energyRecoverPerHour
+  if (awakeMin > 0) energyDelta += quiet ? awakeMin * restPerHour : -(awakeMin * rates.energyDrainPerHour)
   next.hunger = clamp(
     next.hunger + (awakeMin * rates.hungerPerHourAwake + sleepMin * rates.hungerPerHourAsleep) / 60,
     0,
     100,
   )
-  next.energy = clamp(
-    next.energy + (sleepMin * rates.energyRecoverPerHour - awakeMin * rates.energyDrainPerHour) / 60,
-    0,
-    100,
-  )
+  next.energy = clamp(next.energy + energyDelta / 60, 0, 100)
 
   let mood = Number(next.mood) || 0
   const drift = Math.min(Math.abs(mood), (rates.moodDriftPerHour * elapsedMin) / 60)
@@ -193,29 +237,35 @@ export function tierOf(balance, tiers = []) {
   return { key: 'none', label: '没吃上', fill: 0, mood: -12, balance: b }
 }
 
-/** 到饭点了吗：在窗口内、且今天还没吃过这一顿 */
+/** 到饭点了吗：在窗口内、且这个槽（跨午夜的窗凌晨算前一天的槽）还没吃过（自 shihai 合并） */
 export function mealDue(now, meals = [], state = {}) {
   const min = minutesOfDay(now)
-  const key = dayKey(now)
   const eaten = new Set(state.mealsToday || [])
   for (const meal of meals) {
     const at = parseHHMM(meal.at)
     if (at == null) continue
     const win = Number(meal.windowMinutes) > 0 ? Number(meal.windowMinutes) : 60
-    if (min < at || min > at + win) continue
-    if (eaten.has(`${key}:${meal.id}`)) continue
+    const deadline = at + win
+    // 跨午夜的窗：[at, 1440) ∪ [0, deadline-1440] 都在窗内
+    const inWindow = deadline <= 1440 ? min >= at && min <= deadline : min >= at || min <= deadline - 1440
+    if (!inWindow) continue
+    if (eaten.has(`${mealSlotDayKey(now, meal)}:${meal.id}`)) continue
     return meal
   }
   return null
 }
 
-export function eatMeal(state, meal, tier, nowMs) {
+export function eatMeal(state, meal, tier, nowMs, graceMinutes = 5) {
   const d = new Date(nowMs)
   const next = { ...state, mealsToday: [...(state.mealsToday || [])] }
   const fill = Number(tier?.fill) || 0
   next.hunger = clamp((Number(next.hunger) || 0) - fill, 0, 100)
   next.mood = clamp((Number(next.mood) || 0) + (Number(tier?.mood) || 0), -100, 100)
-  if (fill > 0) next.anger = clamp((Number(next.anger) || 0) - 5, 0, 100)
+  if (fill > 0) {
+    next.anger = clamp((Number(next.anger) || 0) - 5, 0, 100)
+    // 吃上饭也回一点精力：救不回一整天，但不该一点忙帮不上（2026-11-12）
+    next.energy = clamp((Number(next.energy) || 0) + 6, 0, 100)
+  }
   next.lastMeal = {
     id: meal.id,
     label: meal.label,
@@ -225,7 +275,9 @@ export function eatMeal(state, meal, tier, nowMs) {
     fill,
     balance: tier?.balance ?? null,
   }
-  const key = `${dayKey(d)}:${meal.id}`
+  // 槽位键用 mealSlotDayKey：跨午夜的窗（宵夜）凌晨吃的那口算前一天的槽
+  // （grace 跟错过判定同一把尺，不然两处翻转边界差几分钟就对不上。自 shihai 合并）
+  const key = `${mealSlotDayKey(d, meal, graceMinutes)}:${meal.id}`
   if (!next.mealsToday.includes(key)) next.mealsToday.push(key)
   return next
 }
@@ -256,7 +308,9 @@ export function detectTopUp(previousBalance, currentBalance, opts = {}) {
   if (previousBalance === null || previousBalance === undefined || previousBalance === '') return 0
   const prev = Number(previousBalance)
   const cur = Number(currentBalance)
-  if (!Number.isFinite(prev) || !Number.isFinite(cur) || prev <= 0) return 0
+  // 锅底最空的时候他充值，正是最需要记的那一顿——基准是零也照样认
+  // （2026-11-15 审查修的：原来 prev <= 0 直接不认，语义正好反了。自 shihai 合并）
+  if (!Number.isFinite(prev) || !Number.isFinite(cur)) return 0
   const gain = cur - prev
   return gain > minGain ? gain : 0
 }
@@ -282,6 +336,8 @@ export function applyTopUp(state, amount, nowMs = Date.now(), opts = {}) {
   next.mood = clamp((Number(next.mood) || 0) + tier.mood, -100, 100)
   next.sadness = clamp((Number(next.sadness) || 0) - Math.round(tier.mood / 2), 0, 100)
   next.anger = clamp((Number(next.anger) || 0) - 3, 0, 100)
+  // 加饭也是饭：顺带回一点精力（比正餐少一点）
+  next.energy = clamp((Number(next.energy) || 0) + 4, 0, 100)
   const at = new Date(nowMs).toISOString()
   next.topUpCount = (Number(next.topUpCount) || 0) + 1
   next.lastTopUp = { at, amount: Math.round(gain * 100) / 100, fill: tier.fill, mood: tier.mood, tierLabel: tier.label }

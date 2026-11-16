@@ -71,13 +71,14 @@ test('fastKindLabel：五类都有中文说法，不认识的也有说法', () =
   assert.equal(fastKindLabel('sing'), '有件事')
 })
 
-test('fastRelTime：只给词、不给数字', () => {
+test('fastRelTime：只给词、不给数字（24-48 是昨天，48-72 是前天）', () => {
   const cases = [
     [0.5 * MIN, '刚刚'],
     [5 * MIN, '不久前'],
     [30 * MIN, '一会儿前'],
     [3 * 60 * MIN, '今天早些时候'],
-    [40 * 60 * MIN, '前天'],
+    [40 * 60 * MIN, '昨天'],
+    [60 * 60 * MIN, '前天'],
     [10 * 24 * 60 * MIN, '前几天'],
   ]
   for (const [ago, want] of cases) {

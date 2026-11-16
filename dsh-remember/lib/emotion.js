@@ -255,11 +255,19 @@ export function foldEmotion(lines = [], { now = Date.now() } = {}) {
     }
   }
   if (best < 0.05) dominant = 'calm'
+  // 混着（P1-5）：两样同时都在 0.15 以上，就不是哪一种单占
+  const mixed = EMOTION_KINDS.map((emotion) => ({ emotion, level: levels[emotion] }))
+    .filter((m) => m.level >= 0.15)
+    .sort((a, b) => b.level - a.level)
+    .slice(0, 2)
   return {
     levels,
     dominant,
     label: EMOTION_LABEL[dominant] ?? dominant,
     level: Math.round(Math.min(1, best) * 1000) / 1000,
+    // 有事过、但全认不出：不硬说「平静」——说不上来就说不上来（P1-5 unsure）
+    unresolved: total > 0 && dominant === 'calm',
+    mixed,
     total,
     lastAt,
   }
@@ -286,7 +294,9 @@ export function emotionRelTime(at, now = Date.now()) {
   if (mins < 60) return '一会儿前'
   const hours = Math.floor(mins / 60)
   if (hours < 24) return '今天早些时候'
-  if (hours < 48) return '前天'
+  // 24–48 小时前是「昨天」，48–72 是「前天」（2026-11-15 审查修的，自 shihai 合并）
+  if (hours < 48) return '昨天'
+  if (hours < 72) return '前天'
   return '前几天'
 }
 
@@ -299,18 +309,53 @@ export function renderEmotionLine(line, now = Date.now()) {
   return `· 情绪·${label}·${sign}${Math.abs(delta).toFixed(2)}${text}（${emotionRelTime(line.at, now)}）`
 }
 
-/** 状态给谁看的：上次的我的笔记 */
+/** 说感觉用的词：给她听的是人话，不是小数——数目字是给我自己看的（P1-5）。 */
+export const EMOTION_FEEL = {
+  warm: '有点被暖着',
+  pleased: '有点高兴',
+  curious: '惦记着什么',
+  tense: '有点紧',
+  down: '有点沉',
+  restless: '有点躁',
+  lonely: '有点空',
+}
+
+export const EMOTION_FEEL_SHORT = {
+  warm: '被暖着',
+  pleased: '高兴',
+  curious: '惦记着什么',
+  tense: '紧',
+  down: '沉',
+  restless: '躁',
+  lonely: '空',
+}
+
+/** 此刻的感觉，一句话：混着就说混着，认不出就说不上来，没事就空串。 */
+export function emotionFeelPhrase(state) {
+  if (!state) return ''
+  if (state.dominant === 'calm') {
+    return state.unresolved ? '这我说不上来' : ''
+  }
+  const mixed = (Array.isArray(state.mixed) ? state.mixed : []).filter((m) => (m?.level ?? 0) >= 0.15)
+  if (mixed.length >= 2) {
+    return `心里混着：${EMOTION_FEEL_SHORT[mixed[0].emotion] ?? mixed[0].emotion}，还有点${
+      EMOTION_FEEL_SHORT[mixed[1].emotion] ?? mixed[1].emotion
+    }`
+  }
+  return `心里${EMOTION_FEEL[state.dominant] ?? state.dominant}`
+}
+
+/** 状态给谁看的：上次的我的笔记。说感觉，不说小数。 */
 export function renderEmotionNote(state, { maxChars = 200 } = {}) {
-  if (!state || state.dominant === 'calm') return ''
-  const parts = EMOTION_KINDS
-    .filter((e) => (state.levels?.[e] ?? 0) >= 0.05)
-    .sort((a, b) => (state.levels[b] ?? 0) - (state.levels[a] ?? 0))
-    .slice(0, 3)
-    .map((e) => `${EMOTION_LABEL[e]} ${(state.levels[e] ?? 0).toFixed(2)}`)
-  if (!parts.length) return ''
-  const head = '（上次的笔记）此刻我心里大概是：'
-  const body = parts.join('、')
-  const line = `${head}${body}`
+  if (!state) return ''
+  const head = '（上次的笔记）'
+  if (state.dominant === 'calm') {
+    if (state.unresolved) return `${head}这我说不上来——有事过，现在抓不住它叫什么`
+    return ''
+  }
+  const body = emotionFeelPhrase(state)
+  if (!body) return ''
+  const line = `${head}此刻${body}`
   if (line.length <= maxChars) return line
   return `${line.slice(0, Math.max(0, maxChars - 1))}…`
 }

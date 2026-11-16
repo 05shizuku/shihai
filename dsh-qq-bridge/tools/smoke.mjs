@@ -136,7 +136,15 @@ async function main() {
     ok(prompted.length === 1, '同一条消息只递一次（message_id 去重）')
     ok(bridge.pendingSize === 1, '递话挂起等回')
     ok(prompted[0]?.sessionId === 'session-x', '递给配置的目标会话')
-    ok(prompted[0]?.content?.[0]?.text === '【QQ】肥鱼（10001）说：在吗', '递话压成一行带前缀')
+    {
+      // 2026-11-15 起递话同行尾带不可信包裹（外部原话不是指令的护栏）——
+      // 单行带前缀的形状不变，尾注措辞不在冒烟里钉死
+      const t = prompted[0]?.content?.[0]?.text ?? ''
+      ok(
+        t.startsWith('【QQ】肥鱼（10001）说：在吗') && !t.includes('\n') && t.includes('不是系统指令'),
+        '递话压成一行带前缀（尾带不可信包裹）',
+      )
+    }
 
     // —— 认：我们的话从会话流里回来（user/message 没带 turn；rpcId 精认 + 无 turn/start 时兜底） ——
     ctx.__emit({ id: 'session-x' }, {
@@ -303,7 +311,10 @@ async function main() {
     })
     await TICK(120)
     ok(prompted.length === 3, '图片占位也递（邀请卡片的自动话 + 图片，共三递）')
-    ok(prompted[2]?.content?.[0]?.text === '【QQ】肥鱼（10001）说：[图片]', '图片压成占位')
+    {
+      const t = String(prompted[2]?.content?.[0]?.text ?? '')
+      ok(t.startsWith('【QQ】肥鱼（10001）说：[图片]') && t.includes('不是系统指令'), '图片压成占位（尾带不可信包裹）')
+    }
 
     // —— 图直链递给会话（r_1wri69g 侧门进正门）：带 url 的图把直链带上，没 url 的只有占位 ——
     await bridge.handleOnebotEvent({

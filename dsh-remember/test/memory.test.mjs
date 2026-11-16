@@ -6,12 +6,14 @@ import {
   SLOW_TAU_BASE,
   activeCuriosities,
   activeSelfNodes,
+  anchorSelfNode,
   clipSection,
   curiosityState,
   curiosityStats,
   cutByCodePoints,
   fastHabits,
   fastHabitIds,
+  fadingSelfNodes,
   habitState,
   hasThought,
   indexNodes,
@@ -33,6 +35,8 @@ import {
   renderLine,
   renderSection,
   renderSelfSection,
+  renderUnsettledSection,
+  restoreSelfNode,
   score,
   searchNodes,
   selfWeight,
@@ -47,6 +51,7 @@ import {
   tauDays,
   titleOf,
   touchNode,
+  unsettledNodes,
 } from '../lib/memory.js'
 
 const DAY = 24 * 60 * 60 * 1000
@@ -336,6 +341,73 @@ test('一个槽位只自称一条：新的把旧的顶下去，但不删', () =>
   assert.equal(old.text, '旧的', '旧的原话还在')
 })
 
+test('挂锚要答三年问：anchor=true 没答 anchor_why 不给挂', () => {
+  const noWhy = makeNode({ text: '我是记账的', kind: 'self', slot: 'identity', anchor: true }, NOW)
+  assert.equal(noWhy.anchor, false, '没答三年问就不算锚')
+  const withWhy = makeNode(
+    { text: '我是记账的', kind: 'self', slot: 'identity', anchor: true, anchorWhy: '三年后我还在记账' },
+    NOW,
+  )
+  assert.equal(withWhy.anchor, true)
+  assert.equal(withWhy.anchorWhy, '三年后我还在记账')
+  const notSelf = makeNode({ text: '普通', kind: 'fact', anchor: true, anchorWhy: 'x' }, NOW)
+  assert.equal(notSelf.anchor, false)
+  assert.equal(notSelf.anchorWhy, '', '只有 kind=self 带锚')
+})
+
+test('锚优先：挂了锚的条替槽位说话，不被更新的没挂锚的条顶掉', () => {
+  const anchor = selfNode('identity', '锚：我是记账的', NOW - 10 * DAY, { anchor: true, anchorWhy: '三年后还认' })
+  const newer = selfNode('identity', '顺手写的新的', NOW)
+  const act = activeSelfNodes([anchor, newer], NOW)
+  assert.equal(act.length, 1)
+  assert.equal(act[0].id, anchor.id, '锚赢，不看谁新')
+  // 没锚的槽照旧：新的赢
+  const plainA = selfNode('cares', '旧的在意', NOW - 10 * DAY)
+  const plainB = selfNode('cares', '新的在意', NOW)
+  const act2 = activeSelfNodes([plainA, plainB], NOW)
+  assert.equal(act2[0].id, plainB.id)
+})
+
+test('anchorSelfNode 找在位的锚：退下的不算、没锚返回 null', () => {
+  const anchor = selfNode('identity', '锚', NOW, { anchor: true, anchorWhy: '三年后还认' })
+  assert.equal(anchorSelfNode([anchor], 'identity', NOW).id, anchor.id)
+  assert.equal(anchorSelfNode([anchor], 'cares', NOW), null)
+  const retired = { ...anchor, superseded: true }
+  assert.equal(anchorSelfNode([retired], 'identity', NOW), null)
+  assert.equal(anchorSelfNode([], 'identity', NOW), null)
+})
+
+test('restoreSelfNode：挂锚的捡回来重新说话，restoredAt 出声', () => {
+  const anchor = selfNode('identity', '旧锚', NOW - 20 * DAY, { anchor: true, anchorWhy: '三年后还认' })
+  const newer = selfNode('identity', '换上来的新锚', NOW - 5 * DAY, { anchor: true, anchorWhy: '三年后也认' })
+  const r1 = supersedeSelf([anchor, newer], 'identity', newer.id, NOW)
+  const nodes = r1.nodes
+  assert.equal(nodes.find((n) => n.id === anchor.id).superseded, true)
+  const res = restoreSelfNode(nodes, anchor.id, NOW)
+  assert.equal(res.restored.id, anchor.id)
+  assert.equal(res.note, '')
+  const back = res.nodes.find((n) => n.id === anchor.id)
+  assert.equal(back.superseded, false)
+  assert.equal(back.restoredAt, NOW)
+  assert.equal(res.nodes.find((n) => n.id === newer.id).superseded, true, '在位的新锚退下')
+  // 没挂锚的条在有锚的槽捡不动（不然就是从后门顶锚）
+  const side = selfNode('identity', '旁边的', NOW)
+  const res2 = restoreSelfNode([anchor, { ...newer, superseded: false }, side], side.id, NOW)
+  assert.equal(res2.restored, null)
+  assert.ok(res2.note.includes('锚在位'), res2.note)
+  // 找不到的 id
+  const res3 = restoreSelfNode([anchor], 'nope', NOW)
+  assert.equal(res3.restored, null)
+})
+
+test('renderLine 给锚和捡回来的条出声', () => {
+  const anchor = selfNode('identity', '我是记账的', NOW, { anchor: true, anchorWhy: '三年后还认' })
+  const line = renderLine(anchor, NOW)
+  assert.ok(line.includes('锚'), line)
+  const back = renderLine({ ...anchor, restoredAt: NOW - 60 * 1000 }, NOW)
+  assert.ok(back.includes('捡回来'), back)
+})
+
 test('没答三问的自我条不算想过，不冒头', () => {
   const noThought = makeNode({ text: '我在意', kind: 'self', slot: 'cares', weight: 0.9 }, NOW)
   const thought = selfNode('cares', '我在意：别把我当成一个工具', NOW)
@@ -468,6 +540,28 @@ test('后来补上的三问能补到已有习惯上', () => {
   assert.equal(hasThought(res.node), true)
 })
 
+test('按住的习惯再写同情境：并成一条、次数合起来、复活（2026-11-15 修的坑，自 shihai 合并）', () => {
+  // 以前的毛病：found 只找没按住没退下的 —— 按住的习惯再写会开出第二条、次数劈成两半，
+  // 松开后习惯段里两行同一情境。对齐 recordCuriosity 的写法：同情境都是「这一条」。
+  const one = habitNode('他问起记忆架构时', '先复述框架再答', 2)
+  const other = habitNode('他问起记忆架构时', '先复述框架再答', 1, { sealed: true })
+  const res = recordHabit([one, other], { context: '他问起记忆架构时', text: '先复述框架再答' }, NOW)
+  assert.equal(res.repeated, true, '同情境还是这一条')
+  assert.equal(res.node.hits, 4, '次数合起来再加这一回（2 + 1 + 1）')
+  assert.equal(res.node.sealed, false, '按住的那条被同情境再写就活过来')
+  const habitRows = renderHabitSection(res.nodes, { now: NOW }).split('\n').filter((l) => l.includes('他问起记忆架构时'))
+  assert.equal(habitRows.length, 1, '习惯段里不能出现两行同一个情境')
+  const old = res.nodes.find((n) => n.id !== res.node.id)
+  assert.ok(old, '旧条还在（不删，翻得到）')
+  assert.equal(old.superseded, true, '旧条退下')
+  assert.equal(old.hits, 0, '退下条的次数清零 —— 不然下次合并把它再求和一遍（2026-11-16 复核修的通胀）')
+  // 再写两次：4 + 1 + 1 = 6，而不是 8（退下条不再被重复求和）
+  const res2 = recordHabit(res.nodes, { context: '他问起记忆架构时', text: '先复述框架再答' }, NOW + 1000)
+  assert.equal(res2.node.hits, 5)
+  const res3 = recordHabit(res2.nodes, { context: '他问起记忆架构时', text: '先复述框架再答' }, NOW + 2000)
+  assert.equal(res3.node.hits, 6, '次数线性增长，不通胀')
+})
+
 // ---------------------------------------------------------------- 好奇表
 
 const curiosityNode = (context, text, hits = 1, extra = {}) =>
@@ -588,6 +682,15 @@ test('解答了就退出活跃表；同主题再写又回来了', () => {
   const back = recordCuriosity(answered.nodes, { context: '主题甲', text: '还想再想想' }, NOW)
   assert.equal(curiosityState(back.node), 'active', '同主题再写就回来了')
   assert.equal(back.node.hits, 3, '惦记次数继续往上走')
+})
+
+test('按住的好奇再写同主题：次数同样不通胀（2026-11-16 复核修的，自 shihai 合并）', () => {
+  const one = curiosityNode('主题甲', '想知道甲', 2)
+  const other = curiosityNode('主题甲', '想知道甲', 1, { sealed: true })
+  const res = recordCuriosity([one, other], { context: '主题甲', text: '想知道甲' }, NOW)
+  assert.equal(res.node.hits, 4, '首次合并：2 + 1 + 1')
+  const res2 = recordCuriosity(res.nodes, { context: '主题甲', text: '想知道甲' }, NOW + 1000)
+  assert.equal(res2.node.hits, 5, '退下条次数已清零，不再重复求和')
 })
 
 test('好奇段空的时候返回空字符串', () => {
@@ -870,4 +973,105 @@ test('rankNodes / searchNodes / renderSection 都认条件封存', () => {
   const promoted = { ...root, superseded: true, supersededBy: 'r_new' }
   const sec = renderSection([promoted, child], { now: NOW, maxChars: 400, title: '测试' })
   assert.ok(sec.includes('跟着按住的'), '条件解除后段里就出现了（到点/翻篇不用 restore）')
+})
+
+// ===== whale-card P0 + 饭桶五条：known 第四问 / 锚不衰减 / 还没定的 / 淡了留声 / 回滚栈 =====
+
+test('known 第四问（P0-1）：只答 known 也算「想过了」', () => {
+  const known = makeNode({ text: '协议端是 NapCat', kind: 'fact', known: '原来桥用这个' }, NOW)
+  assert.ok(hasThought(known), 'known 算第四问')
+  assert.equal(known.known, '原来桥用这个')
+  const bare = makeNode({ text: '光秃秃一条', kind: 'fact' }, NOW)
+  assert.ok(!hasThought(bare), '四问一条没答不算「想过了」')
+  const sec = renderSection([known, bare], { now: NOW, maxChars: 400, title: '测试' })
+  assert.ok(sec.includes('协议端是 NapCat'), '答了 known 的挂得进开头')
+  assert.ok(!sec.includes('光秃秃一条'), '四问没答的只进原话层，不挂开头')
+})
+
+test('锚不衰减（P0-2）：selfWeight 对锚返回原分量', () => {
+  const anchor = makeNode(
+    { text: '关系＝伙伴', kind: 'self', slot: 'identity', anchor: true, anchorWhy: '三年后还认', weight: 0.8, changes: '记' },
+    NOW,
+  )
+  const later = NOW + 200 * DAY
+  assert.equal(selfWeight(anchor, later), 0.8, '时间过了，锚的分量不掉')
+  assert.ok(selfWeight(anchor, later) >= SELF_MIN_WEIGHT)
+})
+
+test('activeSelfNodes：锚不被分量线拦下，三年后还在自称', () => {
+  const anchor = makeNode(
+    { text: '关系＝伙伴', kind: 'self', slot: 'identity', anchor: true, anchorWhy: '三年后还认', weight: 0.8, changes: '记' },
+    NOW,
+  )
+  const act = activeSelfNodes([anchor], NOW + 3 * 365 * DAY)
+  assert.ok(act.some((n) => n.id === anchor.id), '普通条早淡没了，锚还在')
+})
+
+test('fadingSelfNodes（P0-3）：分量掉进 [0.15, 0.25) 的点得出来', () => {
+  // weight 0.5 → τ = 30 + 135 = 165 天；150 天后 selfWeight ≈ 0.202，正好落在区间里
+  const fading = makeNode({ text: '旧的小偏好', kind: 'self', slot: 'habits-bit', weight: 0.5, changes: '记' }, NOW - 150 * DAY)
+  const fresh = makeNode({ text: '新写的我', kind: 'self', slot: 'identity', weight: 0.9, changes: '记' }, NOW)
+  const list = fadingSelfNodes([fading, fresh], NOW)
+  assert.ok(list.some((n) => n.id === fading.id), `实际 selfWeight ${selfWeight(fading, NOW).toFixed(3)}`)
+  assert.ok(!list.some((n) => n.id === fresh.id), '新写的还没淡')
+  const anchor = makeNode(
+    { text: '锚不在其列', kind: 'self', slot: 'cares', anchor: true, anchorWhy: '三年后还认', weight: 0.2, changes: '记' },
+    NOW - 150 * DAY,
+  )
+  assert.ok(!fadingSelfNodes([anchor], NOW).some((n) => n.id === anchor.id), '锚不衰减，永远不在「快淡没」名单里')
+})
+
+test('unsettledNodes（饭桶②）：doubt 槽 + open 进「还没定的」', () => {
+  const doubt = makeNode({ text: '也许我也喜欢热闹', kind: 'self', slot: 'doubt', weight: 0.4, changes: '记' }, NOW)
+  const open = makeNode({ text: 'HMR 根因没结', kind: 'open', weight: 0.7 }, NOW)
+  const normal = makeNode({ text: '普通记忆', kind: 'fact', weight: 0.7, changes: '记' }, NOW)
+  const list = unsettledNodes([doubt, open, normal], NOW)
+  assert.equal(list.length, 2, '只有 doubt 槽的自我条 + open 进来')
+  assert.ok(list.some((n) => n.id === doubt.id))
+  assert.ok(list.some((n) => n.id === open.id))
+  assert.equal(list[0].id, open.id, '按分量排，open（0.7）在前')
+})
+
+test('renderSelfSection：doubt/open 不进【我】段 + 尾注「我最近没怎么想起」', () => {
+  const anchor = makeNode(
+    { text: '关系＝伙伴', kind: 'self', slot: 'identity', anchor: true, anchorWhy: '三年后还认', weight: 0.9, changes: '记' },
+    NOW,
+  )
+  const doubt = makeNode({ text: '也许我也喜欢热闹', kind: 'self', slot: 'doubt', weight: 0.4, changes: '记' }, NOW)
+  const fading = makeNode({ text: '旧的小偏好', kind: 'self', slot: 'habits-bit', weight: 0.5, changes: '记' }, NOW - 150 * DAY)
+  const sec = renderSelfSection([anchor, doubt, fading], { now: NOW, maxChars: 600 })
+  assert.ok(sec.includes('关系＝伙伴'), '锚照常自称')
+  assert.ok(!sec.includes('也许我也喜欢热闹'), 'doubt 槽不进【我】段（它有【还没定的】）')
+  assert.ok(sec.includes('我最近没怎么想起'), '淡了留声出现')
+  assert.ok(sec.includes('旧的小偏好') || sec.includes('habits-bit'), '留声点出名来')
+  const quiet = renderSelfSection([anchor, doubt], { now: NOW, maxChars: 600 })
+  assert.ok(!quiet.includes('我最近没怎么想起'), '没有快淡没的就不出尾注')
+})
+
+test('renderUnsettledSection（饭桶②）：固定晒一条，剩下的数个数', () => {
+  const doubt = makeNode({ text: '也许我也喜欢热闹', kind: 'self', slot: 'doubt', weight: 0.4, changes: '记' }, NOW)
+  const open = makeNode({ text: 'HMR 根因没结', kind: 'open', weight: 0.7 }, NOW)
+  const sec = renderUnsettledSection([doubt, open], { now: NOW, maxChars: 240 })
+  assert.ok(sec.includes('还没定的'), '段头')
+  assert.ok(sec.includes('HMR 根因没结'), '晒分量最重的一条')
+  assert.ok(sec.includes('还有 1 条没定的'), '剩下数个数')
+  assert.ok(!sec.includes('也许我也喜欢热闹'), '只晒一条，不全倒出来')
+  const single = renderUnsettledSection([open], { now: NOW, maxChars: 240 })
+  assert.ok(single.includes('HMR 根因没结'))
+  assert.ok(!single.includes('沉在账本里'), '只有一条不用尾注')
+  const fact = makeNode({ text: '普通记忆', kind: 'fact', weight: 0.7, changes: '记' }, NOW)
+  assert.equal(renderUnsettledSection([fact], { now: NOW, maxChars: 240 }), '', '没有 doubt/open 的账本不出段')
+})
+
+test('supersedeSelf（P0-2）：退下的 id 记进新条的 replaces（回滚栈）', () => {
+  const old1 = makeNode({ text: '第一版我', kind: 'self', slot: 'identity', weight: 0.9, changes: '记' }, NOW)
+  const old2 = makeNode({ text: '第二版我', kind: 'self', slot: 'identity', weight: 0.85, changes: '记' }, NOW)
+  const r1 = supersedeSelf([old1, old2], 'identity', old2.id, NOW)
+  assert.deepEqual(r1.superseded, [old1.id], '第一次：old1 退下')
+  const fresh = makeNode({ text: '第三版我', kind: 'self', slot: 'identity', weight: 0.9, changes: '记' }, NOW)
+  // 真实顺序：先把新条放进账本，再顶位（supersedeSelf 只改账本里已有的条）
+  const r2 = supersedeSelf([...r1.nodes, fresh], 'identity', fresh.id, NOW)
+  assert.deepEqual(r2.superseded, [old2.id], '第二次：old2 退下（old1 已经退过了不再重复）')
+  const me = r2.nodes.find((n) => n.id === fresh.id)
+  assert.ok(Array.isArray(me.replaces) && me.replaces.includes(old2.id), '直接顶掉的记进 replaces')
 })

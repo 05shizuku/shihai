@@ -23,6 +23,7 @@
  * 改完不用重装、不用重启 —— 除了 tickMs 和 dataDir（这两个是 apply 时定下的）。
  */
 
+import { rmSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
@@ -282,6 +283,9 @@ export function apply(ctx, baseConfig = {}) {
   let renderCount = 0
   let lastRenderAt = 0
   let renderError = ''
+  // 活动信号：宿主来取身体段 = 她这会儿在干活。tick 时折进 state.lastActiveAt，
+  // 半小时没人来就算「歇着」，精力小步回血（2026-11-12 精力重做）
+  let lastActiveStamp = 0
 
   // 设置页要看的运行状态（只活在内存里，重启归零）
   const startedAt = Date.now()
@@ -299,6 +303,7 @@ export function apply(ctx, baseConfig = {}) {
       const text = renderBody(load(stateFile), now)
       renderCount += 1
       lastRenderAt = now
+      lastActiveStamp = now
       renderError = ''
       if (cfg.debug && (renderCount <= 5 || renderCount % 20 === 0)) {
         log(`渲染身体段 #${renderCount}（session=${sessionIdOf(agent) || '?'}）\n${text}`)
@@ -419,7 +424,7 @@ export function apply(ctx, baseConfig = {}) {
     const meal = mealDue(new Date(now), cfg.meals, st)
     if (meal) {
       const tier = tierOf(balance, cfg.tiers)
-      st = eatMeal(st, meal, tier, now)
+      st = eatMeal(st, meal, tier, now, Number(cfg.missedGraceMinutes) || 5)
       log(`${meal.label}：余额=${balance == null ? '读不到' : balance} → ${tier.label}（饥饿 ${st.hunger.toFixed(1)}）`)
       if (msOf(st.lastMeal?.at) > was.mealAt && String(st.lastMeal?.id) !== 'topup') {
         noteEvent(cfg, 'meal', `吃过${meal.label}了，胃里踏实一点`, msOf(st.lastMeal.at), {
@@ -429,6 +434,11 @@ export function apply(ctx, baseConfig = {}) {
       }
     }
 
+    // 干活的章：宿主来取过身体段，就记一笔「这会儿在动」——安静与否由 advance 判
+    if (lastActiveStamp > 0) {
+      const prevActiveMs = Date.parse(st.lastActiveAt ?? '') || 0
+      if (lastActiveStamp > prevActiveMs) st.lastActiveAt = new Date(lastActiveStamp).toISOString()
+    }
     st = advance(st, now, {
       rates: cfg.rates,
       meals: cfg.meals,
@@ -817,6 +827,41 @@ export function apply(ctx, baseConfig = {}) {
           overrides: result.overrides,
         })
       }],
+
+      ['/selftest', async (req, res) => {
+        if (req.method !== 'POST') return send(res, 405, { ok: false, error: '只接受 POST' })
+        // 设置页「测一下」：心跳新鲜度 + 数据目录写探针（写完就删，不落垃圾）
+        const t0 = Date.now()
+        try {
+          const st = buildStatus()
+          const hb = st.heartbeat ?? {}
+          const tick = Number(hb.tickMs) || 300000
+          const hbOk = hb.lastError == null && hb.ageMs != null && hb.ageMs <= tick * 2
+          const { stateFile } = paths()
+          const probe = `${stateFile}.selftest-probe.json`
+          let probeWritten = false
+          try {
+            atomicWriteJson(probe, { at: t0, probe: true })
+            probeWritten = readJsonSafe(probe, null)?.at === t0
+          } finally {
+            try { rmSync(probe, { force: true }) } catch { /* 删不掉不算失败，别留锁 */ }
+          }
+          const mins = Math.round((hb.ageMs ?? 0) / 60000)
+          return send(res, 200, {
+            ok: hbOk && probeWritten,
+            ms: Date.now() - t0,
+            heartbeat: { ok: hbOk, tickMs: tick, ageMs: hb.ageMs ?? null, lastError: hb.lastError ?? null },
+            dataDir,
+            note: hbOk && probeWritten
+              ? `心跳正常（上一拍 ${mins} 分钟前），数据目录写得进。`
+              : !hbOk
+                ? '心跳不太对（超了两拍没落，或上次心跳报错）——看健康卡的红字。'
+                : '心跳正常，但数据目录写不进——查一下磁盘权限或杀软。',
+          })
+        } catch (err) {
+          return send(res, 200, { ok: false, ms: Date.now() - t0, note: `自检没过：${String(err?.message ?? err).slice(0, 200)}` })
+        }
+      }],
     ]
 
     ctx.effect(() => {
@@ -830,7 +875,7 @@ export function apply(ctx, baseConfig = {}) {
           log(`路由注册失败 ${path}：${err?.message ?? err}`)
         }
       }
-      if (disposers.length) log(`设置页数据接口已挂上：/dsh-body/status、/dsh-body/config（${disposers.length} 条）`)
+      if (disposers.length) log(`设置页数据接口已挂上：/dsh-body/status、/dsh-body/config、/dsh-body/selftest（${disposers.length} 条）`)
       else log('设置页数据接口一条都没挂上')
       return () => {
         for (const d of disposers) {

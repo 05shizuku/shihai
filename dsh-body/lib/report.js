@@ -84,6 +84,13 @@ export function applyConfigPatch({ overrides = {}, effective = {}, patch = {} } 
   const rejected = []
   const p = patch && typeof patch === 'object' ? patch : {}
 
+  // ---- 白名单外的键一律明确拒绝（2026-11-15 对齐 dsh-qq-bridge —— 不许静默吞：
+  //      打错键名的人得知道没改成，而不是以为改好了） ----
+  const known = new Set(['sleep', ...EDITABLE.filter((k) => !k.startsWith('sleep.'))])
+  for (const key of Object.keys(p)) {
+    if (!known.has(key)) rejected.push({ key, reason: '这个键不让改（白名单外）' })
+  }
+
   // ---- 睡眠窗 ----
   if (p.sleep && typeof p.sleep === 'object') {
     const sleep = { ...(next.sleep && typeof next.sleep === 'object' ? next.sleep : {}) }

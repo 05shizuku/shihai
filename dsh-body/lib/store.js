@@ -5,7 +5,7 @@
  * 依赖解析找不到 profile 的 node_modules，所以**不能**引第三方包。
  */
 
-import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs'
+import { appendFileSync, closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, statSync, writeFileSync, writeSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, join, resolve, sep } from 'node:path'
 
@@ -35,10 +35,24 @@ export function readJsonSafe(file, fallback = null) {
   }
 }
 
+/**
+ * 原子写：tmp + rename，先 fsync 再换名（跟 dsh-remember 同步修的）。
+ * tmp 名带 pid —— 双实例（热重载窗口）不再互踩对方的临时文件。
+ */
 export function atomicWriteJson(file, data) {
   mkdirSync(dirname(file), { recursive: true })
-  const tmp = `${file}.tmp`
-  writeFileSync(tmp, JSON.stringify(data, null, 2), 'utf8')
+  const tmp = `${file}.${process.pid}.tmp`
+  const fd = openSync(tmp, 'w')
+  try {
+    writeSync(fd, Buffer.from(JSON.stringify(data, null, 2), 'utf8'))
+    try {
+      fsyncSync(fd)
+    } catch {
+      /* 个别文件系统不支持对文件 fsync —— 内容已写，rename 照走 */
+    }
+  } finally {
+    closeSync(fd)
+  }
   renameSync(tmp, file)
 }
 

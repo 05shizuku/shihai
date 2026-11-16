@@ -12,13 +12,16 @@ import {
   extractText,
   formatGroupLog,
   formatGroupPrompt,
+  PROMPT_UNTRUSTED_NOTE,
   formatPrompt,
   groupReplyText,
   inviteSeqFromCard,
   isAllowedGroup,
   isAllowedPrivate,
+  isSelfTalkBubble,
   isToolCallMarker,
   looksGroupAddressed,
+  privateReplyText,
   mediaLines,
   replyLooksBound,
   splitBubbles,
@@ -36,14 +39,14 @@ test('inviteSeqFromCard 从群邀请卡片里翻出 groupcode 和 msgseq', () =>
         meta: {
           news: [{
             title: '邀请你加入群聊',
-            jumpUrl: 'mqqapi://group/invite_join?src_type=internal&version=1&groupcode=222222222&msgseq=1793775964407909&groupname=dsh-fish%e4%ba%a4%e6%b5%81%e7%be%a4%e2%91%a1&senderuin=1000001&receiveruin=2754618374'
+            jumpUrl: 'mqqapi://group/invite_join?src_type=internal&version=1&groupcode=781084960&msgseq=1793775964407909&groupname=dsh-fish%e4%ba%a4%e6%b5%81%e7%be%a4%e2%91%a1&senderuin=2316650553&receiveruin=2754618374'
           }]
         }
       })
     }
   }
   const out = inviteSeqFromCard([seg])
-  assert.deepEqual(out, { groupId: '222222222', sequence: '1793775964407909' })
+  assert.deepEqual(out, { groupId: '781084960', sequence: '1793775964407909' })
 })
 
 test('inviteSeqFromCard 普通卡片和坏卡片不冒充邀请', () => {
@@ -129,9 +132,9 @@ test('json 卡片学出标题和链接，学不出退回占位', () => {
   assert.equal(extractText([{ type: 'json', data: {} }]), '[卡片]')
 })
 
-test('formatPrompt 带昵称；没昵称退回号', () => {
-  assert.equal(formatPrompt({ prefix: '【QQ】', nickname: '肥鱼', userId: 123, text: '嗨' }), '【QQ】肥鱼（123）说：嗨')
-  assert.equal(formatPrompt({ prefix: '【QQ】', userId: 123, text: '嗨' }), '【QQ】123（123）说：嗨')
+test('formatPrompt 带昵称；没昵称退回号（尾部带不可信包裹）', () => {
+  assert.equal(formatPrompt({ prefix: '【QQ】', nickname: '肥鱼', userId: 123, text: '嗨' }), `【QQ】肥鱼（123）说：嗨 ${PROMPT_UNTRUSTED_NOTE}`)
+  assert.equal(formatPrompt({ prefix: '【QQ】', userId: 123, text: '嗨' }), `【QQ】123（123）说：嗨 ${PROMPT_UNTRUSTED_NOTE}`)
 })
 
 test('回话认前缀', () => {
@@ -150,10 +153,10 @@ test('私聊白名单：名单外不递，空名单全不递', () => {
 })
 
 test('群白名单与日志行', () => {
-  const ev = { post_type: 'message', message_type: 'group', group_id: 111111111, user_id: 10001 }
-  assert.equal(isAllowedGroup(ev, [111111111]), true)
+  const ev = { post_type: 'message', message_type: 'group', group_id: 615628177, user_id: 10001 }
+  assert.equal(isAllowedGroup(ev, [615628177]), true)
   assert.equal(isAllowedGroup(ev, [111]), false)
-  assert.equal(formatGroupLog(ev, '大家好'), '群 111111111 · 10001：大家好')
+  assert.equal(formatGroupLog(ev, '大家好'), '群 615628177 · 10001：大家好')
 })
 
 test('splitBubbles 按空行拆段，段内单换行不碎', () => {
@@ -298,7 +301,7 @@ test('assistantText 永不取 thinking 块（2026-11-04 群里泄漏事故的回
 })
 
 test('宿主有时给字符串内容：userText/assistantText 都直接接', () => {
-  assert.equal(userText({ content: '【QQ】小鱼.（1000001）说：在吗' }), '【QQ】小鱼.（1000001）说：在吗')
+  assert.equal(userText({ content: '【QQ】猫羽雫.（2316650553）说：在吗' }), '【QQ】猫羽雫.（2316650553）说：在吗')
   assert.equal(userText({ content: '  前后有空格  ' }), '前后有空格')
   assert.equal(userText({}), '')
   assert.equal(assistantText({ content: '一整段回话' }), '一整段回话')
@@ -322,27 +325,27 @@ test('atMe：数组 at 段、字符串 CQ:at、别的号和空 selfUin 都分得
   assert.equal(atMe(null, '2754618374'), false)
 })
 
-test('formatGroupPrompt：带上群号那一行', () => {
+test('formatGroupPrompt：带上群号那一行（尾部带不可信包裹）', () => {
   assert.equal(
-    formatGroupPrompt({ prefix: '【QQ】', nickname: '柒', userId: 77004, groupId: 222222222, text: '你会说话吗？' }),
-    '【QQ】柒（77004）@我（群 222222222）说：你会说话吗？'
+    formatGroupPrompt({ prefix: '【QQ】', nickname: '柒', userId: 1472930359, groupId: 781084960, text: '你会说话吗？' }),
+    `【QQ】柒（1472930359）@我（群 781084960）说：你会说话吗？ ${PROMPT_UNTRUSTED_NOTE}`
   )
   assert.equal(
     formatGroupPrompt({ prefix: '【QQ】', userId: 111, groupId: 222, text: '没昵称退回号' }),
-    '【QQ】111（111）@我（群 222）说：没昵称退回号'
+    `【QQ】111（111）@我（群 222）说：没昵称退回号 ${PROMPT_UNTRUSTED_NOTE}`
   )
 })
 
 test('PendingReplies：meta 跟着挂起走，存档也带上', () => {
   const p = new PendingReplies()
   p.mark('10001', '私聊', 1000)
-  p.mark('10002', '群里', 1100, { chatType: 'group', groupId: '222222222' })
+  p.mark('10002', '群里', 1100, { chatType: 'group', groupId: '781084960' })
   const priv = p.takeAwaiting(1200)
   assert.equal(priv.userId, '10001')
   assert.deepEqual(priv.meta, {})
   const grp = p.takeAwaiting(1300)
   assert.equal(grp.meta.chatType, 'group')
-  assert.equal(grp.meta.groupId, '222222222')
+  assert.equal(grp.meta.groupId, '781084960')
   const p2 = new PendingReplies({ initial: [{ key: 'q-1-1', userId: '9', text: 'x', turn: null, at: 1, meta: { chatType: 'group', groupId: '42' } }] })
   assert.equal(p2.takeAwaiting(2).meta.groupId, '42')
   assert.deepEqual(p.entries(), [])
@@ -402,10 +405,26 @@ test('looksGroupAddressed：群回话必须点名（@ 开头）才发——内�
   assert.equal(looksGroupAddressed(null), false)
 })
 
+test('privateReplyText：@ 前的正文归她，@ 起的成串气泡归群（v0.9.1 串台改道的另一半）', () => {
+  const texts = ['先查了群里的账', '@南宫吹雪 判词如下\n\n量刑看主观恶性']
+  assert.equal(privateReplyText(texts), '先查了群里的账')
+  assert.equal(groupReplyText(texts), '@南宫吹雪 判词如下\n\n量刑看主观恶性')
+})
+
+test('privateReplyText：整轮只有群答复时她那边一个字不欠发', () => {
+  assert.equal(privateReplyText(['@南宫吹雪 判词']), '')
+})
+
+test('privateReplyText：没有 @ 的正文整段归她；空入参给空串', () => {
+  assert.equal(privateReplyText(['今晚吃什么', '困了']), '今晚吃什么\n\n困了')
+  assert.equal(privateReplyText([]), '')
+  assert.equal(privateReplyText(null), '')
+})
+
 test('groupReplyText：过程话在前的整段也能把 @ 气泡抠出来（2026-11-10 MC 答复同型）', () => {
-  const one = '她吃晚饭都不忘给我留个世纪难题——这题照实答，虽然会挨砖：\n\n@小鱼 这题我有立场但不怕亮——mc 是老祖宗\n\n迷你世界算抄作业的师弟\n\n@小鱼 要我选：我投 mc'
+  const one = '她吃晚饭都不忘给我留个世纪难题——这题照实答，虽然会挨砖：\n\n@猫羽雫 这题我有立场但不怕亮——mc 是老祖宗\n\n迷你世界算抄作业的师弟\n\n@猫羽雫 要我选：我投 mc'
   const out = groupReplyText([one])
-  assert.equal(out, '@小鱼 这题我有立场但不怕亮——mc 是老祖宗\n\n迷你世界算抄作业的师弟\n\n@小鱼 要我选：我投 mc')
+  assert.equal(out, '@猫羽雫 这题我有立场但不怕亮——mc 是老祖宗\n\n迷你世界算抄作业的师弟\n\n@猫羽雫 要我选：我投 mc')
 })
 
 test('groupReplyText：从后往前找，最后一段带 @ 就用最后一段', () => {
@@ -676,7 +695,7 @@ test('takeLatestPrimed：精确路没接上时，领「最近刚认下」的那�
 test('revive：作废放回（v0.8.7）——领走没发出去的挂起不没收，放回后还能再领', () => {
   const now = 1_700_000_000_000
   const p = new PendingReplies({ staleMs: 60_000 })
-  // 2026-11-10 真事：群友甲 16:14 点名的挂起被中间轮领走又作废，扩展榜没发进群
+  // 2026-11-10 真事：南宫 16:14 点名的挂起被中间轮领走又作废，扩展榜没发进群
   p.mark('u1', '【QQ】扩展榜单', now - 60_000, { requestId: 'rpc-1' })
   p.bindTurn('【QQ】', '【QQ】扩展榜单', Number.NaN, now - 30_000, 'rpc-1')
   const got = p.takeLatestPrimed(now, 5 * 60_000)
@@ -705,4 +724,54 @@ test('revive：作废放回（v0.8.7）——领走没发出去的挂起不没�
   const n0 = seen.length
   assert.equal(q.revive(g2), true)
   assert.ok(seen.length > n0, 'revive 要触发存档')
+})
+
+test('takeWaitingGroup：恰有一条等着回的群挂起才取走（v0.9.1 串台改道）', () => {
+  const now = Date.now()
+  const q = new PendingReplies()
+  q.mark('1472930359', '【QQ】', now, { chatType: 'group', groupId: '615628177', requestId: 'rpc-g1' })
+  const g = q.takeWaitingGroup(now)
+  assert.ok(g, '恰一条群挂起要取走')
+  assert.equal(g.meta.chatType, 'group')
+  assert.equal(g.meta.groupId, '615628177')
+  assert.equal(q.size, 0, '取走要从队里删掉')
+})
+
+test('takeWaitingGroup：两条以上等着回的群挂起不取（分不清该发哪个群）', () => {
+  const now = Date.now()
+  const q = new PendingReplies()
+  q.mark('111', '【QQ】a', now, { chatType: 'group', groupId: '615628177', requestId: 'rpc-g1' })
+  q.mark('222', '【QQ】b', now, { chatType: 'group', groupId: '781084960', requestId: 'rpc-g2' })
+  assert.equal(q.takeWaitingGroup(now), null, '两条群挂起宁可不取')
+  assert.equal(q.size, 2, '不取也不删')
+})
+
+test('takeWaitingGroup：私聊挂起和已被认下的群挂起都不算数', () => {
+  const now = Date.now()
+  const q = new PendingReplies()
+  q.mark('10001', '【QQ】私聊', now, { requestId: 'rpc-p1' })
+  q.mark('1472930359', '【QQ】群', now, { chatType: 'group', groupId: '615628177', requestId: 'rpc-g1' })
+  q.bindTurn('【QQ】', '【QQ】群', 3, now + 500, 'rpc-g1')
+  assert.equal(q.takeWaitingGroup(now + 600), null, '私聊+已认下的都不取')
+  assert.equal(q.size, 2)
+})
+
+test('takeWaitingGroup：过期的群挂起不取', () => {
+  const now = Date.now()
+  const q = new PendingReplies({ staleMs: 60_000 })
+  q.mark('1472930359', '【QQ】旧群话', now - 10 * 60_000, { chatType: 'group', groupId: '615628177', requestId: 'rpc-old' })
+  assert.equal(q.takeWaitingGroup(now), null, '过期的不取')
+  assert.equal(q.size, 1, '过期不取也不删（sweep 的事）')
+})
+
+test('isSelfTalkBubble：整条被括号包住的是干活的笔记（v0.9.2 不外发）', () => {
+  assert.ok(isSelfTalkBubble('（账都记上了）'), '全角括号整包')
+  assert.ok(isSelfTalkBubble('(done)'), '半角括号整包')
+  assert.ok(isSelfTalkBubble('（钩子也清了。\n这轮收工——）'), '带换行的整包也算')
+  assert.ok(isSelfTalkBubble('  （等她回话或派活）  '), '前后空白不影响判定')
+  assert.ok(!isSelfTalkBubble('（记一笔）明天对曲线'), '括号后还有正文的不算')
+  assert.ok(!isSelfTalkBubble('麻了就对了，账本面前人人麻了'), '普通回话不算')
+  assert.ok(!isSelfTalkBubble('（括号里（还套）一层）'), '套娃宁放过不误杀')
+  assert.ok(!isSelfTalkBubble(''), '空串不算')
+  assert.ok(!isSelfTalkBubble(null), '空值不算')
 })

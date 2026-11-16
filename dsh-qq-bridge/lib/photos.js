@@ -7,7 +7,7 @@
  * 人像要本人点头 —— 这条纪律比功能重要，别拿「存了方便看」当借口。
  */
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { join, resolve, sep } from 'node:path'
 
 /** 回话里的 [发图:xxx] 标记。半角/全角冒号、半角/全角方括号都认
  * （2026-11-07：表情标记被全角冒号坑过一次，照片的顺手一起修）。 */
@@ -161,4 +161,41 @@ export function photoLines(saved) {
     else if (p) lines.push(`\n[图片没存下] ${p.error ?? '不知道为啥'}`)
   }
   return lines.join('')
+}
+
+/** 本地路径是否真落在允许目录里（大小写/分隔符归一 —— Windows 不认错盘）。 */
+function underDir(child, dir) {
+  try {
+    const norm = (p) => resolve(String(p ?? '')).replace(/[\\/]+$/, '')
+    const c = norm(child)
+    const r = norm(dir)
+    const lc = process.platform === 'win32' ? c.toLowerCase() : c
+    const lr = process.platform === 'win32' ? r.toLowerCase() : r
+    if (!lc || !lr) return false
+    return lc === lr || lc.startsWith(lr + sep) || lc.startsWith(lr + '/')
+  } catch {
+    return false
+  }
+}
+
+/**
+ * 发图白名单（2026-11-15 审查补的）。模型回话里的 [发图:xxx] 是「点什么发什么」，
+ * 原来连 C:\ 下的任意文件都肯发、还会 base64 读出来 —— 群里诱导一句就能把
+ * 本机文件掏出去。现在本地路径只许发收图（photos/）和表情（stickers/）目录里的；
+ * 网络直链放行。返回 { allowed, rejected }，拦下的让调用方记日志说清楚。
+ */
+export function filterImageSources(images, allowedDirs = []) {
+  const allowed = []
+  const rejected = []
+  for (const src of Array.isArray(images) ? images : []) {
+    const s = String(src ?? '').trim()
+    if (!s) continue
+    if (/^https?:\/\//i.test(s)) {
+      allowed.push(s)
+      continue
+    }
+    if (allowedDirs.some((d) => d && underDir(s, d))) allowed.push(s)
+    else rejected.push(s)
+  }
+  return { allowed, rejected }
 }

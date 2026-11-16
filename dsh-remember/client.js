@@ -137,6 +137,19 @@ window.__ModuleLoader__.load({
       ]))
     }
 
+    /** 折叠区：首屏只留最常用的，其余收进这里（小白不晕，我们要的都在）。 */
+    function foldSection(title, hint, open, onToggle, ...children) {
+      return h('div', { style: C.card },
+        h('div', { style: C.row },
+          h('button', { style: C.btn, onClick: onToggle }, `${open ? '▾' : '▸'} ${title}`),
+          hint ? h('span', { style: C.meta }, hint) : null,
+        ),
+        open
+          ? h('div', { style: { display: 'flex', flexDirection: 'column', gap: 14, marginTop: 8 } }, ...children.filter(Boolean))
+          : null,
+      )
+    }
+
     // ---------------------------------------------------------------- 表单
     const emptyForm = () => ({
       enabled: true,
@@ -153,6 +166,9 @@ window.__ModuleLoader__.load({
       selfEnabled: true,
       selfSectionOrder: '8660',
       selfMaxChars: '400',
+      unsettledEnabled: true,
+      unsettledSectionOrder: '8665',
+      unsettledMaxChars: '240',
       habitEnabled: true,
       habitSectionOrder: '8680',
       habitMaxChars: '320',
@@ -219,6 +235,9 @@ window.__ModuleLoader__.load({
         selfEnabled: cfg.selfEnabled !== false,
         selfSectionOrder: String(cfg.selfSectionOrder ?? ''),
         selfMaxChars: String(cfg.selfMaxChars ?? ''),
+        unsettledEnabled: cfg.unsettledEnabled !== false,
+        unsettledSectionOrder: String(cfg.unsettledSectionOrder ?? ''),
+        unsettledMaxChars: String(cfg.unsettledMaxChars ?? ''),
         habitEnabled: cfg.habitEnabled !== false,
         habitSectionOrder: String(cfg.habitSectionOrder ?? ''),
         habitMaxChars: String(cfg.habitMaxChars ?? ''),
@@ -266,6 +285,9 @@ window.__ModuleLoader__.load({
         selfEnabled: Boolean(form?.selfEnabled),
         selfSectionOrder: numOrClear(form?.selfSectionOrder),
         selfMaxChars: numOrClear(form?.selfMaxChars),
+        unsettledEnabled: Boolean(form?.unsettledEnabled),
+        unsettledSectionOrder: numOrClear(form?.unsettledSectionOrder),
+        unsettledMaxChars: numOrClear(form?.unsettledMaxChars),
         habitEnabled: Boolean(form?.habitEnabled),
         habitSectionOrder: numOrClear(form?.habitSectionOrder),
         habitMaxChars: numOrClear(form?.habitMaxChars),
@@ -450,14 +472,14 @@ window.__ModuleLoader__.load({
       const [busy, setBusy] = useState(false)
       const [note, setNote] = useState('')
 
-      const load = useCallback(async () => {
+      const load = useCallback(async (force) => {
         try {
           const r = await fetch(`${API}/status`, { headers: { accept: 'application/json' } })
           const j = await r.json().catch(() => ({}))
           if (!r.ok) throw new Error(j.error || `HTTP ${r.status}`)
           setStatus(j)
           setError('')
-          setForm((prev) => prev ?? formFrom(j))
+          setForm((prev) => (force ? formFrom(j) : (prev ?? formFrom(j))))
         } catch (err) {
           setError(`${err?.message ?? err}（插件可能还没起来，或者这一页没过信任栅栏）`)
         }
@@ -467,6 +489,13 @@ window.__ModuleLoader__.load({
         load()
         const t = setInterval(load, 5000)
         return () => clearInterval(t)
+      }, [load])
+
+      // 总控卡在别的段落改了配置 → 把表单刷新成最新（带编辑中的字会被盖掉，保存后才会发生）
+      useEffect(() => {
+        const onChanged = (e) => { if (e?.detail?.plugin === 'remember') load(true) }
+        window.addEventListener('dsh-shihai:config-changed', onChanged)
+        return () => window.removeEventListener('dsh-shihai:config-changed', onChanged)
       }, [load])
 
       const save = useCallback(async () => {
@@ -493,12 +522,32 @@ window.__ModuleLoader__.load({
             ? `改了 ${accepted.length} 项；没改成功：${rejected.map((x) => `${x.key}（${x.why ?? x.reason}）`).join('；')}`
             : `改了：${accepted.map((x) => `${x.key}=${x.value === null ? '默认' : JSON.stringify(x.value)}`).join('、') || '（没有变化）'}。两秒内生效。`)
           await load()
+          try { window.dispatchEvent(new CustomEvent('dsh-shihai:config-changed', { detail: { plugin: 'remember' } })) } catch { /* ignore */ }
         } catch (err) {
           setNote(`没改成：${err?.message ?? err}`)
         } finally {
           setBusy(false)
         }
       }, [form, load])
+
+      // 首屏折叠区（2026-11-14 小白改版：默认只看健康态和三件事，其余收进折叠）
+      const [folds, setFolds] = useState({ adjust: false, observatory: false })
+      const toggleFold = useCallback((k) => setFolds((prev) => ({ ...prev, [k]: !prev[k] })), [])
+      const [test, setTest] = useState(null)
+      const [testBusy, setTestBusy] = useState(false)
+      const runSelfTest = useCallback(async () => {
+        setTestBusy(true)
+        setTest(null)
+        try {
+          const r = await fetch(`${API}/selftest`, { method: 'POST', headers: { accept: 'application/json' } })
+          const j = await r.json().catch(() => ({}))
+          setTest(j)
+        } catch (err) {
+          setTest({ ok: false, note: `没连上：${err?.message ?? err}` })
+        } finally {
+          setTestBusy(false)
+        }
+      }, [])
 
       const head = h('div', null,
         h('h2', { style: C.h2 }, '记得'),
@@ -520,6 +569,40 @@ window.__ModuleLoader__.load({
       const s = status.summary ?? {}
       const cfg = status.config?.effective ?? {}
       const kinds = s.kinds ?? {}
+
+      // 首屏健康卡：一句人话说清现状（小白第一眼只看这个）
+      const healthOk = Boolean(cfg.enabled) && inj.enabled !== false
+      const healthCard = card('账本现在怎么样',
+        h('p', { style: { ...C.text, fontSize: 14.5 } },
+          healthOk
+            ? '● 开着，一切正常'
+            : inj.enabled === false
+              ? h('span', null, '◐ 总开关开着，但开头段没在挂（去「调整与安全」里看挂载设置）')
+              : '○ 关着（勾上下面总开关再保存就行）'),
+        h('p', { style: C.sub },
+          `账上 ${s.total ?? 0} 条（活着 ${s.alive ?? 0}，按住 ${s.sealed ?? 0}）· 记在 ${status.plugin?.dataDir ?? '默认位置'} · 原话层 ${status.rawLines ?? 0} 行`),
+        inj.lastError ? h('p', { style: C.err }, `最近一次出错：${inj.lastError}`) : null,
+      )
+
+      // 首屏快捷卡：总开关 + 测一下，两件事办完就能走
+      const quickCard = card('最常用的两件事',
+        h('div', { style: C.row },
+          h('label', { style: { ...C.row, gap: 8, fontSize: 14 } },
+            h('input', { type: 'checkbox', checked: !!form?.enabled, onChange: (e) => setForm({ ...form, enabled: e.target.checked }) }),
+            '总开关：账本开着（每次对话开头挂几行记忆）'),
+          h('button', { style: C.btn, disabled: busy, onClick: save }, busy ? '保存中…' : '保存'),
+          note ? h('span', { style: C.ok }, note) : null,
+        ),
+        h('div', { style: C.row },
+          h('button', { style: C.btn, disabled: testBusy, onClick: runSelfTest }, testBusy ? '测着呢…' : '测一下：读写通不通'),
+          test
+            ? (test.ok
+              ? h('span', { style: C.ok }, `✅ ${test.note ?? '读写都通'}（${test.ms ?? '—'} 毫秒）`)
+              : h('span', { style: C.err }, `❌ ${test.note ?? '自检没过'}`))
+            : h('span', { style: C.meta }, '按一下当场验证：账本读得到、数据目录写得进。'),
+        ),
+        h('p', { style: C.meta }, '其余配置都有默认值，不用动；要细调去下面两个折叠区。'),
+      )
 
       const statusCard = card('运行状态',
         kv([
@@ -551,10 +634,10 @@ window.__ModuleLoader__.load({
 
       const selfSlots = Array.isArray(status.self?.slots) ? status.self.slots : []
       const selfCard = card('我',
-        h('p', { style: C.sub }, '这一格不是「发生过什么」，是「我现在是这样」。走慢钟（按月淡），一个槽位只自称一条：写新的，旧的退下（不删，翻得到）。三问一条都没答的不算「想过了」，不在这上面。'),
+        h('p', { style: C.sub }, '这一格不是「发生过什么」，是「我现在是这样」。走慢钟（按月淡），一个槽位只自称一条：写新的，旧的退下（不删，翻得到）。挂了锚（锚）的条替这个槽说话，不被随手的新值顶掉；挂锚、换锚都要先答三年问（这条三年后还认不认）。三问一条都没答的不算「想过了」，不在这上面。'),
         selfSlots.length
           ? h('div', null, ...selfSlots.map((x) => h('div', { key: `self-${x.id}`, style: C.item },
-            h('div', { style: C.text }, `${x.label}：${x.text}`),
+            h('div', { style: C.text }, `${x.label}：${x.text}${x.anchor ? '（锚）' : ''}`),
             h('div', { style: C.meta }, h('span', { style: C.mono }, x.id), ` · 分量 ${num(x.weight, 3)}`),
           )))
           : h('p', { style: C.sub }, '「我」还空着 —— 我还没写下「我是谁／我在意／我不做」。'),
@@ -692,6 +775,10 @@ window.__ModuleLoader__.load({
         inj.selfSection
           ? h('pre', { style: C.section }, inj.selfSection)
           : h('p', { style: C.sub }, inj.selfEnabled === false ? '自我层关着。' : '「我」这一段现在读出来是空的。'),
+        h('p', { style: { ...C.cardTitle, marginTop: 6 } }, `还没定的（顺序 ${cfg.unsettledSectionOrder ?? '—'}）`),
+        inj.unsettledSection
+          ? h('pre', { style: C.section }, inj.unsettledSection)
+          : h('p', { style: C.sub }, inj.unsettledEnabled === false ? '还没定的这段关着。' : '「还没定的」这段现在读出来是空的（账本里还没有 doubt/open 的条）。'),
         h('p', { style: { ...C.cardTitle, marginTop: 6 } }, `好奇（顺序 ${cfg.curiositySectionOrder ?? '—'}）`),
         inj.curiositySection
           ? h('pre', { style: C.section }, inj.curiositySection)
@@ -765,6 +852,19 @@ window.__ModuleLoader__.load({
           h('input', { style: { ...C.input, width: 78 }, value: form?.selfSectionOrder ?? '', onChange: (e) => setForm({ ...form, selfSectionOrder: e.target.value }) }),
           h('span', { style: { ...C.k, marginLeft: 12 } }, '那段最长'),
           h('input', { style: { ...C.input, width: 72 }, value: form?.selfMaxChars ?? '', onChange: (e) => setForm({ ...form, selfMaxChars: e.target.value }) }),
+          h('span', { style: C.sub }, '字'),
+        ),
+        h('p', { style: { ...C.cardTitle, marginTop: 6 } }, '「还没定的」段'),
+        h('div', { style: C.row },
+          h('label', { style: { ...C.row, gap: 6, fontSize: 13 } },
+            h('input', { type: 'checkbox', checked: form?.unsettledEnabled !== false, onChange: (e) => setForm({ ...form, unsettledEnabled: e.target.checked }) }),
+            '挂「还没定的」这一段（doubt＋open 合一个摊位，固定晒一条）'),
+        ),
+        h('div', { style: C.row },
+          h('span', { style: C.k }, '还没定的段顺序'),
+          h('input', { style: { ...C.input, width: 78 }, value: form?.unsettledSectionOrder ?? '', onChange: (e) => setForm({ ...form, unsettledSectionOrder: e.target.value }) }),
+          h('span', { style: { ...C.k, marginLeft: 12 } }, '那段最长'),
+          h('input', { style: { ...C.input, width: 72 }, value: form?.unsettledMaxChars ?? '', onChange: (e) => setForm({ ...form, unsettledMaxChars: e.target.value }) }),
           h('span', { style: C.sub }, '字'),
         ),
         h('p', { style: { ...C.cardTitle, marginTop: 6 } }, '好奇表'),
@@ -897,7 +997,286 @@ window.__ModuleLoader__.load({
           : h('p', { style: C.sub }, '还没有日志'),
       )
 
-      return h('div', { style: C.wrap }, head, statusCard, selfCard, curiosityCard, habitCard, fastCard, intentCard, emotionCard, wakeCard, overviewCard, topCard, sealedCard, sectionCard, configCard, logCard)
+      // 2026-11-14 小白改版：首屏（健康+两件事）→ 折叠区（调整与安全 / 观测台）
+      return h('div', { style: C.wrap },
+        head,
+        healthCard,
+        quickCard,
+        foldSection('调整与安全（一般不用碰）', '类型开关 · 注入参数 · 谁能读写哪个目录', !!folds.adjust, () => toggleFold('adjust'), configCard),
+        foldSection('观测台（咱们天天看的）', '账本 · 自我 · 好奇 · 习惯 · 快层 · 意图 · 情绪 · 叫醒 · 按住的 · 原样段 · 日志', !!folds.observatory, () => toggleFold('observatory'),
+          statusCard, selfCard, curiosityCard, habitCard, fastCard, intentCard, emotionCard, wakeCard, overviewCard, topCard, sealedCard, sectionCard, logCard),
+      )
+    }
+
+    // ---------------------------------------------------------------- 识海总控（三件套一页看 / 改）
+    const HUB_TARGETS = [
+      { key: 'remember', label: '识海记忆', api: '/dsh-remember' },
+      { key: 'bridge', label: 'QQ 桥', api: '/dsh-qq-bridge' },
+      { key: 'body', label: '身体', api: '/dsh-body' },
+    ]
+    const HUB_SENSITIVE = /token|secret|password/i
+    const HUB_REDACTED = '已配置（不回显）'
+    const HS = {
+      pill: { display: 'inline-flex', gap: 6, alignItems: 'center', border: '.5px solid var(--dsw-alias-border-l2)', borderRadius: 999, padding: '3px 12px', fontSize: 12.5 },
+      down: { color: 'var(--dsw-alias-label-tertiary)' },
+      inputW: { fontSize: 13, padding: '3px 6px', borderRadius: 6, border: '.5px solid var(--dsw-alias-border-l2)', background: 'transparent', color: 'inherit', width: 280 },
+      inputN: { fontSize: 13, padding: '3px 6px', borderRadius: 6, border: '.5px solid var(--dsw-alias-border-l2)', background: 'transparent', color: 'inherit', width: 120 },
+    }
+
+    /** 三份 status → 状态灯。谁没起来谁灰，互不连坐。 */
+    function hubPills(results) {
+      return HUB_TARGETS.map((t) => {
+        const r = results?.[t.key]
+        const j = r?.j
+        const ok = Boolean(j && typeof j === 'object' && j.ok !== false)
+        const version = String(j?.plugin?.version ?? j?.version ?? '')
+        let note
+        if (!ok) {
+          if (r?.error) note = `没起来（${String(r.error).slice(0, 48)}）`
+          else if (j && j.ok === false) note = `没起来（ok:false ${String(j.error ?? '').slice(0, 40)}）`
+          else note = `没起来（${String(r?.diag ?? '无响应详情').slice(0, 48)}）`
+        } else if (t.key === 'bridge') note = j.running ? '桥接着' : '桥没起'
+        else if (t.key === 'body') note = '心跳在'
+        else note = `账本 ${j?.summary?.total ?? 0} 条`
+        return { key: t.key, label: t.label, ok, version, note }
+      })
+    }
+
+    /** effective+overrides(+editable) → 能在总控里改的行。密钥和复杂值不搬进来，去各自面板改。 */
+    function hubRows(effective, overrides, editable) {
+      const eff = (effective && typeof effective === 'object') ? effective : {}
+      const ov = (overrides && typeof overrides === 'object') ? overrides : {}
+      const isScalar = (v) => typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean'
+      const keys = (Array.isArray(editable) && editable.length) ? editable : Object.keys(eff)
+      const rows = []
+      let hidden = 0
+      for (const key of keys) {
+        if (!(key in eff)) continue
+        const v = eff[key]
+        if (HUB_SENSITIVE.test(key) || v === HUB_REDACTED || (typeof v === 'string' && v.includes('不回显'))) { hidden += 1; continue }
+        const overridden = (key in ov) && JSON.stringify(ov[key]) !== JSON.stringify(v)
+        if (typeof v === 'boolean') rows.push({ key, type: 'boolean', value: v, overridden })
+        else if (typeof v === 'number') rows.push({ key, type: 'number', value: v, overridden })
+        else if (Array.isArray(v) && v.every(isScalar)) rows.push({ key, type: 'list', value: v, overridden })
+        else if (typeof v === 'string') rows.push({ key, type: 'string', value: v, overridden })
+        else hidden += 1 // 对象、混杂数组：不进总控
+      }
+      return { rows, hidden }
+    }
+
+    /** 行 → 表单（列表摊平成逗号串，方便手改）。 */
+    function hubFormFrom(rows) {
+      const form = {}
+      for (const r of rows ?? []) {
+        form[r.key] = r.type === 'list' ? (r.value ?? []).join('，') : r.value
+      }
+      return form
+    }
+
+    /** 表单 vs 行：只挑真改了的键拼 patch；列表按逗号/顿号拆回去。 */
+    function hubPatch(rows, form) {
+      const patch = {}
+      for (const r of rows ?? []) {
+        const now = form?.[r.key]
+        if (now === undefined) continue
+        if (r.type === 'list') {
+          const arr = String(now ?? '').split(/[,，、]\s*/).map((s) => s.trim()).filter(Boolean)
+          if (JSON.stringify(arr) !== JSON.stringify(r.value ?? [])) patch[r.key] = arr
+        } else if (r.type === 'number') {
+          const n = Number(now)
+          if (Number.isFinite(n) && n !== r.value) patch[r.key] = n
+        } else if (r.type === 'boolean') {
+          if (Boolean(now) !== Boolean(r.value)) patch[r.key] = Boolean(now)
+        } else if (String(now ?? '') !== String(r.value ?? '')) {
+          patch[r.key] = String(now ?? '')
+        }
+      }
+      return patch
+    }
+
+    function HubSection() {
+      const [res, setRes] = useState({})
+      const [flip, setFlip] = useState({})
+      const [cfgs, setCfgs] = useState({})
+      const [open, setOpen] = useState({})
+
+      const poll = useCallback(async () => {
+        const out = {}
+        await Promise.all(HUB_TARGETS.map(async (t) => {
+          const s0 = Date.now()
+          try {
+            const r = await fetch(`${t.api}/status`, {
+              headers: { accept: 'application/json' },
+              signal: (typeof AbortSignal !== 'undefined' && AbortSignal.timeout) ? AbortSignal.timeout(4000) : undefined,
+            })
+            const raw = await r.text()
+            let j = null
+            try { j = JSON.parse(raw) } catch { j = null }
+            const ctype = (r.headers && r.headers.get) ? (r.headers.get('content-type') ?? '') : ''
+            out[t.key] = r.ok
+              ? { j, diag: `HTTP ${r.status} ${ctype.slice(0, 24) || '无类型'} ${raw.length}B ${Date.now() - s0}ms` }
+              : { error: `${(j && j.error) || `HTTP ${r.status}`}（${ctype.slice(0, 24) || '无类型'} ${String(raw).slice(0, 60) || '空体'}）` }
+          } catch (err) {
+            out[t.key] = { error: `${String(err?.message ?? err).slice(0, 60)}（${Date.now() - s0}ms）` }
+          }
+        }))
+        try { console.error('[dsh-remember:hub] poll', JSON.stringify(out).slice(0, 500)) } catch { /* 忽略 */ }
+        setRes(out)
+      }, [])
+
+      const loadCfg = useCallback(async (key, force) => {
+        const t = HUB_TARGETS.find((x) => x.key === key)
+        if (!t) return
+        setCfgs((prev) => ({ ...prev, [key]: { ...prev[key], busy: true } }))
+        try {
+          const r = await fetch(`${t.api}/config`, { headers: { accept: 'application/json' } })
+          const j = await r.json().catch(() => ({}))
+          if (!r.ok) throw new Error(j.error || `HTTP ${r.status}`)
+          const { rows, hidden } = hubRows(j.effective, j.overrides, j.editable)
+          setCfgs((prev) => ({ ...prev, [key]: { rows, hidden, form: force ? hubFormFrom(rows) : (prev[key]?.form ?? hubFormFrom(rows)), loaded: true, error: '', note: prev[key]?.note ?? '' } }))
+        } catch (err) {
+          setCfgs((prev) => ({ ...prev, [key]: { ...(prev[key] ?? {}), loaded: prev[key]?.loaded ?? false, error: String(err?.message ?? err) } }))
+        }
+      }, [])
+
+      useEffect(() => {
+        poll()
+        const t = setInterval(poll, 5000)
+        return () => clearInterval(t)
+      }, [poll])
+
+      useEffect(() => {
+        const onChanged = (e) => {
+          const key = e?.detail?.plugin
+          if (HUB_TARGETS.some((t) => t.key === key)) {
+            loadCfg(key, true)
+            poll()
+          }
+        }
+        window.addEventListener('dsh-shihai:config-changed', onChanged)
+        return () => window.removeEventListener('dsh-shihai:config-changed', onChanged)
+      }, [loadCfg, poll])
+
+      const save = useCallback(async (key) => {
+        const t = HUB_TARGETS.find((x) => x.key === key)
+        const c = cfgs[key]
+        if (!t || !c?.rows) return
+        const patch = hubPatch(c.rows, c.form)
+        const changed = Object.keys(patch).length
+        if (!changed) {
+          setCfgs((prev) => ({ ...prev, [key]: { ...prev[key], note: '没有改动' } }))
+          return
+        }
+        setCfgs((prev) => ({ ...prev, [key]: { ...prev[key], busy: true, note: '' } }))
+        try {
+          const r = await fetch(`${t.api}/config`, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json', accept: 'application/json' },
+            body: JSON.stringify(patch),
+          })
+          const j = await r.json().catch(() => ({}))
+          const rejected = Array.isArray(j.rejected) ? j.rejected : []
+          const accepted = Array.isArray(j.accepted) ? j.accepted : []
+          setCfgs((prev) => ({ ...prev, [key]: { ...prev[key], note: rejected.length
+            ? `有 ${rejected.length} 项没改成功：${rejected.map((x) => `${x.key}（${x.why ?? x.reason}）`).join('；')}`
+            : `改了：${accepted.map((x) => x.key).join('、') || '（没有变化）'}` } }))
+          await loadCfg(key, true)
+          try { window.dispatchEvent(new CustomEvent('dsh-shihai:config-changed', { detail: { plugin: key } })) } catch { /* ignore */ }
+        } catch (err) {
+          setCfgs((prev) => ({ ...prev, [key]: { ...prev[key], note: `没改成：${err?.message ?? err}` } }))
+        }
+      }, [cfgs, loadCfg])
+
+      const pills = hubPills(res)
+      const pillRow = h('div', { style: C.row },
+        ...pills.map((p) => h('span', { key: `pill-${p.key}`, style: p.ok ? HS.pill : { ...HS.pill, ...HS.down } },
+          p.ok ? '●' : '○',
+          `${p.label}${p.version ? ` ${p.version}` : ''}`,
+          h('span', { style: C.meta }, p.note),
+        )),
+        h('span', { style: C.meta }, '状态灯每 5 秒自刷'),
+      )
+
+      // 2026-11-15 二次简化（她的原话：看不懂的别放上来）：总控页只看状态 + 一个总开关，
+      // 细配置全在各自页签——那边有带说明的表单和四步向导，这边不再摆裸键值。
+      const HUB_MASTER = {
+        remember: { key: 'enabled', label: '总开关（每次开头挂几行记忆）', page: '记得' },
+        bridge: { key: 'enabled', label: '总开关', page: 'QQ 薄桥' },
+        body: { key: 'topUpEnabled', label: '饭钱到线自动添饭', page: '身体' },
+      }
+
+      const summaryLine = (t, j) => {
+        if (!j) return '（这拍没读到状态，5 秒后自刷）'
+        if (t.key === 'remember') {
+          const s = j.summary ?? {}
+          return `账上 ${s.total ?? 0} 条（活着 ${s.alive ?? 0}）· 记在 ${j.plugin?.dataDir ?? '默认位置'}`
+        }
+        if (t.key === 'bridge') {
+          const m = j.messageLog ?? { enabled: false, stats: [] }
+          return j.running
+            ? `在跑，消息在递 · 等回的挂起 ${j.pendingSize ?? 0} 条 · 消息流 ${m.enabled ? `${m.stats.length} 册` : '关着'}`
+            : '待机——白名单还空着，去「QQ 薄桥」页签走四步向导就活'
+        }
+        const hb = j.heartbeat ?? {}
+        const rd = j.readings ?? {}
+        const hbOk = hb.lastError == null && hb.ageMs != null && hb.ageMs <= (Number(hb.tickMs) || 300000) * 2
+        return `${hbOk ? '心跳正常' : '心跳不对劲（看「身体」页签红字）'}（上一拍 ${hb.ageMs != null ? Math.round(hb.ageMs / 60000) : '—'} 分钟前）· 饿 ${num(rd.hunger, 0)}% · 精力 ${num(rd.energy, 0)}%`
+      }
+
+      const flipMaster = useCallback(async (t) => {
+        const j = res[t.key]?.j
+        const meta = HUB_MASTER[t.key]
+        const cur = j?.config?.effective?.[meta.key]
+        if (typeof cur !== 'boolean') return
+        setFlip((prev) => ({ ...prev, [t.key]: true }))
+        try {
+          const r = await fetch(`${t.api}/config`, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json', accept: 'application/json' },
+            body: JSON.stringify({ [meta.key]: !cur }),
+          })
+          const j2 = await r.json().catch(() => ({}))
+          if (!r.ok && !j2.rejected) throw new Error(j2.error || `HTTP ${r.status}`)
+          try { window.dispatchEvent(new CustomEvent('dsh-shihai:config-changed', { detail: { plugin: t.key } })) } catch { /* ignore */ }
+        } catch { /* 改没改看下一拍状态灯，它说实话 */ }
+        setFlip((prev) => ({ ...prev, [t.key]: false }))
+        await poll()
+      }, [res, poll])
+
+      const blocks = HUB_TARGETS.map((t) => {
+        const p = pills.find((x) => x.key === t.key)
+        const j = res[t.key]?.j
+        const meta = HUB_MASTER[t.key]
+        const cur = j?.config?.effective?.[meta.key]
+        return h('div', { key: `hub-${t.key}`, style: C.card },
+          h('div', { style: C.row },
+            h('span', { style: { ...C.h2, fontSize: 14.5 } }, `${p?.ok ? '●' : '○'} ${t.label}`),
+            p?.version ? h('span', { style: C.meta }, p.version) : null,
+            h('span', { style: C.meta }, p?.note ?? ''),
+          ),
+          h('p', { style: C.sub }, summaryLine(t, j)),
+          h('div', { style: C.row },
+            h('label', { style: { ...C.row, gap: 8, fontSize: 13.5 } },
+              h('input', {
+                type: 'checkbox',
+                checked: cur === true,
+                disabled: typeof cur !== 'boolean' || !!flip[t.key],
+                onChange: () => flipMaster(t),
+              }),
+              meta.label),
+            h('span', { style: C.meta }, `细配置去左边「${meta.page}」页签`),
+          ),
+        )
+      })
+
+      return h('div', { style: C.wrap },
+        h('div', null,
+          h('h2', { style: C.h2 }, '识海总控'),
+          h('p', { style: C.sub }, '三件套一页看：谁在跑、一句话现状、一个总开关。细配置在左边各页签，那边有说明。'),
+        ),
+        pillRow,
+        ...blocks,
+      )
     }
 
     // ---------------------------------------------------------------- 挂载
@@ -911,11 +1290,23 @@ window.__ModuleLoader__.load({
         ), 'dsh-remember: settings section'),
         'dsh-remember: settings section',
       )
+      ctx.effect(
+        () => ctx.slots.inject('settings.section', () => ctx.slots.register(
+          { name: 'settings.section', id: 'dsh-shihai-hub', order: 9.0, label: () => '识海' },
+          HubSection,
+        ), 'dsh-remember: shihai hub section'),
+        'dsh-remember: shihai hub section',
+      )
     }
 
     exports.apply = apply
     exports.inject = inject
     exports.RememberSection = RememberSection
+    exports.HubSection = HubSection
+    exports.hubPills = hubPills
+    exports.hubRows = hubRows
+    exports.hubFormFrom = hubFormFrom
+    exports.hubPatch = hubPatch
     exports.formFrom = formFrom
     exports.formToPatch = formToPatch
     exports.emptyForm = emptyForm

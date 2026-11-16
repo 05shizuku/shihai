@@ -173,6 +173,10 @@ export function renderFastSection(
     let cut = body.slice(0, budget)
     const nl = cut.lastIndexOf('\n')
     if (nl > 0) cut = cut.slice(0, nl)
+    else {
+      // 首行自己就超预算：按码点切 —— UTF-16 的 slice 会把 emoji 劈成半个（2026-11-15 修）
+      cut = Array.from(body).slice(0, budget).join('')
+    }
     body = `${cut}…`
   }
   return `${head}\n${body}`
