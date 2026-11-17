@@ -842,8 +842,8 @@ test('recordSkill：新情境再写一次 → 两种情境 → established', () 
 
 test('recordSkill：长路径的兄弟目录不算同一处（回归：contextKey 40 字截断曾把它们判重）', () => {
   // 真实临时目录就是这种形状 —— 前缀一大截相同，差别在最后一个段
-  const longA = 'C:\\Users\\10113\\AppData\\Local\\Temp\\dsh-remember-smoke-aB55uC\\house'
-  const longB = 'C:\\Users\\10113\\AppData\\Local\\Temp\\dsh-remember-smoke-aB55uC\\house\\elsewhere'
+  const longA = 'C:\\Users\\demo\\AppData\\Local\\Temp\\dsh-remember-smoke-aB55uC\\house'
+  const longB = 'C:\\Users\\demo\\AppData\\Local\\Temp\\dsh-remember-smoke-aB55uC\\house\\elsewhere'
   assert.notEqual(skillWhereKey(longA), skillWhereKey(longB), '两个兄弟目录的情境键必须不同')
   assert.equal(skillWhereKey('E:\\Proj\\Alpha\\'), skillWhereKey('e:/proj/alpha'), '分隔符、大小写、结尾斜杠归一')
   const first = makeNode(

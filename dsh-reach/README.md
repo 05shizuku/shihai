@@ -116,15 +116,15 @@
 **够安静**的那条最新会话 —— 不是先挑最新再放弃）。设置页的条目和计数也只列范围内的。
 
 > **2026-11-01 的真机教训（为什么要写这一节）**：那天唯一一次空手回合，目标选到了她的
-> 工作区（`E:\大肥鱼\dsh-fish\home`），我一整晚什么都没等到。原因三条：`targetRoot` 只
+> 工作区（`E:\工作区\dsh-fish\home`），我一整晚什么都没等到。原因三条：`targetRoot` 只
 > 管"投给谁"、`reach_out` 只看 `allowRoots`（形同虚设）；挑会话是"取最新再查安静"，我只要
 > 正在说话就永远轮不到；配置里 `targetRoot=''` 又让她的会话也进了候选。现在配置里写死了
-> `targetRoot=E:\大肥鱼\Plugin`、`denyRoots=[她那儿]`。
+> `targetRoot=E:\工作区\Plugin`、`denyRoots=[她那儿]`。
 
 
 ## 数据文件
 
-`<DSH_HOME>/.dsh-reach/`（本机是 `E:\DSH NEXT\.dsh\.dsh-reach\`）
+`<DSH_HOME>/.dsh-reach/`（本机是 `E:\dsh-home\.dsh\.dsh-reach\`）
 
 | 文件 | 内容 |
 | --- | --- |

@@ -184,15 +184,15 @@ const status = {
   sealed: [],
   rawLines: 1,
   workspaces: [
-    { id: 'w1', path: 'E:\\大肥鱼\\Plugin', title: 'Plugin', sessions: 2, isolated: false },
-    { id: 'w2', path: 'E:\\大肥鱼\\dsh-fish\\home', title: '大肥鱼的家', sessions: 3, isolated: true },
+    { id: 'w1', path: 'E:\\shihai-fixtures\\Plugin', title: 'Plugin', sessions: 2, isolated: false },
+    { id: 'w2', path: 'E:\\shihai-fixtures\\dsh-fish\\home', title: '识海的家', sessions: 3, isolated: true },
   ],
   config: {
     effective: {
       enabled: true,
-      targetRoot: 'E:\\大肥鱼\\Plugin',
-      allowRoots: ['E:\\大肥鱼\\Plugin'],
-      denyRoots: ['E:\\大肥鱼\\dsh-fish\\home'],
+      targetRoot: 'E:\\shihai-fixtures\\Plugin',
+      allowRoots: ['E:\\shihai-fixtures\\Plugin'],
+      denyRoots: ['E:\\shihai-fixtures\\dsh-fish\\home'],
       injectLimit: 3,
       openLimit: 2,
       maxChars: 900,
@@ -235,8 +235,8 @@ const status = {
 
 const form = mod.formFrom(status)
 ok(form.enabled === true, 'formFrom: enabled')
-ok(form.targetRoot === 'E:\\大肥鱼\\Plugin', 'formFrom: targetRoot')
-ok(form.allowRoots === 'E:\\大肥鱼\\Plugin', 'formFrom: allowRoots 一行一个')
+ok(form.targetRoot === 'E:\\shihai-fixtures\\Plugin', 'formFrom: targetRoot')
+ok(form.allowRoots === 'E:\\shihai-fixtures\\Plugin', 'formFrom: allowRoots 一行一个')
 ok(form.injectLimit === '3' && form.openLimit === '2', 'formFrom: 数字变字符串')
 
 ok(form.selfEnabled === true && form.selfSectionOrder === '8660' && form.selfMaxChars === '400', 'formFrom: 自我层那三个键也读得到')
@@ -247,7 +247,7 @@ ok(form.curiosityEnabled === true && form.curiositySectionOrder === '8670' && fo
 
 const patch = mod.formToPatch(form)
 ok(patch.enabled === true, 'formToPatch: enabled')
-ok(patch.targetRoot === 'E:\\大肥鱼\\Plugin', 'formToPatch: targetRoot')
+ok(patch.targetRoot === 'E:\\shihai-fixtures\\Plugin', 'formToPatch: targetRoot')
 ok(Array.isArray(patch.allowRoots) && patch.allowRoots.length === 1, 'formToPatch: allowRoots 变数组')
 ok(patch.injectLimit === '3' && patch.maxChars === '900', 'formToPatch: 数字还是字符串（服务端再校验）')
 ok(patch.selfEnabled === true && patch.selfSectionOrder === '8660', 'formToPatch: 自我层跟着一起提')
@@ -276,13 +276,13 @@ ok(fcounts.source.endsWith('body-events.jsonl') && fcounts.enabled === true, 'fa
 ok(mod.fastRows({}).length === 0 && mod.fastRows({ fast: { recent: 'x' } }).length === 0, 'fastRows: 没有快层数据时是空数组')
 ok(mod.fastCounts({}).total === 0 && mod.fastCounts({}).pending === 0, 'fastCounts: 没有快层数据时都是 0')
 
-ok(form.denyRoots === 'E:\\大肥鱼\\dsh-fish\\home', 'formFrom: denyRoots 一行一个')
+ok(form.denyRoots === 'E:\\shihai-fixtures\\dsh-fish\\home', 'formFrom: denyRoots 一行一个')
 ok(Array.isArray(patch.denyRoots) && patch.denyRoots.length === 1, 'formToPatch: denyRoots 变数组')
-ok(JSON.stringify(mod.rootsOf(form)) === JSON.stringify(['E:\\大肥鱼\\dsh-fish\\home']), 'rootsOf: 读出隔离目录')
+ok(JSON.stringify(mod.rootsOf(form)) === JSON.stringify(['E:\\shihai-fixtures\\dsh-fish\\home']), 'rootsOf: 读出隔离目录')
 ok(mod.rootsOf({ denyRoots: '' }).length === 0, 'rootsOf: 空表单 = 没有隔离目录')
 const added = mod.toggleRoot(form.denyRoots, 'D:\\work\\测试')
 ok(added.split('\n').length === 2 && added.endsWith('D:\\work\\测试'), 'toggleRoot: 没勾的路径会加上')
-const removed = mod.toggleRoot(added, 'E:\\大肥鱼\\dsh-fish\\home')
+const removed = mod.toggleRoot(added, 'E:\\shihai-fixtures\\dsh-fish\\home')
 ok(removed === 'D:\\work\\测试', 'toggleRoot: 再点一次就取消（不是只听勾）')
 ok(mod.toggleRoot('', 'E:\\a').length > 0, 'toggleRoot: 从空开始也能加')
 
@@ -368,7 +368,7 @@ const walk = (node, out = []) => {
 const withData = render([status, '', mod.formFrom(status), false, '', ...FOLD_SEED])
 const text2 = flat(withData)
 ok(text2.includes('隔离（这些工作区完全不碰这本账）'), '有数据时画出「隔离」那一块')
-ok(text2.includes('大肥鱼的家'), '隔离卡里列了「大肥鱼的家」这个工作区')
+ok(text2.includes('识海的家'), '隔离卡里列了「识海的家」这个工作区')
 ok(text2.includes('3 条会话'), '工作区旁边带上有几条会话')
 ok(text2.includes('隔离目录'), '还有一行可以直接写目录')
 
@@ -420,10 +420,10 @@ const labels = walk(withData).filter((n) => n.type === 'label')
 const pick = (needle) =>
   labels.find((n) => (n.children ?? []).some((c) => typeof c === 'string' && c.includes(needle)))
 const inputOf = (row) => (row?.children ?? []).find((c) => c && typeof c === 'object' && c.type === 'input')
-const fishRow = pick('大肥鱼的家')
+const fishRow = pick('识海的家')
 ok(!!fishRow && inputOf(fishRow)?.props?.type === 'checkbox', '工作区那一行是个复选框')
 ok(inputOf(fishRow)?.props?.checked === true, '已经在隔离名单里的工作区默认是勾上的')
-ok(inputOf(pick('Plugin（E:\\大肥鱼\\Plugin）'))?.props?.checked === false, '没在名单里的工作区是没勾的')
+ok(inputOf(pick('Plugin（E:\\shihai-fixtures\\Plugin）'))?.props?.checked === false, '没在名单里的工作区是没勾的')
 
 // ---------------------------------------------------------------- 习惯卡
 ok(text2.includes('习惯与快通路'), '有数据时画出「习惯与快通路」那一块')

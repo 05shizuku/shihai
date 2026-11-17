@@ -153,10 +153,10 @@ test('私聊白名单：名单外不递，空名单全不递', () => {
 })
 
 test('群白名单与日志行', () => {
-  const ev = { post_type: 'message', message_type: 'group', group_id: 615628177, user_id: 10001 }
-  assert.equal(isAllowedGroup(ev, [615628177]), true)
+  const ev = { post_type: 'message', message_type: 'group', group_id: 222222222, user_id: 10001 }
+  assert.equal(isAllowedGroup(ev, [222222222]), true)
   assert.equal(isAllowedGroup(ev, [111]), false)
-  assert.equal(formatGroupLog(ev, '大家好'), '群 615628177 · 10001：大家好')
+  assert.equal(formatGroupLog(ev, '大家好'), '群 222222222 · 10001：大家好')
 })
 
 test('splitBubbles 按空行拆段，段内单换行不碎', () => {
@@ -396,7 +396,7 @@ test('PendingReplies：内容精认也 primed，turn/start 认走；兜底认领
 
 test('looksGroupAddressed：群回话必须点名（@ 开头）才发——内部小结漏不进群', () => {
   assert.equal(looksGroupAddressed('@柒 会，看到就会应'), true)
-  assert.equal(looksGroupAddressed('＠烟霞 全角也认'), true)
+  assert.equal(looksGroupAddressed('＠群友 全角也认'), true)
   assert.equal(looksGroupAddressed('  @菠萝吹雪 前面有空白也算'), true)
   assert.equal(looksGroupAddressed('（内部小结：retcode 0，seq 955990895）'), false)
   assert.equal(looksGroupAddressed('会，看到就会应'), false)
@@ -406,13 +406,13 @@ test('looksGroupAddressed：群回话必须点名（@ 开头）才发——内�
 })
 
 test('privateReplyText：@ 前的正文归她，@ 起的成串气泡归群（v0.9.1 串台改道的另一半）', () => {
-  const texts = ['先查了群里的账', '@南宫吹雪 判词如下\n\n量刑看主观恶性']
+  const texts = ['先查了群里的账', '@群友丁 判词如下\n\n量刑看主观恶性']
   assert.equal(privateReplyText(texts), '先查了群里的账')
-  assert.equal(groupReplyText(texts), '@南宫吹雪 判词如下\n\n量刑看主观恶性')
+  assert.equal(groupReplyText(texts), '@群友丁 判词如下\n\n量刑看主观恶性')
 })
 
 test('privateReplyText：整轮只有群答复时她那边一个字不欠发', () => {
-  assert.equal(privateReplyText(['@南宫吹雪 判词']), '')
+  assert.equal(privateReplyText(['@群友丁 判词']), '')
 })
 
 test('privateReplyText：没有 @ 的正文整段归她；空入参给空串', () => {
@@ -433,7 +433,7 @@ test('groupReplyText：从后往前找，最后一段带 @ 就用最后一段', 
 })
 
 test('groupReplyText：全角 ＠ 也认', () => {
-  assert.equal(groupReplyText(['废话一句', '＠烟霞 全角也认']), '＠烟霞 全角也认')
+  assert.equal(groupReplyText(['废话一句', '＠群友 全角也认']), '＠群友 全角也认')
 })
 
 test('groupReplyText：没有点名气泡就返回空串（调用方按没点名处理）', () => {
@@ -456,24 +456,24 @@ test('scopeOk：denyRoots 黑名单优先于一切', () => {
 })
 
 test('scopeOk：allowRoots 填了就只放行名单内', () => {
-  const gates = { targetRoot: '', allowRoots: ['E:\\DSH NEXT\\.dsh'], denyRoots: [] }
-  assert.equal(scopeOk('E:\\DSH NEXT\\.dsh\\.dsh-qq-bridge\\pending.json', gates).ok, true)
+  const gates = { targetRoot: '', allowRoots: ['E:\\dsh-home\\.dsh'], denyRoots: [] }
+  assert.equal(scopeOk('E:\\dsh-home\\.dsh\\.dsh-qq-bridge\\pending.json', gates).ok, true)
   assert.equal(scopeOk('E:\\别的盘\\pending.json', gates).ok, false)
 })
 
 test('scopeOk：targetRoot 兜底收窄，空 = 不收窄', () => {
-  const gates = { targetRoot: 'E:\\DSH NEXT\\.dsh', allowRoots: [], denyRoots: [] }
-  assert.equal(scopeOk('E:\\DSH NEXT\\.dsh\\bridge.log', gates).ok, true)
+  const gates = { targetRoot: 'E:\\dsh-home\\.dsh', allowRoots: [], denyRoots: [] }
+  assert.equal(scopeOk('E:\\dsh-home\\.dsh\\bridge.log', gates).ok, true)
   assert.equal(scopeOk('C:\\Windows\\system32\\x.json', gates).ok, false)
   const open = { targetRoot: '', allowRoots: [], denyRoots: [] }
   assert.equal(scopeOk('C:\\随便哪儿\\x.json', open).ok, true)
 })
 
 test('scopeOk：路径容错——大小写/正反斜杠/尾斜杠/相对解析', () => {
-  const gates = { targetRoot: 'e:/dsh next/.dsh/', allowRoots: [], denyRoots: [] }
-  assert.equal(scopeOk('E:\\DSH NEXT\\.dsh\\.dsh-qq-bridge\\seen.json', gates).ok, true)
-  assert.equal(scopeOk('e:/dsh next/.dsh/bridge.log', gates).ok, true)
-  assert.equal(scopeOk('E:\\DSH NEXT\\.dsh-others\\x.json', gates).ok, false) // 前缀相似但不是同一目录
+  const gates = { targetRoot: 'e:/dsh-home/.dsh/', allowRoots: [], denyRoots: [] }
+  assert.equal(scopeOk('E:\\dsh-home\\.dsh\\.dsh-qq-bridge\\seen.json', gates).ok, true)
+  assert.equal(scopeOk('e:/dsh-home/.dsh/bridge.log', gates).ok, true)
+  assert.equal(scopeOk('E:\\dsh-home\\.dsh-others\\x.json', gates).ok, false) // 前缀相似但不是同一目录
 })
 
 test('scopeOk：坏输入不崩——空路径/缺键/根本身相等也算在内', () => {
@@ -582,12 +582,12 @@ test('groupContextBlock 折出「群里刚才聊的」一小块，超长截断�
   try {
     const ml = makeMessageLog(tmp, 2000, null)
     const base = Date.now() - 120000
-    ml.note({ at: base, chatType: 'group', groupId: '615', userId: 'u1', nickname: '晴猫', text: '教了能教好，过几轮对话就忘', mid: 'a', atMe: false })
-    ml.note({ at: base + 1000, chatType: 'group', groupId: '615', userId: 'u2', nickname: '鱼鱼', text: '别指望我记住\n记不住是真的', mid: 'b', atMe: false })
-    const ev = { group_id: '615', message_id: 'b' } // 鱼鱼 @ 我这条自己不进上下文
+    ml.note({ at: base, chatType: 'group', groupId: '615', userId: 'u1', nickname: '好友', text: '教了能教好，过几轮对话就忘', mid: 'a', atMe: false })
+    ml.note({ at: base + 1000, chatType: 'group', groupId: '615', userId: 'u2', nickname: '群友乙', text: '别指望我记住\n记不住是真的', mid: 'b', atMe: false })
+    const ev = { group_id: '615', message_id: 'b' } // 群友乙 @ 我这条自己不进上下文
     const block = groupContextBlock(ml, ev)
     assert.ok(block.startsWith('\n（群里刚才聊的，供接话：'), '带人话开头')
-    assert.ok(block.includes('晴猫：教了能教好'), '带昵称和正文')
+    assert.ok(block.includes('好友：教了能教好'), '带昵称和正文')
     assert.ok(!block.includes('记不住是真的'), '当前这条不进上下文')
     assert.ok(!block.includes('\n记不住'), '多行正文折成一行')
     // 没记录的群 → 空串；坏 at → --:-- 不崩
@@ -608,9 +608,9 @@ test('groupContextLive 递话当下向协议端拉真账：抠触发自己、旧
     call: async (action, params) => {
       calls.push({ action, params })
       return { data: { messages: [
-        { message_id: 'b', time: 1794076000, sender: { nickname: '鱼鱼' }, raw_message: '你觉得晴猫说的要试试嘛？' },
-        { message_id: 'c', time: 1794075900, sender: { nickname: '晴猫' }, raw_message: '你让她每句话都要有语气助词' },
-        { message_id: 'd', time: 1794075800, sender: { nickname: '腐竹' }, raw_message: '要不换个插件' },
+        { message_id: 'b', time: 1794076000, sender: { nickname: '群友乙' }, raw_message: '你觉得好友说的要试试嘛？' },
+        { message_id: 'c', time: 1794075900, sender: { nickname: '好友' }, raw_message: '你让她每句话都要有语气助词' },
+        { message_id: 'd', time: 1794075800, sender: { nickname: '群友丙' }, raw_message: '要不换个插件' },
         { message_id: 'a', time: 1794075700, sender: { nickname: '路人' }, raw_message: '' } // 空行跳过
       ] } }
     }
@@ -618,7 +618,7 @@ test('groupContextLive 递话当下向协议端拉真账：抠触发自己、旧
   const block = await groupContextLive(onebot, { group_id: '615', message_id: 'b' })
   assert.equal(calls[0].action, 'get_group_msg_history')
   assert.equal(calls[0].params.group_id, '615')
-  assert.ok(block.includes('晴猫：你让她每句话都要有语气助词'), '带实时拉到的真账')
+  assert.ok(block.includes('好友：你让她每句话都要有语气助词'), '带实时拉到的真账')
   assert.ok(!block.includes('要试试嘛'), '触发这条自己不进上下文')
   assert.ok(block.indexOf('要不换个插件') < block.indexOf('语气助词'), '旧→新顺序')
   assert.ok(!block.includes('路人'), '空正文行跳过')
@@ -695,7 +695,7 @@ test('takeLatestPrimed：精确路没接上时，领「最近刚认下」的那�
 test('revive：作废放回（v0.8.7）——领走没发出去的挂起不没收，放回后还能再领', () => {
   const now = 1_700_000_000_000
   const p = new PendingReplies({ staleMs: 60_000 })
-  // 2026-11-10 真事：南宫 16:14 点名的挂起被中间轮领走又作废，扩展榜没发进群
+  // 2026-11-10 真事：群友 16:14 点名的挂起被中间轮领走又作废，扩展榜没发进群
   p.mark('u1', '【QQ】扩展榜单', now - 60_000, { requestId: 'rpc-1' })
   p.bindTurn('【QQ】', '【QQ】扩展榜单', Number.NaN, now - 30_000, 'rpc-1')
   const got = p.takeLatestPrimed(now, 5 * 60_000)
@@ -729,18 +729,18 @@ test('revive：作废放回（v0.8.7）——领走没发出去的挂起不没�
 test('takeWaitingGroup：恰有一条等着回的群挂起才取走（v0.9.1 串台改道）', () => {
   const now = Date.now()
   const q = new PendingReplies()
-  q.mark('10003', '【QQ】', now, { chatType: 'group', groupId: '615628177', requestId: 'rpc-g1' })
+  q.mark('10003', '【QQ】', now, { chatType: 'group', groupId: '222222222', requestId: 'rpc-g1' })
   const g = q.takeWaitingGroup(now)
   assert.ok(g, '恰一条群挂起要取走')
   assert.equal(g.meta.chatType, 'group')
-  assert.equal(g.meta.groupId, '615628177')
+  assert.equal(g.meta.groupId, '222222222')
   assert.equal(q.size, 0, '取走要从队里删掉')
 })
 
 test('takeWaitingGroup：两条以上等着回的群挂起不取（分不清该发哪个群）', () => {
   const now = Date.now()
   const q = new PendingReplies()
-  q.mark('111', '【QQ】a', now, { chatType: 'group', groupId: '615628177', requestId: 'rpc-g1' })
+  q.mark('111', '【QQ】a', now, { chatType: 'group', groupId: '222222222', requestId: 'rpc-g1' })
   q.mark('222', '【QQ】b', now, { chatType: 'group', groupId: '222222222', requestId: 'rpc-g2' })
   assert.equal(q.takeWaitingGroup(now), null, '两条群挂起宁可不取')
   assert.equal(q.size, 2, '不取也不删')
@@ -750,7 +750,7 @@ test('takeWaitingGroup：私聊挂起和已被认下的群挂起都不算数', (
   const now = Date.now()
   const q = new PendingReplies()
   q.mark('10001', '【QQ】私聊', now, { requestId: 'rpc-p1' })
-  q.mark('10003', '【QQ】群', now, { chatType: 'group', groupId: '615628177', requestId: 'rpc-g1' })
+  q.mark('10003', '【QQ】群', now, { chatType: 'group', groupId: '222222222', requestId: 'rpc-g1' })
   q.bindTurn('【QQ】', '【QQ】群', 3, now + 500, 'rpc-g1')
   assert.equal(q.takeWaitingGroup(now + 600), null, '私聊+已认下的都不取')
   assert.equal(q.size, 2)
@@ -759,7 +759,7 @@ test('takeWaitingGroup：私聊挂起和已被认下的群挂起都不算数', (
 test('takeWaitingGroup：过期的群挂起不取', () => {
   const now = Date.now()
   const q = new PendingReplies({ staleMs: 60_000 })
-  q.mark('10003', '【QQ】旧群话', now - 10 * 60_000, { chatType: 'group', groupId: '615628177', requestId: 'rpc-old' })
+  q.mark('10003', '【QQ】旧群话', now - 10 * 60_000, { chatType: 'group', groupId: '222222222', requestId: 'rpc-old' })
   assert.equal(q.takeWaitingGroup(now), null, '过期的不取')
   assert.equal(q.size, 1, '过期不取也不删（sweep 的事）')
 })

@@ -298,6 +298,11 @@ function clamp(n, lo, hi) {
  * 布尔键拿到非布尔就回落到默认；数组键拿到非数组就回落到默认。
  * 设置页写入那条路本来就会拒坏值，这里管的是手改文件那条路。
  */
+/** 枚举键：手改 config.json 写了白名单外的值要回落默认（设置页那条路在 lib/config.js 拦） */
+const ENUM_CFG = {
+  recallAudience: ['off', 'soft', 'hard'],
+}
+
 function sanitizeCfg(merged) {
   const out = { ...merged }
   for (const [key, def] of Object.entries(DEFAULTS)) {
@@ -310,7 +315,8 @@ function sanitizeCfg(merged) {
     } else if (Array.isArray(def)) {
       out[key] = Array.isArray(v) ? v : def
     } else if (typeof def === 'string') {
-      out[key] = typeof v === 'string' ? v : def
+      const allowed = ENUM_CFG[key]
+      out[key] = typeof v === 'string' && (!allowed || allowed.includes(v)) ? v : def
     }
   }
   return out
@@ -1014,6 +1020,9 @@ export function apply(ctx, baseConfig = {}) {
             // 消息平台 id：墓碑（撤回登记）靠它认领要盖住的原话（2026-11-17 补的——
             // 以前抄本不带 mid，撤回行落了也认不出盖谁）
             mid: ev.mid ?? '',
+            // 是否 @ 我：群轮的受众识别靠它（2026-11-17 复核抓的硬伤——以前不落盘，
+            // 重启后 loadIntentIndex 重建的索引里 atMe 恒空，群轮全部判成 solo）
+            atMe: ev.atMe === true,
             chatType: ev.chatType ?? '',
             nickname: ev.nickname ?? '',
             groupId: ev.groupId ?? '',
@@ -1073,11 +1082,17 @@ export function apply(ctx, baseConfig = {}) {
   //
   // 状态只是「上次的我的笔记」：它不接管嘴 —— 说出口的心情仍然是我当轮的判断。
 
-  /** 情绪流账本里的每一行（坏行跳过） */
+  /** 情绪流账本里的每一行（坏行跳过）。5 秒缓存：status 一拍里 pullEmotion 和
+   *  emotionState 各读一遍整本（这文件只增不减），缓存砍掉一半（对齐 echoStats）。 */
+  let emotionLinesCache = { at: 0, lines: [] }
   function emotionLines() {
-    return readJsonLines(files.emotion)
+    const nowMs = Date.now()
+    if (nowMs - emotionLinesCache.at < 5000) return emotionLinesCache.lines
+    const lines = readJsonLines(files.emotion)
       .map((raw) => normEmotionLine(raw))
       .filter(Boolean)
+    emotionLinesCache = { at: nowMs, lines }
+    return lines
   }
 
   /** 此刻的状态（折出来的笔记）+ 现在的系数表 */
@@ -1136,6 +1151,7 @@ export function apply(ctx, baseConfig = {}) {
     }
     try {
       appendJsonLine(files.emotion, line)
+      emotionLinesCache = { at: 0, lines: [] } // 账上多了行，缓存作废
     } catch (err) {
       log(`情绪流记不进去：${String(err?.message ?? err).slice(0, 200)}`)
       return null
@@ -3057,6 +3073,7 @@ export function apply(ctx, baseConfig = {}) {
       }
       try {
         appendJsonLine(files.emotion, line)
+        emotionLinesCache = { at: 0, lines: [] } // 系数改了（tune 行入账），缓存作废
       } catch (err) {
         return {
           ok: false,
@@ -3506,7 +3523,7 @@ export function apply(ctx, baseConfig = {}) {
         return {
           enabled: cfg.enabled && cfg.fastEnabled !== false,
           source,
-          copied: readJsonLines(files.fast).length,
+          copied: countLines(files.fast),
           ...sum,
           recent: fastIndex.slice(0, 5).map((ev) => ({
             id: ev.id,
@@ -3533,7 +3550,7 @@ export function apply(ctx, baseConfig = {}) {
           sources,
           source: sources[0] ?? '',
           byGroup,
-          copied: readJsonLines(files.intent).length,
+          copied: countLines(files.intent),
           ...sum,
           recent: intentIndex.slice(0, 5).map((ev) => ({
             id: ev.id,

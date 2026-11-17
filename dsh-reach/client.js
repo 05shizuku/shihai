@@ -211,6 +211,20 @@ window.__ModuleLoader__.load({
       const cfg = status.config?.effective ?? {}
       const cur = form ?? cfg
       const setField = (key, value) => setForm({ ...cur, [key]: value })
+      // 只发设置页真正改得了的键 —— 整个 effective 都发的话，服务端白名单外的键
+      // （dataDir/tickMs）必被拒，保存成功了也显示红字（2026-11-17 复核抓的）。
+      const EDITABLE_KEYS = [
+        'enabled', 'checkInEnabled', 'urgeEnabled', 'debug',
+        'checkInWindowStart', 'checkInWindowEnd', 'checkInEveryMinutes', 'checkInMaxPerDay',
+        'checkInMinQuietMinutes', 'idleMinutes', 'maxTextLength',
+        'urgeMaxPerDay', 'urgeCooldownMinutes', 'urgeFile',
+        'allowRoots', 'targetRoot', 'denyRoots',
+      ]
+      const pickEditable = (obj) => {
+        const out = {}
+        for (const k of EDITABLE_KEYS) if (obj && obj[k] !== undefined) out[k] = obj[k]
+        return out
+      }
       const pending = status.entries ?? []
       const recent = status.recent ?? []
       const engine = status.engine ?? {}
@@ -439,9 +453,9 @@ window.__ModuleLoader__.load({
           h(
             'div',
             { style: C.row },
-            h('button', { style: C.btn, disabled: busy === 'config', onClick: () => void saveConfig(cur) }, '保存'),
+            h('button', { style: C.btn, disabled: busy === 'config', onClick: () => void saveConfig(pickEditable(cur)) }, '保存'),
             h('button', { style: C.btn, onClick: () => setForm(null) }, '还原'),
-            h('span', { ...C.sub, marginLeft: 'auto' }, `状态在 ${status.paths?.dataDir ?? ''}`),
+            h('span', { style: { ...C.sub, marginLeft: 'auto' } }, `状态在 ${status.paths?.dataDir ?? ''}`),
           ),
         ),
 

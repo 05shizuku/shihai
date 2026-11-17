@@ -1,12 +1,12 @@
 // 检索评测：拿真账本当考卷。每道题一个 query + 期望翻到的条目 id，
 // 算 Recall@5 —— 「考卷上有的，前五名里翻没翻到」。
 // 用法：node tools/eval-search.mjs [--file <memory.json 路径>]
-import { readFileSync } from 'node:fs'
+import { homedir, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { rankByQuery } from '../lib/search.js'
 import { isSealed } from '../lib/memory.js'
 
-const dshHome = process.env.DSH_HOME || join(process.env.USERPROFILE || 'C:\\Users\\10113', '.dsh')
+const dshHome = process.env.DSH_HOME || join(process.env.USERPROFILE || homedir(), '.dsh')
 const file = process.argv.includes('--file')
   ? process.argv[process.argv.indexOf('--file') + 1]
   : join(dshHome, '.dsh-remember', 'memory.json')

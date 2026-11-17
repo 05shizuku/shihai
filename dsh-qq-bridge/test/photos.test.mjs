@@ -17,15 +17,15 @@ import {
 } from '../lib/photos.js'
 
 test('filterImageSources：本地路径只许发白名单目录里的，http 放行（2026-11-16 补的闸）', () => {
-  const photos = 'E:\\DSH NEXT\\.dsh\\.dsh-qq-bridge\\photos'
-  const stickers = 'E:\\DSH NEXT\\.dsh\\.dsh-qq-bridge\\stickers'
+  const photos = 'E:\\dsh-home\\.dsh\\.dsh-qq-bridge\\photos'
+  const stickers = 'E:\\dsh-home\\.dsh\\.dsh-qq-bridge\\stickers'
   const r = filterImageSources(
     [
       join(photos, 'p-1-1.jpg'), // 收图目录内 → 放行
       join(stickers, '004-touxiao.jpg'), // 表情目录内 → 放行
       'https://multimedia.nt.qq.com.cn/a?rkey=k1', // 网络直链 → 放行
       'C:\\Users\\me\\secret.txt', // 白名单外 → 拦
-      'E:\\DSH NEXT\\.dsh\\.dsh-qq-bridge\\photos-others\\x.jpg', // 前缀相似但不是同一目录 → 拦
+      'E:\\dsh-home\\.dsh\\.dsh-qq-bridge\\photos-others\\x.jpg', // 前缀相似但不是同一目录 → 拦
       'file:///E:/something.png', // file:// → 拦（resolve 出来不在白名单内）
       'photos/相对/路径.jpg', // 相对路径 → 拦（保守）
     ],

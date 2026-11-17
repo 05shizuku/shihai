@@ -194,6 +194,8 @@ export function normIntentEvent(raw, { now = Date.now() } = {}) {
   if (raw.chatType) ev.chatType = String(raw.chatType)
   if (raw.nickname) ev.nickname = String(raw.nickname).slice(0, 40)
   if (raw.groupId) ev.groupId = String(raw.groupId)
+  // 是否 @ 我：从盘上回读（群轮的受众识别靠它——不落盘重启就丢，2026-11-17 复核抓的）
+  if (raw.atMe === true) ev.atMe = true
   if (Array.isArray(raw.matched) && raw.matched.length) ev.matched = raw.matched.slice(0, 4).map(String)
   return ev
 }

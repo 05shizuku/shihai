@@ -123,6 +123,6 @@ test('好奇那四个键能改，边界照样拦', () => {
 })
 
 test('describePatch 把改了什么说明白', () => {
-  const r = applyConfigPatch({ overrides: {}, effective, patch: { targetRoot: 'E:\\大肥鱼\\Plugin', enabled: false } })
-  assert.equal(describePatch(r.accepted), 'targetRoot="E:\\\\大肥鱼\\\\Plugin"、enabled=false')
+  const r = applyConfigPatch({ overrides: {}, effective, patch: { targetRoot: 'E:\\shihai-fixtures\\Plugin', enabled: false } })
+  assert.equal(describePatch(r.accepted), 'targetRoot="E:\\\\shihai-fixtures\\\\Plugin"、enabled=false')
 })

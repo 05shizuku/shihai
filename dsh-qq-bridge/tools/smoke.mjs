@@ -286,7 +286,7 @@ async function main() {
             meta: {
               news: [{
                 title: '邀请你加入群聊',
-                jumpUrl: 'mqqapi://group/invite_join?src_type=internal&version=1&groupcode=222222222&msgseq=1793775964407909&groupname=dsh-fish-test&senderuin=1000001&receiveruin=20002'
+                jumpUrl: 'mqqapi://group/invite_join?src_type=internal&version=1&groupcode=222222222&msgseq=1793775964407909&groupname=dsh-fish-test&senderuin=10001&receiveruin=20002'
               }]
             }
           })

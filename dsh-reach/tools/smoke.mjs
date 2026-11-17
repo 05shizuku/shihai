@@ -80,7 +80,7 @@ function readJson(res) {
 }
 
 const SID = 'session-smoke-1'
-const WORKSPACE = 'E:\\大肥鱼\\Plugin'
+const WORKSPACE = 'E:\\shihai-fixtures\\Plugin'
 
 const prompts = []
 const sections = []

@@ -200,19 +200,19 @@ test('nextCheckInAt：窗口写坏了就不叫', () => {
 // ---------------------------------------------------------------- 范围
 
 test('inScope：没设范围就是哪儿都行，取不到目录就不认', () => {
-  assert.equal(inScope('E:\\大肥鱼\\Plugin', {}), true)
+  assert.equal(inScope('E:\\shihai-fixtures\\Plugin', {}), true)
   assert.equal(inScope('', {}), false)
   assert.equal(inScope(null, {}), false)
   assert.equal(inScope('   ', {}), false)
 })
 
 test('inScope：targetRoot 是「只能在这一棵树下」', () => {
-  const cfg = { targetRoot: 'E:\\大肥鱼\\Plugin' }
-  assert.equal(inScope('E:\\大肥鱼\\Plugin', cfg), true)
-  assert.equal(inScope('E:\\大肥鱼\\Plugin\\dsh-reach', cfg), true) // 子目录算
-  assert.equal(inScope('E:/大肥鱼/plugin', cfg), true) // 斜杠和大小写不敏感
-  assert.equal(inScope('E:\\大肥鱼\\dsh-fish\\home', cfg), false) // 她那儿不算
-  assert.equal(inScope('E:\\大肥鱼\\PluginBak', cfg), false) // 只是前缀相同不算
+  const cfg = { targetRoot: 'E:\\shihai-fixtures\\Plugin' }
+  assert.equal(inScope('E:\\shihai-fixtures\\Plugin', cfg), true)
+  assert.equal(inScope('E:\\shihai-fixtures\\Plugin\\dsh-reach', cfg), true) // 子目录算
+  assert.equal(inScope('E:/shihai-fixtures/plugin', cfg), true) // 斜杠和大小写不敏感
+  assert.equal(inScope('E:\\shihai-fixtures\\dsh-fish\\home', cfg), false) // 她那儿不算
+  assert.equal(inScope('E:\\shihai-fixtures\\PluginBak', cfg), false) // 只是前缀相同不算
 })
 
 test('inScope：allowRoots 是白名单，命中一个就行', () => {
@@ -224,15 +224,15 @@ test('inScope：allowRoots 是白名单，命中一个就行', () => {
 
 test('inScope：denyRoots 最优先，压过 targetRoot 和 allowRoots', () => {
   const cfg = {
-    targetRoot: 'E:\\大肥鱼',
-    allowRoots: ['E:\\大肥鱼'],
-    denyRoots: ['E:\\大肥鱼\\dsh-fish\\home'],
+    targetRoot: 'E:\\shihai-fixtures',
+    allowRoots: ['E:\\shihai-fixtures'],
+    denyRoots: ['E:\\shihai-fixtures\\dsh-fish\\home'],
   }
-  assert.equal(inScope('E:\\大肥鱼\\Plugin', cfg), true) // 没有被按住
-  assert.equal(inScope('E:\\大肥鱼\\dsh-fish\\home', cfg), false) // 按住优先
-  assert.equal(inScope('E:\\大肥鱼\\dsh-fish\\home\\sub', cfg), false)
+  assert.equal(inScope('E:\\shihai-fixtures\\Plugin', cfg), true) // 没有被按住
+  assert.equal(inScope('E:\\shihai-fixtures\\dsh-fish\\home', cfg), false) // 按住优先
+  assert.equal(inScope('E:\\shihai-fixtures\\dsh-fish\\home\\sub', cfg), false)
   // 空字符串项不扩大也不缩小范围
-  assert.equal(inScope('E:\\大肥鱼\\Plugin', { denyRoots: [''] }), true)
+  assert.equal(inScope('E:\\shihai-fixtures\\Plugin', { denyRoots: [''] }), true)
 })
 
 // ---------------------------------------------------------------- 说人话
@@ -331,9 +331,9 @@ test('applyConfigPatch：目录列表能吃三种写法，且去重', () => {
 })
 
 test('applyConfigPatch：denyRoots 也能从设置页改', () => {
-  const r = applyConfigPatch({ overrides: {}, effective: {}, patch: { denyRoots: 'E:\\大肥鱼\\dsh-fish\\home' } })
+  const r = applyConfigPatch({ overrides: {}, effective: {}, patch: { denyRoots: 'E:\\shihai-fixtures\\dsh-fish\\home' } })
   assert.equal(r.ok, true)
-  assert.deepEqual(r.overrides.denyRoots, ['E:\\大肥鱼\\dsh-fish\\home'])
+  assert.deepEqual(r.overrides.denyRoots, ['E:\\shihai-fixtures\\dsh-fish\\home'])
   // targetRoot 还是只有一个（不是列表）
   const bad = applyConfigPatch({ overrides: {}, effective: {}, patch: { targetRoot: 'E:\\a\nE:\\b' } })
   assert.equal(bad.rejected.length, 1)

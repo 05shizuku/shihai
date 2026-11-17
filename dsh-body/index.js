@@ -623,9 +623,13 @@ export function apply(ctx, baseConfig = {}) {
   function guarded(handler) {
     return async (req, res) => {
       const conn = safeGet('connection')
-      if (!conn) return send(res, 503, { ok: false, error: 'connection 服务还没就绪' })
+      // fail-closed（2026-11-17 复核统一口径，对齐 dsh-remember）：服务不在、方法缺失、
+      // 检查抛错 —— 一律 503/403。以前 requestRejection 不是函数时会静默放行。
+      if (!conn || typeof conn.requestRejection !== 'function') {
+        return send(res, 503, { ok: false, error: 'connection 服务还没就绪（fail closed）' })
+      }
       try {
-        const rejection = conn.requestRejection?.(req)
+        const rejection = conn.requestRejection(req)
         if (rejection) return send(res, rejection.status ?? 403, { ok: false, error: rejection.message ?? 'forbidden' })
       } catch {
         return send(res, 503, { ok: false, error: '信任检查失败' })

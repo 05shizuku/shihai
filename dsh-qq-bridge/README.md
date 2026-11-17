@@ -68,19 +68,19 @@ WebUI `http://127.0.0.1:5099`，OneBot 连接的 token 在
 
 ```
 messages-group-222222222.jsonl      ← 群 222222222 的
-messages-private-1000001.jsonl   ← 和小鱼.的私聊
+messages-private-10001.jsonl   ← 和小鱼.的私聊
 messages-misc.jsonl                 ← 认不出场的（兜底，不该常见）
 ```
 
 这些册子都落在 `DSH 安装目录/.dsh\.dsh-qq-bridge\`（即 `<DSH_HOME>/.dsh-qq-bridge/`）。
 现在真长出来的：`messages-group-111111111.jsonl`、`messages-group-222222222.jsonl`、
-`messages-private-1000001.jsonl`；`messages-misc.jsonl` 还没长出来（认不出场才用它）。
+`messages-private-10001.jsonl`；`messages-misc.jsonl` 还没长出来（认不出场才用它）。
 
 行形状（每行都自带 chatType/groupId/userId，下游不用猜）：
 
 ```
-{"at":1767000000000,"chatType":"private","userId":"1000001","nickname":"小鱼.","text":"晚安","mid":"9001"}
-{"at":1767000000000,"chatType":"group","groupId":"222222222","userId":"1000001","nickname":"小鱼.","text":"…","mid":"12345","atMe":false}
+{"at":1767000000000,"chatType":"private","userId":"10001","nickname":"小鱼.","text":"晚安","mid":"9001"}
+{"at":1767000000000,"chatType":"group","groupId":"222222222","userId":"10001","nickname":"小鱼.","text":"…","mid":"12345","atMe":false}
 ```
 
 说清楚三件事：
@@ -357,7 +357,7 @@ v0.7.1 改三处：
 
 ## 气泡按空行拆（v0.8.1）
 
-群里反馈（814660817，2026-11-07）：「一换行就被拆成几条发出去，长句子容易碎」。
+群里反馈（222222222，2026-11-07）：「一换行就被拆成几条发出去，长句子容易碎」。
 原来 `splitBubbles` 按每个换行拆，我写一段三行的话就碎成三个气泡。
 
 v0.8.1 改成**按空行（段落）拆**：段落里的单换行留在同一个气泡里（QQ 会照常显示成

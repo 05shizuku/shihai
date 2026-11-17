@@ -112,8 +112,9 @@ export const DEFAULTS = {
   urgeFile: '',
   urgeMaxPerDay: 3,
   urgeCooldownMinutes: 30,
-  /** 灯的保质期（毫秒）：超过说明这盏灯旧了 */
-  urgeFreshMs: 600000,
+  /** 灯的保质期（毫秒）：超过说明这盏灯旧了。默认对齐心事冷却（30 分钟）——
+   *  保质期比冷却短的话，冷却期内新亮的灯等冷却过了必然已过期，心事结构性丢失 */
+  urgeFreshMs: 1800000,
   /** when='idle' 时，安静多少分钟算他走开了 */
   idleMinutes: 30,
   /** 一句话最长多少字 */
@@ -417,7 +418,10 @@ export function apply(ctx, baseConfig = {}) {
 
     // 先挂上"到时候我该说什么"，再叫 —— 会话是冷的也没关系：
     // agent/created 在第一步之前同步发出，会把它接住。
-    pendingSections.set(entry.sessionId, entry)
+    // 按会话存数组：同会话多条到点时互相不覆盖（2026-11-17 自查）
+    const pendArr = pendingSections.get(entry.sessionId) ?? []
+    pendArr.push(entry)
+    pendingSections.set(entry.sessionId, pendArr)
     const live = liveAgents.get(entry.sessionId)
     if (live) attachDelivery(live, entry)
     const cleanup = setTimeout(() => pendingSections.delete(entry.sessionId), 2 * 60 * 1000)
@@ -433,7 +437,9 @@ export function apply(ctx, baseConfig = {}) {
           content: [{ type: 'text', text: TRIGGER_DUE }],
           clientTimeZone: timeZone(),
         },
-        new AbortController().signal,
+        // 30 秒超时（2026-11-17 自查修的）：prompt 是 @Remote，挂死的话这个 await
+        // 永不返回 —— 心跳链是「跑完再排下一次」，一处挂死全插件停摆
+        AbortSignal.timeout(30000),
       )
       entry.status = STATUS.sent
       entry.sentAt = Date.now()
@@ -484,7 +490,7 @@ export function apply(ctx, baseConfig = {}) {
           content: [{ type: 'text', text: TRIGGER_CHECKIN }],
           clientTimeZone: timeZone(),
         },
-        new AbortController().signal,
+        AbortSignal.timeout(30000), // 同 deliver：挂死不得堵死心跳链
       )
       log(`叫了自己一句（${reason}）：session=${target.sessionId}`)
       return { ok: true, sessionId: target.sessionId }
@@ -535,7 +541,7 @@ export function apply(ctx, baseConfig = {}) {
           content: [{ type: 'text', text: TRIGGER_URGE }],
           clientTimeZone: timeZone(),
         },
-        new AbortController().signal,
+        AbortSignal.timeout(30000), // 同 deliver：挂死不得堵死心跳链
       )
       log(`心事叫醒（${reason}）：session=${target.sessionId} 票=${urge?.token ?? '—'}`)
       return { ok: true, sessionId: target.sessionId }
@@ -847,10 +853,10 @@ export function apply(ctx, baseConfig = {}) {
     const sid = agentSessionId(agent)
     if (!sid) return
     liveAgents.set(sid, agent)
-    const pend = pendingSections.get(sid)
-    if (pend) {
+    const pendArr = pendingSections.get(sid)
+    if (pendArr) {
       pendingSections.delete(sid)
-      attachDelivery(agent, pend)
+      for (const pend of pendArr) attachDelivery(agent, pend)
     }
     const wake = pendingWakes.get(sid)
     if (wake) {
@@ -904,9 +910,13 @@ export function apply(ctx, baseConfig = {}) {
   function guarded(handler) {
     return async (req, res) => {
       const conn = safeGet('connection')
-      if (!conn) return send(res, 503, { ok: false, error: 'connection 服务还没就绪' })
+      // fail-closed（2026-11-17 自查，对齐 dsh-remember）：服务不在、方法缺失、检查抛错
+      // —— 一律 503/403，不裸奔。以前 requestRejection 不是函数时会静默放行。
+      if (!conn || typeof conn.requestRejection !== 'function') {
+        return send(res, 503, { ok: false, error: 'connection 服务还没就绪（fail closed）' })
+      }
       try {
-        const rejection = conn.requestRejection?.(req)
+        const rejection = conn.requestRejection(req)
         if (rejection) return send(res, rejection.status ?? 403, { ok: false, error: rejection.message ?? 'forbidden' })
       } catch {
         return send(res, 503, { ok: false, error: '信任检查失败' })

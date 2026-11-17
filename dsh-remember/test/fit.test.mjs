@@ -17,10 +17,10 @@ import {
 } from '../lib/fit.js'
 
 test('extractPaths：挑出像路径的词，丢掉普通词和尾标点', () => {
-  const text = '改了 dsh-body/lib/fast.js 和 E:\\大肥鱼\\Plugin\\README.md，没有路径，别的 E:\\a\\b.js。'
+  const text = '改了 dsh-body/lib/fast.js 和 E:\\shihai-fixtures\\Plugin\\README.md，没有路径，别的 E:\\a\\b.js。'
   const got = extractPaths(text)
   assert.ok(got.includes('dsh-body/lib/fast.js'), '相对路径要挑出来')
-  assert.ok(got.includes('E:\\大肥鱼\\Plugin\\README.md'), '带盘符的绝对路径要挑出来')
+  assert.ok(got.includes('E:\\shihai-fixtures\\Plugin\\README.md'), '带盘符的绝对路径要挑出来')
   assert.ok(got.includes('E:\\a\\b.js'), '句号后面的路径也要挑出来')
   assert.ok(!got.includes('没有路径'), '普通词不算路径')
   assert.ok(!got.includes('别的'), '普通词不算路径')
@@ -69,12 +69,12 @@ test('scopeFit：分段比较，E:\\ab 不算在 E:\\a 底下', () => {
 
 test('scopeFit：tag 命中目录名 → 0.5', () => {
   const node = { text: 'Plugin 这个目录', tags: ['Plugin'] }
-  assert.equal(scopeFit(node, { roots: ['E:\\大肥鱼\\Plugin'] }), 0.5)
-  assert.equal(scopeFit(node, { cwd: 'E:\\大肥鱼\\Plugin' }), 0.5)
-  assert.equal(scopeFit({ text: '别的目录', tags: ['Other'] }, { roots: ['E:\\大肥鱼\\Plugin'] }), 0)
+  assert.equal(scopeFit(node, { roots: ['E:\\shihai-fixtures\\Plugin'] }), 0.5)
+  assert.equal(scopeFit(node, { cwd: 'E:\\shihai-fixtures\\Plugin' }), 0.5)
+  assert.equal(scopeFit({ text: '别的目录', tags: ['Other'] }, { roots: ['E:\\shihai-fixtures\\Plugin'] }), 0)
   // 路径命中（1）比 tag 命中（0.5）重
-  const both = { text: 'E:\\大肥鱼\\Plugin\\lib\\fit.js', tags: ['Plugin'] }
-  assert.equal(scopeFit(both, { roots: ['E:\\大肥鱼\\Plugin'] }), 1)
+  const both = { text: 'E:\\shihai-fixtures\\Plugin\\lib\\fit.js', tags: ['Plugin'] }
+  assert.equal(scopeFit(both, { roots: ['E:\\shihai-fixtures\\Plugin'] }), 1)
 })
 
 test('pathFit：存在的条数占比；没提路径 → 0.5', () => {

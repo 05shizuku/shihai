@@ -10,7 +10,7 @@
  * 群：日常消息只记日志；@ 我的那条递进会话，我看到自己决定回不回
  *（m07835：回群里的话不用全转他，要他确认的才发他，或者我自己判断）。
  * 戳一戳（notice/notify/poke）：谁戳我，戳回去（同一人一分钟内只回一次）——
- * 烟霞问「为什么戳你不理我」，这是给她的回音。
+ * 群友问「为什么戳你不理我」，这是给她的回音。
  */
 
 import { appendFileSync, existsSync, mkdirSync, renameSync, statSync, readFileSync, writeFileSync } from 'node:fs'
@@ -451,9 +451,13 @@ writeHeartbeat(heartbeatFile, heartbeatInfo({ version: VERSION, startedAt, pendi
   function guarded(handler) {
     return async (req, res) => {
       const conn = safeGet('connection')
-      if (!conn) return send(res, 503, { ok: false, error: 'connection 服务还没就绪' })
+      // fail-closed（2026-11-17 复核统一口径，对齐 dsh-remember）：服务不在、方法缺失、
+      // 检查抛错 —— 一律 503/403。以前 requestRejection 不是函数时会静默放行。
+      if (!conn || typeof conn.requestRejection !== 'function') {
+        return send(res, 503, { ok: false, error: 'connection 服务还没就绪（fail closed）' })
+      }
       try {
-        const rejection = conn.requestRejection?.(req)
+        const rejection = conn.requestRejection(req)
         if (rejection) return send(res, rejection.status ?? 403, { ok: false, error: rejection.message ?? 'forbidden' })
       } catch {
         return send(res, 503, { ok: false, error: '信任检查失败' })
@@ -795,7 +799,7 @@ export function groupContextBlock(ml, ev) {
 
 /** 实时版（v0.6.1）：递话当下向协议端要群里最近几条真消息。
  *  2026-11-07 ①群实锤：WS 推送慢半拍时，文件尾巴停在几分钟前，块就成了「上一个触发点那会儿」的账
- *  ——她问「晴（说的要试试嘛」，我看到的却还是换插件那几句。上下文必须按群里的真账来。
+ *  ——她问「好友（说的要试试嘛」，我看到的却还是换插件那几句。上下文必须按群里的真账来。
  *  拉不动（没 onebot/接口报错/空）返回 null，调用方退回文件尾巴版 groupContextBlock。 */
 export async function groupContextLive(onebot, ev) {
   try {
@@ -895,7 +899,7 @@ export function createBridge({ cfg, log = () => {}, sessionController, livenessB
   // 挂起的精确认领（2026-11-05 串台事故的根治）：turn/end 只走「对得上号」的
   // 路，不按先后盲取（盲取把群答复塞进过私信）。
   // 2026-11-10 v0.8.7 改「回话资格队」：旧 primedKeys 是纯键队列，GUI 轮/环境轮
-  // 的 assistant 首步也会 shift 走一条 —— 南宫 16:14 点名的扩展榜挂起就是这么被
+  // 的 assistant 首步也会 shift 走一条 —— 群友 16:14 点名的扩展榜挂起就是这么被
   // 中间轮吃掉又作废的。owed = 「有句话还没回」的资格名单：只有资格在，认领才
   // 发生；没资格的转（GUI 小结、环境更新、没认上号的）一个挂起都碰不到。
   const owedReplies = []
@@ -944,7 +948,7 @@ export function createBridge({ cfg, log = () => {}, sessionController, livenessB
   }
   // 这一转带没带我们的递话（user/message echo）：带的才许把认领到的挂起发出去 ——
   // GUI 打字/环境更新开的转没带 echo，认领了也只许放回（2026-11-10 真事：GUI
-  // 轮的「干活的小结」差点当回话发进她私聊；南宫的扩展榜挂起被中间轮吃掉）。
+  // 轮的「干活的小结」差点当回话发进她私聊；群友的扩展榜挂起被中间轮吃掉）。
   let sawPrompt = false
   // 戳一戳的回音：同一人一分钟内只戳回去一次，防连戳刷屏。
   const pokeBackAt = new Map()
@@ -1523,7 +1527,7 @@ export function createBridge({ cfg, log = () => {}, sessionController, livenessB
         // 首步认领（v0.8.7 资格闸）：这一转若有回话资格（我们递话时发过），
         // 把队头那条记到这一转名下；后面再 prime 的是排队里的下一条，不抢。
         // 没资格就不认 —— GUI 轮、环境轮、没认上号的转，一个挂起都碰不到
-        // （2026-11-10 真事：南宫扩展榜的挂起被中间轮首步盲认领走又作废）。
+        // （2026-11-10 真事：群友扩展榜的挂起被中间轮首步盲认领走又作废）。
         if (!turnPendingMap.has(turn) && owedReplies.length) claimOwed(turn)
         const text = assistantText(data.message)
         if (text) {
@@ -1553,6 +1557,7 @@ export function createBridge({ cfg, log = () => {}, sessionController, livenessB
         // 不再有「按先后盲取」的兜底 —— GUI 里打字开的转、没认上号的转，
         // 一个挂起都不许动（2026-11-05 真事：盲取把给群里的答复塞进了私信）。
         let r = pending.takeReply(turn, Date.now())
+        if (r && Number.isFinite(turn)) turnPendingMap.delete(turn) // 精认成功也清认领表（慢泄漏，2026-11-17 复核抓的）
         let how = '精认'
         if (!r) {
           const k = Number.isFinite(turn) ? turnPendingMap.get(turn) : null
@@ -1593,7 +1598,7 @@ export function createBridge({ cfg, log = () => {}, sessionController, livenessB
           // 挂起被这一轮领走了，但这一轮没人话（只有工具步）：
           // v0.8.7 不再没收 —— 放回队首并重新给资格，等真正的回话轮来领
           // （下一轮真要发，还得过群点名闸/串台闸，不会发错门）。2026-11-10
-          // 真事：中间轮把南宫 16:14 点名的挂起领走又作废，扩展榜就没发进群。
+          // 真事：中间轮把群友 16:14 点名的挂起领走又作废，扩展榜就没发进群。
           pending.revive(r)
           reOwe(r.key, true)
           log(`这轮没有人话（只有工具步），回话作废 → 挂起放回队首（${r.meta && r.meta.chatType === 'group' ? `群 ${r.meta.groupId}` : r.userId}）`)

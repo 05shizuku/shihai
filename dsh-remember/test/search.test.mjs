@@ -74,8 +74,8 @@ test('零命中不在结果里，空词走分量排名', () => {
 })
 
 test('技能在哪学的也翻得到（skillWhere 字段）', () => {
-  const n = node({ text: '拆会话帧这门手艺', kind: 'skill', contexts: [{ where: 'E:\\大肥鱼\\Plugin' }] })
-  assert.equal(searchNodes([n, node({ text: '别的事' })], '大肥鱼', { now: NOW }).length, 1)
+  const n = node({ text: '拆会话帧这门手艺', kind: 'skill', contexts: [{ where: 'E:\\shihai-fixtures\\Plugin' }] })
+  assert.equal(searchNodes([n, node({ text: '别的事' })], 'shihai-fixtures', { now: NOW }).length, 1)
 })
 
 test('同一天重放同一个结果（确定性）', () => {
