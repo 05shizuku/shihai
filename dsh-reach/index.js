@@ -278,6 +278,8 @@ export function apply(ctx, baseConfig = {}) {
       wakeCount: Number(raw?.wakeCount ?? 0) || 0,
       /** 任意叫醒成功的时刻（③：只在 prompt 成功后落账）——check-in 的静默窗和 reach 的冷却都读它 */
       lastWakeAt: Number(raw?.lastWakeAt ?? 0) || 0,
+      /** 最近一次空手尝试的时刻（失败退避用；与成功时刻分开记，③ 的要求） */
+      lastCheckInAttemptAt: Number(raw?.lastCheckInAttemptAt ?? 0) || 0,
       lastCheckInAt: Number(raw?.lastCheckInAt ?? 0) || 0,
       lastUrgeAt: Number(raw?.lastUrgeAt ?? 0) || 0,
       lastUrgeToken: String(raw?.lastUrgeToken ?? ''),
@@ -473,6 +475,9 @@ export function apply(ctx, baseConfig = {}) {
   async function runCheckIn(reason) {
     const sc = safeGet('sessionController')
     if (!sc || typeof sc.prompt !== 'function') return { ok: false, why: '宿主没有 sessionController.prompt' }
+    // 尝试即记（2026-11-17）：失败不落预算、不推静默窗（③），但要有退避 ——
+    // 不然「他一直在线」的场合每拍重试一次，30 秒一条日志、每拍一次 sc.list
+    state.lastCheckInAttemptAt = Date.now()
     const target = await pickTargetSession()
     if (!target) {
       log(`这次没叫：范围里没有够安静的会话（targetRoot=${getCfg().targetRoot || '（没设）'}）`)
@@ -640,12 +645,15 @@ export function apply(ctx, baseConfig = {}) {
 
       // 空手回合降频成兜底（2026-11-17 并账）：interval 提到 6 小时，
       // 且任意叫醒（含 reach 递送）之后 2 小时内不空手 —— 兜底不抢真叫醒的风头。
+      // 失败退避（2026-11-17）：一次尝试之后 10 分钟内不重试（预算不烧、静默窗不推，
+      // 但也不能他一直在线时每拍重试刷屏）
       if (cfg.checkInEnabled && !wokeThisTick) {
+        const retriedRecently = now - (state.lastCheckInAttemptAt || 0) < CHECKIN_RETRY_MS
         const next = nextCheckInAt(now, cfg, {
           lastCheckInAt: state.lastCheckInAt,
           wakeCount: state.wakeCount,
         })
-        if (next != null && next <= now) {
+        if (next != null && next <= now && !retriedRecently) {
           if (now - (state.lastWakeAt || 0) >= WAKE_QUIET_MS) await runCheckIn('到点了')
           else if (getCfg().debug) log('刚叫醒过（2 小时静默窗内），空手回合让位')
         }
