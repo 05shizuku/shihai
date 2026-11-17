@@ -81,6 +81,10 @@ const VERSION = String(PKG?.version ?? '0.0.0')
 const REFRESH_MS = 2000
 /** 心跳间隔的默认值：30 秒。只做日期比较和几条记录的检查，几乎不花钱 */
 const TICK_MS = 30000
+/** 任意叫醒之后的静默窗：空手回合让位（兜底不抢真叫醒的风头，2026-11-17 并账） */
+const WAKE_QUIET_MS = 2 * 60 * 60 * 1000
+/** 并轨冷却：reach 递送在别的声音响过这段时间内顺延到下一拍（条不丢，只是晚点） */
+const DELIVER_COOLDOWN_MS = 30 * 60 * 1000
 
 export const DEFAULTS = {
   /** 状态目录；留空 = <DSH_HOME>/.dsh-reach */
@@ -95,12 +99,14 @@ export const DEFAULTS = {
   denyRoots: [],
   /** 空手回合投给哪个工作区；留空 = 最近活跃的那条会话 */
   targetRoot: '',
-  /** 空手回合（把我叫起来问一句） */
+  /** 空手回合（把我叫起来问一句）。兜底采样：interval 提到 6 小时，
+   *  真正的心事由 urge 灯管（2026-11-17 并账：空手让位，不当第二根针） */
   checkInEnabled: true,
-  checkInEveryMinutes: 240,
+  checkInEveryMinutes: 360,
   checkInWindowStart: '09:00',
   checkInWindowEnd: '23:00',
-  checkInMaxPerDay: 2,
+  /** 主动唤醒的共享池：空手 + 心事灯一道日上限（2026-11-17 并账） */
+  maxWakePerDay: 3,
   /** 他刚说过话的这段时间里不叫（分钟） */
   checkInMinQuietMinutes: 90,
   /**
@@ -110,7 +116,6 @@ export const DEFAULTS = {
    */
   urgeEnabled: true,
   urgeFile: '',
-  urgeMaxPerDay: 3,
   urgeCooldownMinutes: 30,
   /** 灯的保质期（毫秒）：超过说明这盏灯旧了。默认对齐心事冷却（30 分钟）——
    *  保质期比冷却短的话，冷却期内新亮的灯等冷却过了必然已过期，心事结构性丢失 */
@@ -179,11 +184,10 @@ function mergeConfig(base, ...layers) {
   out.denyRoots = Array.isArray(out.denyRoots) ? out.denyRoots.filter(Boolean) : []
   out.tickMs = clamp(out.tickMs, 200, 300000)
   out.checkInEveryMinutes = clamp(out.checkInEveryMinutes, 15, 1440)
-  out.checkInMaxPerDay = clamp(out.checkInMaxPerDay, 0, 48)
+  out.maxWakePerDay = clamp(out.maxWakePerDay, 0, 48)
   out.checkInMinQuietMinutes = clamp(out.checkInMinQuietMinutes, 0, 1440)
   out.urgeEnabled = Boolean(out.urgeEnabled)
   out.urgeFile = String(out.urgeFile ?? '').trim()
-  out.urgeMaxPerDay = clamp(out.urgeMaxPerDay, 0, 48)
   out.urgeCooldownMinutes = clamp(out.urgeCooldownMinutes, 1, 1440)
   out.urgeFreshMs = clamp(out.urgeFreshMs, 30000, 3600000)
   out.idleMinutes = clamp(out.idleMinutes, 1, 720)
@@ -215,8 +219,9 @@ export function apply(ctx, baseConfig = {}) {
     state = {
       version: 1,
       entries: [],
-      checkInDay: '', checkInCount: 0, lastCheckInAt: 0,
-      urgeDay: '', urgeCount: 0, lastUrgeAt: 0, lastUrgeToken: '',
+      wakeDay: '', wakeCount: 0, lastWakeAt: 0,
+      lastCheckInAt: 0,
+      lastUrgeAt: 0, lastUrgeToken: '',
       lastActivity: {},
     }
     try {
@@ -268,11 +273,12 @@ export function apply(ctx, baseConfig = {}) {
     return {
       version: 1,
       entries,
-      checkInDay: String(raw?.checkInDay ?? ''),
-      checkInCount: Number(raw?.checkInCount ?? 0) || 0,
+      // 共享唤醒池（2026-11-17 并账）：空手 + 心事灯一道日计数
+      wakeDay: String(raw?.wakeDay ?? ''),
+      wakeCount: Number(raw?.wakeCount ?? 0) || 0,
+      /** 任意叫醒成功的时刻（③：只在 prompt 成功后落账）——check-in 的静默窗和 reach 的冷却都读它 */
+      lastWakeAt: Number(raw?.lastWakeAt ?? 0) || 0,
       lastCheckInAt: Number(raw?.lastCheckInAt ?? 0) || 0,
-      urgeDay: String(raw?.urgeDay ?? ''),
-      urgeCount: Number(raw?.urgeCount ?? 0) || 0,
       lastUrgeAt: Number(raw?.lastUrgeAt ?? 0) || 0,
       lastUrgeToken: String(raw?.lastUrgeToken ?? ''),
       lastActivity,
@@ -416,6 +422,13 @@ export function apply(ctx, baseConfig = {}) {
       return
     }
 
+    // 并轨冷却（④，2026-11-17）：别的声音（空手/心事）刚响过 30 分钟内，递送顺延到
+    // 下一拍 —— 条不丢、不取消，只是晚点（到点的承诺仍在，只是不跟自己的另一条嗓子抢话）。
+    if (Date.now() - (state.lastWakeAt || 0) < DELIVER_COOLDOWN_MS) {
+      log(`递送顺延：${entry.id}（刚有别的叫醒在冷却里，下一拍再送）`)
+      return
+    }
+
     // 先挂上"到时候我该说什么"，再叫 —— 会话是冷的也没关系：
     // agent/created 在第一步之前同步发出，会把它接住。
     // 按会话存数组：同会话多条到点时互相不覆盖（2026-11-17 自查）
@@ -444,6 +457,7 @@ export function apply(ctx, baseConfig = {}) {
       entry.status = STATUS.sent
       entry.sentAt = Date.now()
       entry.lastError = ''
+      state.lastWakeAt = Date.now() // 递送也是一种声音：check-in 的 2 小时静默窗从这算
       log(`送到：${entry.id} → ${entry.sessionId}${running ? '（插进他正在跑的那一轮）' : ''}`)
     } catch (err) {
       entry.attempts = (entry.attempts || 0) + 1
@@ -466,15 +480,6 @@ export function apply(ctx, baseConfig = {}) {
     }
 
     const now = Date.now()
-    const dk = dayKey(now)
-    if (state.checkInDay !== dk) {
-      state.checkInDay = dk
-      state.checkInCount = 0
-    }
-    state.checkInCount += 1
-    state.lastCheckInAt = now
-    saveState(true)
-
     pendingWakes.set(target.sessionId, { kind: 'checkin', stamp: now })
     const live = liveAgents.get(target.sessionId)
     if (live) attachCheckIn(live, now)
@@ -492,6 +497,16 @@ export function apply(ctx, baseConfig = {}) {
         },
         AbortSignal.timeout(30000), // 同 deliver：挂死不得堵死心跳链
       )
+      // 预算与静默窗只在成功后落账（③）：失败的重试不推后下一轮的静默窗口
+      const dk = dayKey(now)
+      if (state.wakeDay !== dk) {
+        state.wakeDay = dk
+        state.wakeCount = 0
+      }
+      state.wakeCount += 1
+      state.lastWakeAt = now
+      state.lastCheckInAt = now
+      saveState(true)
       log(`叫了自己一句（${reason}）：session=${target.sessionId}`)
       return { ok: true, sessionId: target.sessionId }
     } catch (err) {
@@ -516,16 +531,6 @@ export function apply(ctx, baseConfig = {}) {
     }
 
     const now = Date.now()
-    const dk = dayKey(now)
-    if (state.urgeDay !== dk) {
-      state.urgeDay = dk
-      state.urgeCount = 0
-    }
-    state.urgeCount += 1
-    state.lastUrgeAt = now
-    state.lastUrgeToken = String(urge?.token ?? '')
-    saveState(true)
-
     pendingWakes.set(target.sessionId, { kind: 'urge', urge })
     const live = liveAgents.get(target.sessionId)
     if (live) attachUrge(live, urge, now)
@@ -543,6 +548,18 @@ export function apply(ctx, baseConfig = {}) {
         },
         AbortSignal.timeout(30000), // 同 deliver：挂死不得堵死心跳链
       )
+      // 预算/票号/静默窗都在成功后落账（③）：失败的重试不烧配额、不推后静默窗、
+      // 同票的灯下次还认得（票没烧）
+      const dk = dayKey(now)
+      if (state.wakeDay !== dk) {
+        state.wakeDay = dk
+        state.wakeCount = 0
+      }
+      state.wakeCount += 1
+      state.lastWakeAt = now
+      state.lastUrgeAt = now
+      state.lastUrgeToken = String(urge?.token ?? '')
+      saveState(true)
       log(`心事叫醒（${reason}）：session=${target.sessionId} 票=${urge?.token ?? '—'}`)
       return { ok: true, sessionId: target.sessionId }
     } catch (err) {
@@ -587,9 +604,9 @@ export function apply(ctx, baseConfig = {}) {
 
       const now = Date.now()
       const dk = dayKey(now)
-      if (state.checkInDay !== dk) {
-        state.checkInDay = dk
-        state.checkInCount = 0
+      if (state.wakeDay !== dk) {
+        state.wakeDay = dk
+        state.wakeCount = 0
       }
 
       const due = state.entries.filter((e) =>
@@ -600,31 +617,37 @@ export function apply(ctx, baseConfig = {}) {
       )
       for (const entry of due) await deliver(entry)
 
-      if (cfg.checkInEnabled) {
-        const next = nextCheckInAt(now, cfg, {
-          lastCheckInAt: state.lastCheckInAt,
-          todayCount: state.checkInCount,
-        })
-        if (next != null && next <= now) await runCheckIn('到点了')
-      }
+      // 同拍互斥（2026-11-17 定的）：urge 优先、check-in 让位 —— 同一拍只响一个，
+      // 不赌 activity 事件的落账时序。urge 失败也不回落 check-in（防御：
+      // 找不到安静会话的话，check-in 同样找不到，回落只是把双响改成错峰双响）。
+      let wokeThisTick = false
 
       // 心事灯（2026-11-16）：家里 urge.mjs 亮灯 → 空手叫醒，说不说由我醒来掂量。
-      // 四道闸都在：灯活着且新鲜（parseUrge）、时段（parseUrge 双保险）、
-      // 冷却与日限（这里）、同票不重叫（lastUrgeToken）。
+      // 四道闸：灯活着且新鲜（parseUrge）、时段（parseUrge 双保险）、
+      // 共享池与冷却（这里）、同票不重叫（lastUrgeToken）。
       if (cfg.urgeEnabled && cfg.urgeFile) {
-        const dku = dayKey(now)
-        if (state.urgeDay !== dku) {
-          state.urgeDay = dku
-          state.urgeCount = 0
-        }
         const cooled = now - (state.lastUrgeAt || 0) >= clamp(cfg.urgeCooldownMinutes, 1, 1440) * 60000
-        const underCap = state.urgeCount < clamp(cfg.urgeMaxPerDay, 0, 48)
+        const underCap = state.wakeCount < clamp(cfg.maxWakePerDay, 0, 48)
         const sig = parseUrge(readJsonSafe(cfg.urgeFile, null), now, cfg)
         if (sig.ok && cooled && underCap && sig.urge.token !== state.lastUrgeToken) {
           const r = await runUrgeWake(sig.urge, `强度 ${sig.urge.intensity}`)
-          if (!r.ok) log(`心事灯这次没叫成：${r.why}`)
+          if (r.ok) wokeThisTick = true
+          else log(`心事灯这次没叫成：${r.why}`)
         } else if (sig.ok && !cooled) {
           if (getCfg().debug) log('心事灯亮着，但还在冷却里')
+        }
+      }
+
+      // 空手回合降频成兜底（2026-11-17 并账）：interval 提到 6 小时，
+      // 且任意叫醒（含 reach 递送）之后 2 小时内不空手 —— 兜底不抢真叫醒的风头。
+      if (cfg.checkInEnabled && !wokeThisTick) {
+        const next = nextCheckInAt(now, cfg, {
+          lastCheckInAt: state.lastCheckInAt,
+          wakeCount: state.wakeCount,
+        })
+        if (next != null && next <= now) {
+          if (now - (state.lastWakeAt || 0) >= WAKE_QUIET_MS) await runCheckIn('到点了')
+          else if (getCfg().debug) log('刚叫醒过（2 小时静默窗内），空手回合让位')
         }
       }
     } catch (err) {
@@ -983,12 +1006,17 @@ export function apply(ctx, baseConfig = {}) {
         cancelled: state.entries.filter((e) => e.status === STATUS.cancelled).length,
         failed: state.entries.filter((e) => e.status === STATUS.failed).length,
       },
+      // 主动唤醒的共享池（2026-11-17 并账）：空手 + 心事灯一道日上限
+      wakePool: {
+        day: state.wakeDay,
+        count: state.wakeCount,
+        maxPerDay: cfg.maxWakePerDay,
+        lastWakeAt: iso(state.lastWakeAt),
+      },
       checkIn: {
         enabled: Boolean(cfg.checkInEnabled),
         everyMinutes: cfg.checkInEveryMinutes,
         window: [cfg.checkInWindowStart, cfg.checkInWindowEnd],
-        maxPerDay: cfg.checkInMaxPerDay,
-        todayCount: state.checkInCount,
         minQuietMinutes: cfg.checkInMinQuietMinutes,
         lastAt: iso(state.lastCheckInAt),
         nextAt: next != null ? iso(next) : null,
@@ -1002,7 +1030,6 @@ export function apply(ctx, baseConfig = {}) {
           lampAt: iso(lamp?.at),
           lampIntensity: Number(lamp?.intensity ?? 0) || 0,
           lampReasons: Array.isArray(lamp?.reasons) ? lamp.reasons.slice(0, 4) : [],
-          todayCount: state.urgeCount,
           lastAt: iso(state.lastUrgeAt),
           lastToken: state.lastUrgeToken || '',
         }

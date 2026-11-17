@@ -161,17 +161,19 @@ export function isDue(entry, now = Date.now(), ctx = {}) {
   return Number.isFinite(dueAt) && dueAt <= Number(now)
 }
 
-/** 下一次该把自己叫起来问一句的时刻；不该叫就返回 null */
+/** 下一次该把自己叫起来问一句的时刻；不该叫就返回 null。
+ *  预算共享（2026-11-17）：空手和心事灯共用一个「今日主动唤醒」池（maxWakePerDay），
+ *  shift.wakeCount 是两边加起来的总数 —— 三个水桶并成一个，谁也不知道别人倒了多少的日子结束。 */
 export function nextCheckInAt(now = Date.now(), cfg = {}, shift = {}) {
   if (!cfg.checkInEnabled) return null
-  const everyMinutes = clamp(cfg.checkInEveryMinutes ?? 240, 15, 1440)
-  const maxPerDay = clamp(cfg.checkInMaxPerDay ?? 2, 0, 48)
+  const everyMinutes = clamp(cfg.checkInEveryMinutes ?? 360, 15, 1440)
+  const maxPerDay = clamp(cfg.maxWakePerDay ?? 3, 0, 48)
   const startMin = parseHHMM(cfg.checkInWindowStart)
   const endMin = parseHHMM(cfg.checkInWindowEnd)
   if (startMin == null || endMin == null) return null
 
   const lastAt = Number(shift.lastCheckInAt) || 0
-  const todayCount = Number(shift.todayCount) || 0
+  const todayCount = Number(shift.wakeCount) || 0
 
   if (todayCount >= maxPerDay) return null
 
@@ -208,7 +210,8 @@ export function renderDeliveryText(entry) {
   const note = sanitize(entry?.note)
   if (note) lines.push(`你当时写下的原因：${note}`)
   lines.push('现在把它说出来——用你自己的声音，别复述这张纸条，也别解释它是哪来的。')
-  lines.push('如果你现在不想说了，就直说一句「这句我不说了」，也行。')
+  lines.push('这句话此刻只落在这条会话里——要送到他常看的地方，走家里的 gate 侧门。')
+  lines.push('如果你现在不想说了（比如话已经过时、或者刚才说过了），就直说一句「这句我不说了」，也行。')
   return lines.join('\n')
 }
 
@@ -337,12 +340,12 @@ export const EDITABLE = {
   checkInEveryMinutes: [15, 1440, 'int'],
   checkInWindowStart: 'hhmm',
   checkInWindowEnd: 'hhmm',
-  checkInMaxPerDay: [0, 48, 'int'],
+  /** 主动唤醒的共享池：空手 + 心事灯一道上限（2026-11-17 并账，旧的两个上限退役） */
+  maxWakePerDay: [0, 48, 'int'],
   checkInMinQuietMinutes: [0, 1440, 'int'],
   /** 心事灯（amikar urge.mjs，2026-11-16）：认家里的灯、由心事触发叫醒 */
   urgeEnabled: 'bool',
   urgeFile: 'path',
-  urgeMaxPerDay: [0, 48, 'int'],
   urgeCooldownMinutes: [1, 1440, 'int'],
   urgeFreshMs: [30000, 3600000, 'int'],
   idleMinutes: [1, 720, 'int'],

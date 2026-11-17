@@ -159,36 +159,36 @@ const cfgBase = {
   checkInEveryMinutes: 240,
   checkInWindowStart: '09:00',
   checkInWindowEnd: '23:00',
-  checkInMaxPerDay: 2,
+  maxWakePerDay: 2,
 }
 
 test('nextCheckInAt：关了就永远不叫', () => {
   assert.equal(nextCheckInAt(Date.now(), { ...cfgBase, checkInEnabled: false }, {}), null)
 })
 
-test('nextCheckInAt：配额用完了今天就不叫', () => {
+test('nextCheckInAt：共享池配额用完了今天就不叫（2026-11-17 并账）', () => {
   const now = at(2026, 10, 31, 20, 0)
-  assert.equal(nextCheckInAt(now, cfgBase, { todayCount: 2 }), null)
-  assert.equal(nextCheckInAt(now, { ...cfgBase, checkInMaxPerDay: 0 }, { todayCount: 0 }), null)
-  assert.equal(nextCheckInAt(now, cfgBase, { todayCount: 1 }), now)
+  assert.equal(nextCheckInAt(now, cfgBase, { wakeCount: 2 }), null)
+  assert.equal(nextCheckInAt(now, { ...cfgBase, maxWakePerDay: 0 }, { wakeCount: 0 }), null)
+  assert.equal(nextCheckInAt(now, cfgBase, { wakeCount: 1 }), now)
 })
 
 test('nextCheckInAt：间隔不到就往后推', () => {
   const now = at(2026, 10, 31, 20, 0)
   const last = now - 180 * MINUTE // 17:00 + 240 分钟 = 21:00，还在窗口里
-  const n = nextCheckInAt(now, cfgBase, { lastCheckInAt: last, todayCount: 0 })
+  const n = nextCheckInAt(now, cfgBase, { lastCheckInAt: last, wakeCount: 0 })
   assert.equal(n, last + 240 * MINUTE)
   assert.ok(n > now)
 
   // 推出来的时刻越过窗口末（23:00 是窗口外）就顺延到明天
-  const late = nextCheckInAt(now, cfgBase, { lastCheckInAt: now - 60 * MINUTE, todayCount: 0 })
+  const late = nextCheckInAt(now, cfgBase, { lastCheckInAt: now - 60 * MINUTE, wakeCount: 0 })
   assert.equal(late, at(2026, 11, 1, 9, 0))
 })
 
 test('nextCheckInAt：算出来的时刻在窗口外就挪到下次窗口开', () => {
   const now = at(2026, 10, 31, 22, 30)
   const last = now - 60 * MINUTE // +240min = 次日 01:30，在窗口外
-  const n = nextCheckInAt(now, cfgBase, { lastCheckInAt: last, todayCount: 0 })
+  const n = nextCheckInAt(now, cfgBase, { lastCheckInAt: last, wakeCount: 0 })
   assert.equal(n, at(2026, 11, 1, 9, 0))
 })
 
@@ -312,11 +312,11 @@ test('applyConfigPatch：时间和范围会归一化 / 夹死在白名单里', (
   const r = applyConfigPatch({
     overrides: {},
     effective: {},
-    patch: { checkInWindowStart: '7:5', checkInEveryMinutes: 5, checkInMaxPerDay: 3 },
+    patch: { checkInWindowStart: '7:5', checkInEveryMinutes: 5, maxWakePerDay: 3 },
   })
   assert.equal(r.overrides.checkInWindowStart, '07:05')
   assert.equal(r.rejected.some((x) => x.key === 'checkInEveryMinutes'), true) // 5 分钟太小
-  assert.equal(r.overrides.checkInMaxPerDay, 3)
+  assert.equal(r.overrides.maxWakePerDay, 3)
 })
 
 test('applyConfigPatch：目录列表能吃三种写法，且去重', () => {
@@ -340,11 +340,11 @@ test('applyConfigPatch：denyRoots 也能从设置页改', () => {
 })
 
 test('applyConfigPatch：叠加在旧覆盖层上，不改入参', () => {
-  const overrides = { checkInMaxPerDay: 1 }
+  const overrides = { maxWakePerDay: 1 }
   const r = applyConfigPatch({ overrides, effective: {}, patch: { debug: true } })
-  assert.equal(r.overrides.checkInMaxPerDay, 1)
+  assert.equal(r.overrides.maxWakePerDay, 1)
   assert.equal(r.overrides.debug, true)
-  assert.deepEqual(overrides, { checkInMaxPerDay: 1 }) // 入参没被改
+  assert.deepEqual(overrides, { maxWakePerDay: 1 }) // 入参没被改
 })
 
 test('applyConfigPatch：空补丁不算成功', () => {

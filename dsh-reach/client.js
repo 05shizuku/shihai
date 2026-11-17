@@ -215,9 +215,9 @@ window.__ModuleLoader__.load({
       // （dataDir/tickMs）必被拒，保存成功了也显示红字（2026-11-17 复核抓的）。
       const EDITABLE_KEYS = [
         'enabled', 'checkInEnabled', 'urgeEnabled', 'debug',
-        'checkInWindowStart', 'checkInWindowEnd', 'checkInEveryMinutes', 'checkInMaxPerDay',
+        'checkInWindowStart', 'checkInWindowEnd', 'checkInEveryMinutes', 'maxWakePerDay',
         'checkInMinQuietMinutes', 'idleMinutes', 'maxTextLength',
-        'urgeMaxPerDay', 'urgeCooldownMinutes', 'urgeFile',
+        'urgeCooldownMinutes', 'urgeFile',
         'allowRoots', 'targetRoot', 'denyRoots',
       ]
       const pickEditable = (obj) => {
@@ -230,6 +230,7 @@ window.__ModuleLoader__.load({
       const engine = status.engine ?? {}
       const ci = status.checkIn ?? {}
       const ug = status.urge ?? {}
+      const wp = status.wakePool ?? {}
       const counts = status.counts ?? {}
 
       return h(
@@ -304,7 +305,7 @@ window.__ModuleLoader__.load({
               ['开着没有', ci.enabled ? '开着' : '关着'],
               ['时段', Array.isArray(ci.window) ? `${ci.window[0]} – ${ci.window[1]}` : '—'],
               ['多久一次', ci.everyMinutes ? `${ci.everyMinutes} 分钟` : '—'],
-              ['今天用了几次', `${ci.todayCount ?? 0} / ${ci.maxPerDay ?? 0}`],
+              ['今天主动唤醒', `${wp.count ?? 0} / ${wp.maxPerDay ?? 0}（空手＋心事灯一道池）`],
               ['上次', ci.lastAt ? `${fmtAge(Date.now() - Date.parse(ci.lastAt))}前` : '还没有'],
               ['下次', ci.nextAt ? fmtWhen(ci.nextAt) : '今天不再叫了'],
               ['他刚说过话', `${ci.minQuietMinutes ?? 0} 分钟内不叫`],
@@ -333,7 +334,7 @@ window.__ModuleLoader__.load({
               ['开着没有', ug.enabled ? '开着' : '关着'],
               ['灯', ug.lampActive ? `亮着（${fmtAge(Date.now() - Date.parse(ug.lampAt))}前亮的）· 强度 ${ug.lampIntensity ?? '—'}` : '没亮'],
               ['上次算', ug.lampAt ? `${fmtAge(Date.now() - Date.parse(ug.lampAt))}前` : '—'],
-              ['今天叫醒', `${ug.todayCount ?? 0} 次`],
+              ['今天叫醒', `${wp.count ?? 0} 次（共享池）`],
               ['上次叫醒', ug.lastAt ? `${fmtAge(Date.now() - Date.parse(ug.lastAt))}前` : '还没有'],
             ],
           }),
@@ -385,10 +386,8 @@ window.__ModuleLoader__.load({
             h('span', { style: C.sub }, '–'),
             h('input', { style: { ...C.input, minWidth: 64 }, value: cur.checkInWindowEnd ?? '23:00', onChange: (ev) => setField('checkInWindowEnd', ev.target.value) }),
             h('span', { style: C.sub }, '每'),
-            h('input', { style: { ...C.input, minWidth: 64 }, type: 'number', value: cur.checkInEveryMinutes ?? 240, onChange: (ev) => setField('checkInEveryMinutes', Number(ev.target.value)) }),
-            h('span', { style: C.sub }, '分钟，一天最多'),
-            h('input', { style: { ...C.input, minWidth: 56 }, type: 'number', value: cur.checkInMaxPerDay ?? 2, onChange: (ev) => setField('checkInMaxPerDay', Number(ev.target.value)) }),
-            h('span', { style: C.sub }, '次'),
+            h('input', { style: { ...C.input, minWidth: 64 }, type: 'number', value: cur.checkInEveryMinutes ?? 360, onChange: (ev) => setField('checkInEveryMinutes', Number(ev.target.value)) }),
+            h('span', { style: C.sub }, '分钟'),
           ),
           h(
             'div',
@@ -404,9 +403,9 @@ window.__ModuleLoader__.load({
           h(
             'div',
             { style: C.row },
-            h('span', { style: C.sub }, '心灯一天最多'),
-            h('input', { style: { ...C.input, minWidth: 56 }, type: 'number', value: cur.urgeMaxPerDay ?? 3, onChange: (ev) => setField('urgeMaxPerDay', Number(ev.target.value)) }),
-            h('span', { style: C.sub }, '次，冷却'),
+            h('span', { style: C.sub }, '主动唤醒一天最多（空手＋心事灯一道池）'),
+            h('input', { style: { ...C.input, minWidth: 56 }, type: 'number', value: cur.maxWakePerDay ?? 3, onChange: (ev) => setField('maxWakePerDay', Number(ev.target.value)) }),
+            h('span', { style: C.sub }, '次；心灯冷却'),
             h('input', { style: { ...C.input, minWidth: 56 }, type: 'number', value: cur.urgeCooldownMinutes ?? 30, onChange: (ev) => setField('urgeCooldownMinutes', Number(ev.target.value)) }),
             h('span', { style: C.sub }, '分钟'),
           ),
