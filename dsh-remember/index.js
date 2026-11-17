@@ -249,6 +249,10 @@ export const DEFAULTS = {
   recallMaxChars: 8000,
   /** 一条账本原文最多给多少字（超了截断并标明；要全文说 full=true） */
   recallItemMax: 400,
+  /** 受众过滤（借自晴猫，2026-11-17）：群轮/私聊轮不翻别的场的账。
+   *  off=现状（全可见）；soft=别的场排到尾上；hard=别的场不翻出来。
+   *  solo 轮（桌面打字/自己醒来）永远全可见。 */
+  recallAudience: 'off',
   /** 把每次挂载写进日志（排查用） */
   debug: false,
 }
@@ -439,6 +443,18 @@ export function apply(ctx, baseConfig = {}) {
   let intentIndex = []
   /** 已经抄过的意图事件 id（游标重置、从头重读时靠它不抄两遍） */
   const intentAllIds = new Set()
+  /**
+   * 墓碑（借自晴猫，2026-11-17）：被撤回消息的原始 mid。
+   * 桥的撤回登记行（mid = 'recall-原始mid'）落进消息流后，这边认领——
+   * 被撤回的原话从意图层不再给（recall / memory_list / 情绪认读都盖住），
+   * 只留「撤回过」那行事实。盖的是读法，不是文件——原行在册子里只增不改。
+   */
+  const intentTombstoned = new Set()
+  /** 撤回登记行的 mid 形状是 'recall-原始mid' —— 反解出要盖住的原始 mid */
+  const intentTombKey = (mid) => {
+    const s = String(mid ?? '')
+    return s.startsWith('recall-') ? s.slice(7) : ''
+  }
   loadIntentIndex(Date.now())
   // 开机先把聊天那边欠的账抄进来 —— 抄的是「发生了什么」，不是我说了什么。
   try {
@@ -542,7 +558,14 @@ export function apply(ctx, baseConfig = {}) {
     if (!cfg.enabled) return ''
     try {
       const picked = []
-      const text = renderSection(nodes, {
+      // 受众过滤（hard 档）：群轮/私聊轮的开头不挂别的场的条（solo 轮全可见 = 现状；
+      // soft 档不动开头 —— 开头本来就只有几条，降存在感没有排位可让）
+      const turnAud = currentAudience(now)
+      const poolNodes =
+        cfg.recallAudience === 'hard' && turnAud !== 'solo'
+          ? nodes.filter((n) => audienceVisible(n.audience, turnAud))
+          : nodes
+      const text = renderSection(poolNodes, {
         now,
         limit: clamp(cfg.injectLimit, 0, 10),
         openLimit: clamp(cfg.openLimit, 0, 10),
@@ -848,25 +871,78 @@ export function apply(ctx, baseConfig = {}) {
     return String(source ?? '').split(/[\\/]/).pop() ?? ''
   }
 
-  /** 副本里全部的意图事件（翻的时候用，不受索引上限管） */
+  /** 副本里全部的意图事件（翻的时候用，不受索引上限管）。被撤回的原话在这里盖住。 */
   function intentAllEvents(now = Date.now()) {
     const out = []
     for (const raw of readJsonLines(files.intent)) {
       const ev = normIntentEvent(raw, { now })
-      if (ev) out.push(ev)
+      if (!ev) continue
+      if (ev.mid && intentTombstoned.has(ev.mid)) continue
+      out.push(ev)
     }
     return out
   }
+
+  // ------------------------------------------------------- 受众（借自晴猫，2026-11-17）
+  //
+  // 桥把私聊和群 @ 递进同一条会话 —— 会话身份分不出「这一轮谁在听」。
+  // 识海的对应物：从最近一条「引起这轮」的意图事件现算 —— 私聊消息都会递话（private），
+  // 群里只有 @ 我的才递话（group + atMe）；十分钟内没有这样的来话，
+  // 就是桌面打字/自己醒来 = 'solo'（只有她，全可见 = 现状）。
+
+  /** 多久之内的来话还算「这一轮的缘」 */
+  const AUDIENCE_WINDOW_MS = 10 * 60 * 1000
+
+  /** 这一轮谁在听：'solo'（只有她）/ 'private' / 'group:群号' */
+  function currentAudience(now = Date.now()) {
+    try {
+      // 索引按时间新的在前 —— 从头找第一条窗内的来话
+      for (const ev of intentIndex) {
+        if (now - Number(ev.at) > AUDIENCE_WINDOW_MS) break
+        if (ev.chatType === 'private') return 'private'
+        if (ev.chatType === 'group' && ev.atMe === true && ev.groupId) return `group:${ev.groupId}`
+      }
+    } catch {
+      /* 算不出按 solo —— 跟现状一个样 */
+    }
+    return 'solo'
+  }
+
+  /** 受众可见性：条目的受众要盖住这一轮的读者才给（晴猫的规矩）。
+   *  any = 写的时候没记受众（旧行、无场信息）→ 两边都给（宽松起步：
+   *  节点是她的理解不是原话；真正的私密在事件层，事件行自带场，不需要回填）。 */
+  function audienceVisible(entryAudience, turn) {
+    const a = String(entryAudience ?? '') || 'any'
+    if (a === 'any' || turn === 'solo') return true
+    if (turn === 'private') return a === 'private'
+    if (turn.startsWith('group:')) return a === turn
+    return true
+  }
+
+  /** 意图事件的受众：事件行自带场（chatType/groupId），零回填 */
+  const intentEventAudience = (ev) =>
+    ev?.chatType === 'group' && ev.groupId ? `group:${ev.groupId}` : ev?.chatType === 'private' ? 'private' : 'any'
 
   /** 启动时把副本读进来：填索引，也记下哪些 id 已经抄过 */
   function loadIntentIndex(now = Date.now()) {
     intentIndex = []
     intentAllIds.clear()
+    intentTombstoned.clear()
     const cap = clamp(getCfg().intentMaxEvents, 0, 5000)
-    for (const raw of readJsonLines(files.intent)) {
+    const all = readJsonLines(files.intent)
+    // 第一遍先收墓碑：撤回行在原行后面落盘，先收齐再建索引才盖得住
+    for (const raw of all) {
+      const ev = normIntentEvent(raw, { now })
+      if (!ev) continue
+      const tk = intentTombKey(ev.mid)
+      if (tk) intentTombstoned.add(tk)
+    }
+    for (const raw of all) {
       const ev = normIntentEvent(raw, { now })
       if (!ev) continue
       intentAllIds.add(ev.id)
+      // 被撤回的原话不进索引 —— 只留「撤回过」那行事实
+      if (ev.mid && intentTombstoned.has(ev.mid)) continue
       intentIndex = pushIntentIndex(intentIndex, ev, cap)
     }
   }
@@ -917,6 +993,14 @@ export function apply(ctx, baseConfig = {}) {
         if (id && intentAllIds.has(id)) continue
         const ev = intentEventFromMessage(rawRow, { source: label })
         if (!ev) continue
+        // 撤回行先进墓碑集（同批里它的原话可能已经抄进索引了，要当场盖住）
+        const tk = intentTombKey(ev.mid)
+        if (tk) {
+          intentTombstoned.add(tk)
+          intentIndex = intentIndex.filter((x) => !(x && x.mid && intentTombstoned.has(x.mid)))
+        }
+        // 被撤回的原话只入档不进索引 —— 「撤回过」的事实行照常走
+        if (ev.mid && intentTombstoned.has(ev.mid)) continue
         intentAllIds.add(ev.id)
         try {
           appendJsonLine(files.intent, {
@@ -927,6 +1011,9 @@ export function apply(ctx, baseConfig = {}) {
             text: ev.text,
             source: ev.source,
             from: ev.from ?? '',
+            // 消息平台 id：墓碑（撤回登记）靠它认领要盖住的原话（2026-11-17 补的——
+            // 以前抄本不带 mid，撤回行落了也认不出盖谁）
+            mid: ev.mid ?? '',
             chatType: ev.chatType ?? '',
             nickname: ev.nickname ?? '',
             groupId: ev.groupId ?? '',
@@ -2150,6 +2237,16 @@ export function apply(ctx, baseConfig = {}) {
           return { ok: true, id: k.id, note: hasThought(k) ? tail : `${tail}；但还没答四问，先不进开头` }
         }
       }
+      // 两个时间（借自晴猫，2026-11-17）：at 是「得知」（写下的时刻，淡忘从这算）；
+      // happenedAt 是「发生」——refs 指向的来话/快层事件的发生时刻。
+      // 只在内存索引里找（找得到才标，老到沉出索引的就不标 —— 宁可漏，不可编）。
+      let happenedAt = 0
+      for (const r of String(args?.refs ?? '').split(/[,，\s]+/)) {
+        const id = r.trim()
+        if (!/^(i_|f_)/.test(id)) continue
+        const ev = [...intentIndex, ...fastIndex].find((x) => x && x.id === id)
+        if (ev && Number(ev.at) > 0) happenedAt = happenedAt ? Math.min(happenedAt, Number(ev.at)) : Number(ev.at)
+      }
       // 把退下的自我条捡回来（饭桶五条之五：捡回来要出声，没人知道等于没捡）
       if (kind === 'self' && args?.restore) {
         const res = restoreSelfNode(nodes, String(args.restore ?? '').trim(), now)
@@ -2194,6 +2291,10 @@ export function apply(ctx, baseConfig = {}) {
           answered: kind === 'curiosity' && args?.answered === true,
           // 技能首写：这次所在的工作目录就是第一处情境（真实的地方，不是编的）
           contexts: kind === 'skill' ? [{ at: now, where: String(agentCwd(agent) ?? '').trim() }] : [],
+          // 两个时间：refs 指向的事件什么时候发生的（0 = 不标）
+          happenedAt,
+          // 受众：写下这一刻「谁在听」（solo=只有她 / private / group:群号）—— 群轮的过滤按这个算
+          audience: currentAudience(now),
           weight: args?.weight,
           changes: args?.changes,
           conflicts: args?.conflicts,
@@ -2284,6 +2385,10 @@ export function apply(ctx, baseConfig = {}) {
           answered: node.answered,
           anchor: node.anchor,
           anchorWhy: node.anchorWhy,
+          // 两个时间：refs 指向的事件的发生时刻（0 = 不标；旧行没有这字段）
+          happenedAt: node.happenedAt || 0,
+          // 受众：写下这一刻谁在听（any = 旧行/没记到，两边都给）
+          audience: node.audience || 'any',
           tags: node.tags,
           refs: node.refs,
           contexts: node.contexts,
@@ -2435,6 +2540,20 @@ export function apply(ctx, baseConfig = {}) {
           }).map((h) => h.node)
       if (kind) list = list.filter((n) => normKind(n.kind) === kind)
       if (!wantSealed) list = list.filter((n) => !isSealed(n, now, dir))
+      // 受众过滤（借自晴猫，2026-11-17）：群轮/私聊轮不翻别的场的账。
+      // off = 现状；soft = 别的场的条排到尾上（还给，降存在感）；hard = 别的场不翻出来。
+      // solo 轮（桌面打字/自己醒来）全可见 —— 跟现状一个样。
+      const audienceTurn = currentAudience(now)
+      const audienceMode = String(cfg.recallAudience ?? 'off')
+      const audienceActive = audienceMode !== 'off' && audienceTurn !== 'solo'
+      if (audienceActive) {
+        const visible = list.filter((n) => audienceVisible(n.audience, audienceTurn))
+        if (audienceMode === 'hard') {
+          list = visible
+        } else {
+          list = [...visible, ...list.filter((n) => !audienceVisible(n.audience, audienceTurn))]
+        }
+      }
       // 染色层（whale-card P0-4）：这次翻账时心里有颜色、且到了再染的时机，才在条目后带一句
       let recolors = new Map()
       if (list.length) {
@@ -2478,9 +2597,14 @@ export function apply(ctx, baseConfig = {}) {
         for (const ev of fastHits) items.push(`${ev.id} ${renderFastLine(ev, now)}`)
       }
       // 意图层同理：机器认出来的那几句话也翻得到（它没有分量，翻到的是「发生过这句」）
-      // args.group：点名只要某个场 —— 群号，或 'private' 只翻私聊（v0.15.0 分册）
+      // args.group：点名只要某个场 —— 群号，或 'private' 只翻私聊（v0.15.0 分册）。
+      // hard 档在群/私聊轮也盖意图层 —— 事件行自带场，零回填（soft 档不筛：本来就在尾上）。
       if (args?.query && !kind) {
-        const intentHits = searchIntentEvents(intentAllEvents(now), args.query, { limit, group: args?.group })
+        const intentPool =
+          audienceActive && audienceMode === 'hard'
+            ? intentAllEvents(now).filter((ev) => audienceVisible(intentEventAudience(ev), audienceTurn))
+            : intentAllEvents(now)
+        const intentHits = searchIntentEvents(intentPool, args.query, { limit, group: args?.group })
         for (const ev of intentHits) items.push(`${ev.id} ${renderIntentLine(ev, now)}`)
       }
       // 总量闸：超了从尾巴省（最不相关的先走），省了多少写在 note 里 —— 不装没发生。
@@ -2493,6 +2617,13 @@ export function apply(ctx, baseConfig = {}) {
       const noteParts = []
       if (clipped) noteParts.push(`${clipped} 条原文截短了（要全文说 full=true）`)
       if (dropped) noteParts.push(`还有 ${dropped} 条没给出来（问具体点我单翻）`)
+      if (audienceActive) {
+        noteParts.push(
+          `这一轮是${audienceTurn === 'private' ? '私聊' : audienceTurn.replace('group:', '群 ')}在听，别的场${
+            audienceMode === 'hard' ? '没翻' : '排到了后面'
+          }`,
+        )
+      }
       const note = noteParts.join('；')
       // 账本被翻也是一件真事 —— 情绪流听这个。
       // 同一分钟里翻同一条只算一次；隔了半小时再翻，算新的（人被提醒一次和被提醒十次不一样）。
@@ -3506,6 +3637,11 @@ export function apply(ctx, baseConfig = {}) {
           .slice(0, 5)
         return { total: vikarmaAgg.total, byReason: { ...vikarmaAgg.byReason }, top }
       })(),
+      // 受众（借自晴猫）：三档开关 + 打了标的新条数（旧条是 any，不计数）
+      audience: {
+        mode: String(cfg.recallAudience ?? 'off'),
+        stamped: nodes.filter((n) => n.audience && n.audience !== 'any').length,
+      },
       wake: {
         enabled: cfg.enabled && cfg.wakeEnabled !== false && cfg.fastEnabled !== false,
         sessionId: wakeState.target,

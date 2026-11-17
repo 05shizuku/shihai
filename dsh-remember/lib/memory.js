@@ -282,6 +282,17 @@ export function makeNode(input = {}, now = Date.now()) {
     id: cleanText(src.id, 40) || makeId(now, text.slice(0, 12)),
     at: Number(src.at) || now,
     lastAt: Number(src.lastAt) || Number(src.at) || now,
+    /**
+     * 两个时间（借自晴猫，2026-11-17）：at 是「得知」（写下的时刻，淡忘从这算）；
+     * happenedAt 是「发生」——refs 指向的来话/事件的原始时间。转述类条目展示时标出来。
+     * 旧行没有这字段 = 0 = 不是转述（或来源时刻没记到）。
+     */
+    happenedAt: Number(src.happenedAt) || 0,
+    /**
+     * 受众（借自晴猫，2026-11-17）：写下这一刻「谁在听」—— solo（只有她）/private/group:群号。
+     * any = 旧行/没记到（两边都给，宽松起步）。群轮的过滤按这个算；solo 轮全可见。
+     */
+    audience: cleanText(src.audience, 24) || 'any',
     text,
     kind: normKind(src.kind),
     /** 只有 kind='self' 有意义：这条自我陈述占哪个槽位 */
@@ -450,6 +461,10 @@ export function renderLine(node, now, { byId } = {}) {
     const cs = Array.isArray(node.contexts) ? node.contexts.length : 0
     if (cs >= SKILL_ESTABLISH_CONTEXTS) extra.push('两处情境都成过')
     else if (cs === 1) extra.push('一处情境')
+  }
+  // 两个时间：事情发生在前、得知在后 —— 转述类标出来，不装成当时就在场
+  if (Number(node.happenedAt) > 0 && Number(node.happenedAt) < Number(node.at) - 5 * 60 * 1000) {
+    extra.push(`转述 · 发生于${relTime(node.happenedAt, now)}`)
   }
   if (when) extra.push(when)
   extra.push(`分量 ${clampWeight(node.weight).toFixed(1)}`)

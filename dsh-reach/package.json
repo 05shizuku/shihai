@@ -1,0 +1,37 @@
+{
+  "name": "dsh-reach",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "description": "主动找你：把一句话留给以后，到点插件把你叫回来说出来",
+  "main": "./index.js",
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg"
+  },
+  "files": [
+    "index.js",
+    "client.js",
+    "lib",
+    "locale",
+    "icon.svg",
+    "README.md",
+    "cordis.patch.yml",
+    "test",
+    "tools"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": []
+    }
+  }
+}

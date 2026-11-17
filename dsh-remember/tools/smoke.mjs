@@ -813,6 +813,104 @@ try {
   ok(list3.items.some((x) => x.includes('刚刚认出来的')), 'memory_list 里列得出意图层最近的事')
   ok(list3.items.some((x) => x.includes('意图')), 'memory_list 里说得出意图层有几条')
 
+  // ---------------------------------------------- 借自晴猫的两样：两个时间 + 墓碑（2026-11-17）
+  const tombAt = Date.now() - 3 * 24 * 60 * 60 * 1000
+  // 先来一条不撤回的旧消息当「转述」源（三天前说的）
+  appendFileSync(
+    bridgeMessages,
+    JSON.stringify({ at: tombAt, chatType: 'private', userId: '10001', nickname: '好友甲', text: '两个时间试验：三天前他说过这句', mid: 'tt-m1' }) + '\n',
+    'utf8',
+  )
+  const resTT = fakeRes()
+  await statusRoute.handler(fakeReq('GET'), resTT)
+  const stTT = JSON.parse(resTT.body)
+  const ttFound = await h.tools.get('recall').execute({ query: '两个时间试验' }, exec)
+  const ttId = String(ttFound.items.find((x) => /^i_[0-9a-z]+ /.test(x)) ?? '').split(' ')[0]
+  ok(ttId.startsWith('i_'), `三天前那句按词翻得到（${ttId || '没翻到'}）`)
+  const ttRemember = await h.tools.get('remember').execute(
+    { text: '两个时间试验：转述他三天前说过的那句话', kind: 'fact', weight: 0.5, changes: '试转述标注', refs: ttId },
+    exec,
+  )
+  ok(ttRemember.ok, '转述条记下了')
+  const memTT = JSON.parse(readFileSync(join(dataDir, 'memory.json'), 'utf8')).nodes.find((n) => n.id === ttRemember.id)
+  ok(Number(memTT?.happenedAt) > 0, `refs 的事件发生时刻写进了节点（happenedAt=${memTT?.happenedAt}）`)
+  const ttBack = await h.tools.get('recall').execute({ query: '转述他三天前' }, exec)
+  ok(
+    ttBack.items.some((x) => x.includes('转述 · 发生于')),
+    `行上标了「转述 · 发生于…」（${ttBack.items.join(' ┃ ').slice(0, 100)}）`,
+  )
+  // 墓碑：原话 + 撤回登记行（桥的形状：撤回行的 mid = 'recall-原始mid'）
+  appendFileSync(
+    bridgeMessages,
+    [
+      { at: tombAt, chatType: 'private', userId: '10001', nickname: '好友甲', text: '墓碑试验：这句话等会儿要被撤回', mid: 'tb-m1' },
+      { at: Date.now(), chatType: 'private', userId: '10001', nickname: '', text: '[撤回] 一条消息被撤回（原发言 10001 · 操作者 10001）', mid: 'recall-tb-m1', atMe: false },
+    ]
+      .map((x) => JSON.stringify(x))
+      .join('\n') + '\n',
+    'utf8',
+  )
+  const resTomb = fakeRes()
+  await statusRoute.handler(fakeReq('GET'), resTomb)
+  const stTomb = JSON.parse(resTomb.body)
+  eq(stTomb.intent.total, stTT.intent.total + 1, `撤回后只多了事实行、原话没入账（total=${stTomb.intent.total}）`)
+  ok(!stTomb.intent.recent.some((x) => String(x.text ?? '').includes('要被撤回')), '被撤回的原话不在意图索引里')
+  const tombRecall = await h.tools.get('recall').execute({ query: '要被撤回' }, exec)
+  ok(
+    !tombRecall.items.some((x) => x.includes('要被撤回')),
+    `撤回的原话 recall 不给（${tombRecall.items.join(' ┃ ').slice(0, 100) || '（无命中）'}）`,
+  )
+  const tombFact = await h.tools.get('recall').execute({ query: '被撤回' }, exec)
+  ok(tombFact.items.some((x) => x.includes('撤回')), '「撤回过」这个事实按词还翻得到')
+
+  // ---------------------------------------------- 受众过滤（借自晴猫，2026-11-17）：三档开关
+  // 眼下没有来话（上一条桥消息在窗内？——撤回登记行算 private 来话……不在窗内：at 是 tombAt 三天前
+  // 不会算；事实行 at = Date.now()，chatType private —— 它在窗内！先把它记账为 solo 之前的现状，
+  // 也就是此刻受众=private。所以 solo 打标这条要等窗过了才准 —— 冒烟不等，直接断言「打的是当下的受众」。
+  const audRemember = await h.tools.get('remember').execute(
+    { text: '受众试验：这条看写下时谁在听', kind: 'fact', weight: 0.5, changes: '受众打标' },
+    exec,
+  )
+  ok(audRemember.ok, '受众试验条记下了')
+  const memAud = JSON.parse(readFileSync(join(dataDir, 'memory.json'), 'utf8')).nodes.find((n) => n.id === audRemember.id)
+  ok(
+    ['solo', 'private'].includes(memAud?.audience),
+    `写下时打了受众标（audience=${memAud?.audience}）`,
+  )
+  // 群里 @ 我一句 → 这轮的受众变成那个群；开 hard 档，solo/private 写的条不翻出来
+  appendFileSync(
+    bridgeMessages,
+    JSON.stringify({ at: Date.now(), chatType: 'group', groupId: '222222222', userId: '20001', nickname: '群友甲', text: '[淘气] @记得 试试受众过滤', mid: 'ga-m1', atMe: true }) + '\n',
+    'utf8',
+  )
+  const resAudPull = fakeRes()
+  await statusRoute.handler(fakeReq('GET'), resAudPull)
+  const resAudCfg = fakeRes()
+  await configRoute.handler(fakeReq('POST', JSON.stringify({ recallAudience: 'hard' })), resAudCfg)
+  eq(JSON.parse(resAudCfg.body).accepted?.[0]?.key, 'recallAudience', 'recallAudience 键在设置页能改')
+  const groupRecall = await h.tools.get('recall').execute({ query: '受众试验' }, exec)
+  ok(
+    !groupRecall.items.some((x) => x.includes(audRemember.id)),
+    `群轮翻不到别的场写的条（${groupRecall.items.join(' ┃ ').slice(0, 90) || '（无命中）'}）`,
+  )
+  ok(
+    String(groupRecall.note || '').includes('群 222222222') || String(groupRecall.note || '').includes('没翻'),
+    `note 里说清了这轮的受众（${groupRecall.note}）`,
+  )
+  // soft 档：还给，但排到尾上
+  const resAudSoft = fakeRes()
+  await configRoute.handler(fakeReq('POST', JSON.stringify({ recallAudience: 'soft' })), resAudSoft)
+  const softRecall = await h.tools.get('recall').execute({ query: '受众试验' }, exec)
+  ok(
+    softRecall.items.some((x) => x.includes(audRemember.id)),
+    'soft 档别的场的条还给（排尾上）',
+  )
+  // 关掉：回到现状，全可见
+  const resAudOff = fakeRes()
+  await configRoute.handler(fakeReq('POST', JSON.stringify({ recallAudience: 'off' })), resAudOff)
+  const offRecall = await h.tools.get('recall').execute({ query: '受众试验' }, exec)
+  ok(offRecall.items.some((x) => x.includes(audRemember.id)), '开关关了全可见（现状）')
+
   // ------------------------------------------------------------------ 情绪流
   // 意图层/快层里的真事，机器认成情绪（七类枚举，认不出不给 —— mood 没 detail 就不该记）
   const emo1 = await h.tools.get('emotion_state').execute({}, exec)

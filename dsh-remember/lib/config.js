@@ -58,6 +58,8 @@ export const EDITABLE = {
   wakeSessionId: 'text',
   /** 两次叫醒最少隔多少分钟 */
   wakeCooldownMinutes: 'number',
+  /** 受众过滤（借自晴猫，2026-11-17）：群轮/私聊轮不翻别的场的账。off=现状；soft=别的场排尾上；hard=不翻出来 */
+  recallAudience: 'enum:off,soft,hard',
   /** 情绪流：要不要从真事里认情绪 */
   emotionEnabled: 'boolean',
   /** 情绪流多久接一次真事（分钟） */
@@ -101,6 +103,11 @@ function scalar(kind, value) {
     const n = Number(value)
     if (!Number.isFinite(n)) return { ok: false, why: '要一个数' }
     return { ok: true, value: n }
+  }
+  if (kind.startsWith('enum:')) {
+    const allowed = kind.slice(5).split(',')
+    const s = String(value ?? '').trim()
+    return allowed.includes(s) ? { ok: true, value: s } : { ok: false, why: `只认：${allowed.join(' / ')}` }
   }
   return { ok: false, why: `不认识的类型 ${kind}` }
 }
