@@ -832,6 +832,22 @@ export function createBridge({ cfg, log = () => {}, sessionController, livenessB
   // 表情库索引（v0.8.0）：启动时读一次 manifest.jsonl；库变了可以 reloadStickers() 重读。
   let stickerIndex = stickersOk ? loadStickers(stickerDir, { log }) : { byName: new Map(), list: [] }
   if (stickersOk) log(`表情库：${stickerIndex.list.length} 张（${stickerDir}）`)
+  // 2026-11-17 接线（她放话「你自己做决定就行啦」）：用前查新——
+  // 发送前 stat 一眼 manifest.jsonl 的 mtime，变了就重读，她新分享表情包不用重启桥
+  //（兑现上面注释的承诺；reloadStickers() 保留给手动调用）。
+  let stickerManifestMtime = 0
+  if (stickersOk) {
+    try { stickerManifestMtime = statSync(join(stickerDir, 'manifest.jsonl')).mtimeMs } catch { stickerManifestMtime = 0 }
+  }
+  function ensureStickersFresh() {
+    if (!stickersOk) return
+    let m = 0
+    try { m = statSync(join(stickerDir, 'manifest.jsonl')).mtimeMs } catch { return }
+    if (!m || m === stickerManifestMtime) return
+    stickerManifestMtime = m
+    stickerIndex = loadStickers(stickerDir, { log })
+    log(`表情库重读（mtime 变了）：${stickerIndex.list.length} 张`)
+  }
   // 挂起的回话记在盘上：热重载/重启不让「等着回的话」跟着实例一起没掉
   //（上次就是热重载把他等的那条回话洗掉了，我只能走侧门补发）
   const readPendingFile = () => {
@@ -1386,6 +1402,7 @@ export function createBridge({ cfg, log = () => {}, sessionController, livenessB
     // 表情包标记（v0.8.0）：[表情:名字] 按名字查表情库，查得到就变图片段。
     // 库关着（stickersOk=false）就把标记当普通文字发 —— 空索引会把标记全吞了
     // 还倒贴一句「库里没有」（README 本来就这么承诺，2026-11-16 重新接回）
+    ensureStickersFresh()
     const stickerParsed = stickersOk
       ? parseStickerMarkers(parsed.text, stickerIndex)
       : { text: parsed.text, stickers: [], missing: [] }
