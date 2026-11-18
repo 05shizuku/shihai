@@ -168,7 +168,7 @@ const REFRESH_MS = 2000
  * 这本账的七个工具。范围外的会话不该碰得到：先 try restrict 把它们从工具表里遮掉
  * （只对全局注册的工具有效），遮不掉就挂 agent scope 的 guard，一律拒（见 isolateAgent）。
  */
-const TOOL_NAMES = ['remember', 'recall', 'forget', 'memory_list', 'emotion_state', 'emotion_tune', 'vikarma', 'narrate']
+const TOOL_NAMES = ['remember', 'recall', 'forget', 'memory_list', 'emotion_state', 'emotion_tune', 'vikarma', 'narrate', 'transform']
 
 export const DEFAULTS = {
   /** 账本目录；留空 = <DSH_HOME>/.dsh-remember */
@@ -3554,6 +3554,93 @@ export function apply(ctx, baseConfig = {}) {
     }
   }
 
+  const transformTool = defineTool({
+    name: 'transform',
+    description:
+      '转识成智：从一颗种子里提炼出「我从中明白了什么」。' +
+      '智落成 kind:wisdom 的节点（refs 指回原种子），原种子盖 transformed 旗——' +
+      '不删、recall 翻得到、行尾指路「已转化 → w_xxx」。' +
+      '一种子一转化；智本身可以再转（链式升华）。' +
+      '五类不收：self（用 supersedeSelf）、habit/curiosity/skill（各有自己的生命周期）。',
+    parameters: toJsonSchema({
+      seedId: { type: 'string', required: true, description: '要转化的种子 id（r_ 或 n_ 或 w_）。' },
+      insight: { type: 'string', required: true, description: '「我从中明白了什么」——落成智的正文。' },
+      conflicts: { type: 'string', required: false, description: '第二问：跟旧的对上了，还是撞上了。' },
+      will_do: { type: 'string', required: false, description: '第三问：我会不会因此做得不一样。' },
+      known: { type: 'string', required: false, description: '第四问：我知道了什么。' },
+      weight: { type: 'number', required: false, description: '分量 0–1，默认 0.8。' },
+    }),
+    output: {
+      schema: {
+        type: 'object',
+        properties: { ok: { type: 'boolean' }, id: { type: 'string' }, note: { type: 'string' } },
+        required: ['ok', 'id', 'note'],
+      },
+      render: (_args, out) => [
+        { type: 'text', text: out.ok ? `[智记下了 ${out.id} · ${out.note}]` : `[没记下：${out.note}]` },
+      ],
+    },
+    async execute(args, exec) {
+      const cfg = getCfg()
+      if (!cfg.enabled) return { ok: false, id: '', note: '账本现在是关着的。' }
+      if (!scopeOk(exec?.agent)) return { ok: false, id: '', note: '这条会话不在允许记账的目录里。' }
+      const seedId = String(args?.seedId ?? '').trim()
+      const seed = findNode(seedId)
+      if (!seed) return { ok: false, id: seedId, note: `没有这条种子：${seedId || '（空）'}` }
+      const kind = normKind(seed.kind)
+      if (['self', 'habit', 'curiosity', 'skill'].includes(kind)) {
+        const why = { self: 'self 的演化走 supersedeSelf 和锚门', habit: '习惯靠同情境再发生', curiosity: '好奇靠解答（answered）', skill: '技能靠两处情境' }
+        return { ok: false, id: seedId, note: `「${kind}」不走转化 —— ${why[kind]}。` }
+      }
+      if (seed.transformed) {
+        return { ok: false, id: seedId, note: `已转化过，智在 ${seed.transformedBy}；真要再提炼，对智本身 transform。` }
+      }
+      const insight = cleanText(args?.insight, clamp(cfg.maxTextLength, 40, 8000))
+      if (!insight) return { ok: false, id: seedId, note: 'insight 是空的 —— 「我从中明白了什么」得写下来。' }
+      const now = Date.now()
+      const node = makeNode(
+        {
+          text: insight,
+          kind: 'wisdom',
+          refs: [seed.id],
+          changes: insight,
+          conflicts: args?.conflicts,
+          willDo: args?.will_do,
+          known: args?.known,
+          weight: args?.weight ?? 0.8,
+          audience: currentAudience(now),
+        },
+        now,
+      )
+      node.id = `w_${node.id.slice(2)}`
+      const flagged = { ...seed, transformed: true, transformedBy: node.id, transformedAt: now }
+      replaceNode(flagged)
+      replaceNode(node)
+      saveNodes()
+      try {
+        appendJsonLine(files.lines, {
+          id: node.id,
+          at: now,
+          kind: 'wisdom',
+          weight: node.weight,
+          text: node.text,
+          changes: node.changes,
+          conflicts: node.conflicts,
+          willDo: node.willDo,
+          known: node.known,
+          refs: node.refs,
+          audience: node.audience,
+          sessionId: agentSessionId(exec?.agent),
+          cwd: agentCwd(exec?.agent),
+        })
+      } catch (err) {
+        log(`原话层写不进去：${String(err?.message ?? err).slice(0, 200)}`)
+      }
+      log(`转识成智 ${node.id} ← ${seed.id}（${kind}）`)
+      return { ok: true, id: node.id, note: `从 ${seed.id} 提炼 · 已盖转化旗` }
+    },
+  })
+
   ctx.effect(() => {
     const disposers = []
     // 第二层隔离的拒绝回执按各工具的 output schema 给 —— 范围外调用也得是合规回执，
@@ -3575,8 +3662,9 @@ export function apply(ctx, baseConfig = {}) {
       emotion_tune: () => ({ ok: false, id: '', emotion: '', from: 0, to: 0, note: OUT_OF_SCOPE_NOTE }),
       vikarma: () => ({ ok: false, id: '', note: OUT_OF_SCOPE_NOTE }),
       narrate: () => ({ ok: false, id: '', note: OUT_OF_SCOPE_NOTE }),
+      transform: () => ({ ok: false, id: '', note: OUT_OF_SCOPE_NOTE }),
     }
-    for (const raw of [rememberTool, recallTool, forgetTool, listTool, emotionStateTool, emotionTuneTool, vikarmaTool, narrateTool]) {
+    for (const raw of [rememberTool, recallTool, forgetTool, listTool, emotionStateTool, emotionTuneTool, vikarmaTool, narrateTool, transformTool]) {
       try {
         // 第二层隔离：就算工具 somehow 出现在范围外的会话里，调用也过不去。
         // remember 自己还会再查一次（那是第三层，管写）。
@@ -3604,7 +3692,7 @@ export function apply(ctx, baseConfig = {}) {
     }
     log(
       disposers.length
-        ? `工具挂上了：remember / recall / forget / memory_list / emotion_state / emotion_tune / vikarma / narrate（${disposers.length} 过）`
+        ? `工具挂上了：remember / recall / forget / memory_list / emotion_state / emotion_tune / vikarma / narrate / transform（${disposers.length} 过）`
         : '工具一个都没挂上',
     )
     return () => {
@@ -4034,6 +4122,21 @@ export function apply(ctx, baseConfig = {}) {
           due: all.length === 0 || (now - Number(newest.at) > intervalMs && !writtenToday),
           latest: newest
             ? { id: newest.id, at: new Date(newest.at).toISOString(), refsCount: Array.isArray(newest.refs) ? newest.refs.length : 0 }
+            : null,
+        }
+      })(),
+      // 转识成智（定案 D）：全内存算（灯案纪律）
+      wisdom: (() => {
+        const all = nodes.filter((n) => n && normKind(n.kind) === 'wisdom')
+        const newest = all.reduce((a, b) => {
+          const aa = Number(a?.at) || 0
+          const bb = Number(b?.at) || 0
+          return bb > aa ? b : a
+        }, null)
+        return {
+          count: all.length,
+          latest: newest
+            ? { id: newest.id, at: new Date(newest.at).toISOString(), seedId: (newest.refs ?? [])[0] ?? '' }
             : null,
         }
       })(),

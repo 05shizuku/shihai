@@ -63,7 +63,7 @@ const MINUTE_MS = 60 * 1000
  */
 export function recencyTauMinutes(weight, kind = '') {
   const k = String(kind ?? '').trim().toLowerCase()
-  if (k === 'self' || k === 'narration') {
+  if (k === 'self' || k === 'narration' || k === 'wisdom') {
     return (30 + 270 * clampWeight(weight)) * 24 * 60
   }
   return RECENCY_TAU_BASE_MIN + RECENCY_TAU_SPAN_MIN * clampWeight(weight)

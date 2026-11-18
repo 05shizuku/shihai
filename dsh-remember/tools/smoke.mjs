@@ -219,6 +219,7 @@ try {
   ok(h.tools.has('remember') && h.tools.has('recall') && h.tools.has('forget') && h.tools.has('memory_list'), '账本四个 + 情绪流两个都注册上了')
   ok(h.tools.has('vikarma'), '违熏工具也注册上了')
   ok(h.tools.has('narrate'), '思量工具也注册上了')
+  ok(h.tools.has('transform'), '转识成智工具也注册上了')
   ok(h.tools.has('emotion_state') && h.tools.has('emotion_tune'), '情绪流的两个工具也注册上了')
   eq(h.routes.length, 3, '三条路由挂上了（status / config / selftest）')
   ok(existsSync(join(dataDir, 'dsh-remember.log')), '日志文件写出来了')
@@ -537,8 +538,8 @@ try {
   eq(h.restrictions.length, 1, '范围外的会话被隔开：在它自己那层 deny 一次')
   eq(
     (h.restrictions[0]?.deny ?? []).join(','),
-    'remember,recall,forget,memory_list,emotion_state,emotion_tune,vikarma,narrate',
-    'deny 的正是这八个工具（账本四个 + 情绪流两个 + 违熏 + 思量）',
+    'remember,recall,forget,memory_list,emotion_state,emotion_tune,vikarma,narrate,transform',
+    'deny 的正是这九个工具（账本四个 + 情绪流两个 + 违熏 + 思量 + 转识成智）',
   )
   eq(outsiderSections.length, 0, '范围外的会话不挂任何段')
   // guard：真机上 restrict 挡不住（它只认全局注册的工具），这一层才是靠得住的
@@ -986,6 +987,47 @@ try {
   const b1 = renderYesterdayStream({ nodes: [yNodeLate], echoTimes: yEchoLate, now: noonUtc - 60000 })
   const b2 = renderYesterdayStream({ nodes: [yNodeLate], echoTimes: yEchoLate, now: justPast + 60000 })
   ok(b1 === '' && b2.includes('昨天写下'), `UTC 日界两侧分属两天（界前 ${b1 ? '有段' : '空'} / 界后 ${b2 ? '有段' : '空'}）`)
+
+  // ---------------------------------------- 转识成智（定案 D，2026-11-19）：一种子一旗、链式升华
+  const wSeed = await h.tools.get('remember').execute(
+    { text: '转识的种子：受众过滤的方向是我自己拍的', kind: 'decision', weight: 0.6, changes: '拍板过' },
+    exec,
+  )
+  ok(wSeed.ok, '转识的种子记下了')
+  // D5-1：ghost / f_/i_ 拒；五类不可转拒；已转化重复拒
+  const tGhost = await h.tools.get('transform').execute({ seedId: 'f_某某', insight: 'x' }, exec)
+  ok(!tGhost.ok && tGhost.note.includes('没有这条'), '事件引用拒绝（没有这条种子）')
+  const selfNode = await h.tools.get('remember').execute({ text: '我是做账的', kind: 'self', slot: 'identity', weight: 0.9, changes: 'x' }, exec)
+  const tSelf = await h.tools.get('transform').execute({ seedId: selfNode.id, insight: 'x' }, exec)
+  ok(!tSelf.ok && tSelf.note.includes('supersedeSelf'), 'self 拒（回执指路 supersedeSelf）')
+  const t1 = await h.tools.get('transform').execute(
+    { seedId: wSeed.id, insight: '方向是拍出来的，就要守得住。', will_do: '守住它', weight: 0.85 },
+    exec,
+  )
+  ok(t1.ok && String(t1.id).startsWith('w_'), `智记下了（${t1.id}）`)
+  ok(String(t1.note).includes('已盖转化旗'), '回执带已盖旗')
+  const tAgain = await h.tools.get('transform').execute({ seedId: wSeed.id, insight: '再转一次' }, exec)
+  ok(!tAgain.ok && String(tAgain.note).includes('已转化过'), '一种子一旗：重复转化拒（回执指 w_xxx）')
+  // D5-2/3：原节点三旗 + 竞争池排除 + recall 翻得到 + 行尾
+  const seedAfter = await h.tools.get('recall').execute({ query: '受众过滤的方向' }, exec)
+  ok(seedAfter.items.some((x) => x.includes(wSeed.id) && x.includes('已转化 →')), '原种子翻得到 + 行尾已转化指路')
+  ok(!sec('dsh-remember').text().includes('受众过滤的方向是我自己拍的'), '已转化的原种子退出【我记得的】竞争池')
+  // D5-4：wisdom 进主池（不豁免）——分量 0.85 应该浮得起来
+  const wisdomInPool = sec('dsh-remember').text()
+  ok(wisdomInPool.includes('方向是拍出来的') || wisdomInPool.includes('守得住'), 'wisdom 进主池凭分量竞争（D0 拍板不豁免）')
+  // D5-6：链式升华 —— 智本身再转
+  const t2 = await h.tools.get('transform').execute(
+    { seedId: t1.id, insight: '守的方式是让结构长出来，不是靠盯。', weight: 0.9 },
+    exec,
+  )
+  ok(t2.ok && String(t2.id).startsWith('w_'), `链式升华：智再转成 ${t2.id}`)
+  const w1After = await h.tools.get('recall').execute({ query: '方向是拍出来的' }, exec)
+  ok(w1After.items.some((x) => x.includes(t1.id) && x.includes(`已转化 → ${t2.id}`)), '链条行尾指向下一层智')
+  // D5-7：status.wisdom
+  const resWis = fakeRes()
+  await statusRoute.handler(fakeReq('GET'), resWis)
+  const stWis = JSON.parse(resWis.body)
+  ok(stWis.wisdom?.count >= 2 && stWis.wisdom?.latest?.id === t2.id, `status.wisdom 计数与链头（${JSON.stringify(stWis.wisdom?.latest ?? {})}）`)
 
   // ------------------------------------------------------------------ 情绪流
   // 意图层/快层里的真事，机器认成情绪（七类枚举，认不出不给 —— mood 没 detail 就不该记）

@@ -7,7 +7,7 @@
  *  3. 没写「三问」的条也能存（原话层永远收），但不会被挂到明天的开头。
  */
 
-export const KINDS = ['fact', 'decision', 'lesson', 'skill', 'open', 'self', 'habit', 'curiosity', 'narration']
+export const KINDS = ['fact', 'decision', 'lesson', 'skill', 'open', 'self', 'habit', 'curiosity', 'narration', 'wisdom']
 
 import { rankByQuery, MIN_RELEVANCE } from './search.js'
 
@@ -21,6 +21,7 @@ export const KIND_LABEL = {
   habit: '习惯',
   curiosity: '好奇',
   narration: '思量',
+  wisdom: '智',
 }
 
 /**
@@ -301,6 +302,15 @@ export function makeNode(input = {}, now = Date.now()) {
      */
     prev: cleanText(src.prev, 40),
     prevSelf: cleanText(src.prevSelf, 40),
+    /**
+     * 转识成智（定案 D，2026-11-19）：原种子被 transform 后盖三旗——
+     * transformed = 已转化（退出竞争池，recall 翻得到，行尾指路）；
+     * transformedBy = 智的 id（w_ 前缀）；transformedAt = 转化时刻。
+     * 原话层一字不动；一种子一旗；智本身可以再转（链式升华）。
+     */
+    transformed: Boolean(src.transformed),
+    transformedBy: cleanText(src.transformedBy, 40),
+    transformedAt: Number(src.transformedAt) || 0,
     text,
     kind: normKind(src.kind),
     /** 只有 kind='self' 有意义：这条自我陈述占哪个槽位 */
@@ -474,6 +484,8 @@ export function renderLine(node, now, { byId } = {}) {
   if (Number(node.happenedAt) > 0 && Number(node.happenedAt) < Number(node.at) - 5 * 60 * 1000) {
     extra.push(`转述 · 发生于${relTime(node.happenedAt, now)}`)
   }
+  // 转识成智（定案 D）：原种子被转化后行尾指路——不删、翻得到、有方向
+  if (node.transformed && node.transformedBy) extra.push(`已转化 → ${node.transformedBy}`)
   if (when) extra.push(when)
   extra.push(`分量 ${clampWeight(node.weight).toFixed(1)}`)
   return `· ${bits.join('')}（${extra.join(' · ')}）`
@@ -860,6 +872,7 @@ export function renderSection(
       normKind(n.kind) !== 'self' &&
       normKind(n.kind) !== 'curiosity' &&
       normKind(n.kind) !== 'narration' && // 思量另有自己的一段（定案 A：不进竞争池）
+      !n.transformed && // 已转化的原种子退出候选池（定案 D：智已从中长出）
       !fastIds.has(n.id) &&
       !isSealed(n, now, dir) &&
       hasThought(n),
