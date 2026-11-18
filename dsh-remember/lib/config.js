@@ -145,7 +145,7 @@ function inRange(key, value) {
     narrationSectionMaxChars: [80, 2000],
     streamSectionOrder: [1000, 9999],
     streamSectionMaxChars: [80, 2000],
-    sproutBodyMinLevel: [10, 100],
+    sproutBodyMinLevel: [0.1, 1],
     sproutBodyCooldownMinutes: [1, 120],
     sproutBodyDailyCap: [1, 20],
     selfSectionOrder: [1000, 9999],

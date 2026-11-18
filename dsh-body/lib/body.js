@@ -382,7 +382,7 @@ export function applyMoodEvent(state, ev, nowMs = Date.now()) {
     const level = clamp(Number(ev?.detail?.level) || 0, 0, 1)
     const offset = clamp(SPROUT_FACTOR * level * 100, -2, 2)
     const dominant = String(ev?.detail?.dominant ?? '')
-    const positive = dominant === 'warm' || dominant === 'pleased'
+    const positive = dominant === 'warm' || dominant === 'pleased' || dominant === 'curious'
     next.mood = clamp((Number(next.mood) || 0) + (positive ? offset : -offset), -100, 100)
     next.lastMoodEvent = {
       at: new Date(nowMs).toISOString(),

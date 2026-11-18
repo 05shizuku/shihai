@@ -386,13 +386,15 @@ export function apply(ctx, baseConfig = {}) {
         log(`心情事件 ${String(ev?.kind ?? '')}：anger ${before.toFixed(1)} → ${st.anger.toFixed(1)}`)
         const kind = String(ev?.kind ?? '')
         const words =
-          kind === 'praise'
-            ? '有人夸了一句，心里亮了一下'
-            : kind === 'insult'
-              ? '有人骂了一句，心里堵着'
-              : kind === 'sad'
-                ? '看到一句让人心里发沉的话，闷了一会儿'
-                : '心里动了一下'
+          kind === 'sprout'
+            ? String(ev?.text ?? '心头一动')
+            : kind === 'praise'
+              ? '有人夸了一句，心里亮了一下'
+              : kind === 'insult'
+                ? '有人骂了一句，心里堵着'
+                : kind === 'sad'
+                  ? '看到一句让人心里发沉的话，闷了一会儿'
+                  : '心里动了一下'
         noteEvent(cfg, 'mood', words, msOf(st.lastMoodEvent?.at) || now, { kind })
       }
     }

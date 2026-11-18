@@ -3506,13 +3506,17 @@ export function apply(ctx, baseConfig = {}) {
       const moodGate = n.moodAt && n.moodAt.dominant !== 'calm' && Number(n.moodAt.level) >= minLevel
       const stateGate = dominant !== 'calm' && Number(n.weight) >= 0.75
       if (!moodGate && !stateGate) continue
+      // 报哪种颜色（2026-11-18 复核拍板）：染色门报种子的颜色，心境门报当下的
+      const feel = moodGate ? n.moodAt : emoState
+      const feelDominant = feel.dominant ?? dominant
+      const feelLevel = Number(feel.level) || level
       // 写
-      const text = SPROUT_TEXT[emoState.dominant] ?? '心头一动'
+      const text = SPROUT_TEXT[feelDominant] ?? '心头一动'
       const row = {
         at: now,
         kind: 'sprout',
         text,
-        detail: { seedId: n.id, dominant, level },
+        detail: { seedId: n.id, dominant: feelDominant, level: feelLevel },
         source: 'dsh-remember',
       }
       try {
@@ -3522,7 +3526,7 @@ export function apply(ctx, baseConfig = {}) {
         continue
       }
       sproutTracker.set(n.id, { lastAt: now, day: dayKey, count: todayCount + 1 })
-      log(`执受：${n.id} → 身体（${text} · ${dominant} ${level}）`)
+      log(`执受：${n.id} → 身体（${text} · ${feelDominant} ${feelLevel}）`)
     }
   }
   function currentStreamSection(now = Date.now()) {
