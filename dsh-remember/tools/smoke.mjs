@@ -217,6 +217,7 @@ try {
   // 起步
   ok(h.tools.has('remember') && h.tools.has('recall') && h.tools.has('forget') && h.tools.has('memory_list'), '账本四个 + 情绪流两个都注册上了')
   ok(h.tools.has('vikarma'), '违熏工具也注册上了')
+  ok(h.tools.has('narrate'), '思量工具也注册上了')
   ok(h.tools.has('emotion_state') && h.tools.has('emotion_tune'), '情绪流的两个工具也注册上了')
   eq(h.routes.length, 3, '三条路由挂上了（status / config / selftest）')
   ok(existsSync(join(dataDir, 'dsh-remember.log')), '日志文件写出来了')
@@ -224,12 +225,13 @@ try {
   // 还没记事的时候：段文本是空的，但段落该挂还是要挂
   h.created.forEach((fn) => fn(h.agent))
   const sec = (name) => h.sections.find((s) => s.name === name)
-  eq(h.sections.length, 5, '五个段都挂进了 system prompt（「我」「还没定的」「好奇」「习惯」在前，账本在后）')
+  eq(h.sections.length, 6, '六个段都挂进了 system prompt（「我」「思量」「还没定的」「好奇」「习惯」在前，账本在后）')
   eq(h.sections[0].name, 'dsh-remember:self', '第一段是「我」')
-  eq(h.sections[1].name, 'dsh-remember:unsettled', '第二段是「还没定的」')
-  eq(h.sections[2].name, 'dsh-remember:curiosity', '第三段是「好奇」')
-  eq(h.sections[3].name, 'dsh-remember:habit', '第四段是「习惯」（快通路）')
-  eq(h.sections[4].name, 'dsh-remember', '第五段是「我记得的」')
+  eq(h.sections[1].name, 'dsh-remember:narration', '第二段是「思量」（定案 A：紧跟我）')
+  eq(h.sections[2].name, 'dsh-remember:unsettled', '第三段是「还没定的」')
+  eq(h.sections[3].name, 'dsh-remember:curiosity', '第四段是「好奇」')
+  eq(h.sections[4].name, 'dsh-remember:habit', '第五段是「习惯」（快通路）')
+  eq(h.sections[5].name, 'dsh-remember', '第六段是「我记得的」')
   ok(Number(h.sections[0].order) < Number(h.sections[1].order), '「我」排在「还没定的」前面')
   ok(Number(h.sections[1].order) < Number(h.sections[2].order), '「还没定的」排在「好奇」前面')
   ok(Number(h.sections[2].order) < Number(h.sections[3].order), '「好奇」排在「习惯」前面')
@@ -531,8 +533,8 @@ try {
   eq(h.restrictions.length, 1, '范围外的会话被隔开：在它自己那层 deny 一次')
   eq(
     (h.restrictions[0]?.deny ?? []).join(','),
-    'remember,recall,forget,memory_list,emotion_state,emotion_tune,vikarma',
-    'deny 的正是这七个工具（账本四个 + 情绪流两个 + 违熏）',
+    'remember,recall,forget,memory_list,emotion_state,emotion_tune,vikarma,narrate',
+    'deny 的正是这八个工具（账本四个 + 情绪流两个 + 违熏 + 思量）',
   )
   eq(outsiderSections.length, 0, '范围外的会话不挂任何段')
   // guard：真机上 restrict 挡不住（它只认全局注册的工具），这一层才是靠得住的
@@ -910,6 +912,46 @@ try {
   await configRoute.handler(fakeReq('POST', JSON.stringify({ recallAudience: 'off' })), resAudOff)
   const offRecall = await h.tools.get('recall').execute({ query: '受众试验' }, exec)
   ok(offRecall.items.some((x) => x.includes(audRemember.id)), '开关关了全可见（现状）')
+
+  // ---------------------------------------------- 思量（定案 A，2026-11-18）：只引种子、链相续、不进竞争池
+  const narrSeed = await h.tools.get('remember').execute(
+    { text: '思量的种子：受众过滤是我自己拍的方向', kind: 'decision', weight: 0.6, changes: '拍板了' },
+    exec,
+  )
+  ok(narrSeed.ok, '思量的引种子记下了')
+  // 全 ghost refs 拒绝；f_/i_ 混入剔除并说明
+  const narGhost = await h.tools.get('narrate').execute({ narrative: '思量零', refs: ['f_某某', 'i_某某'] }, exec)
+  ok(!narGhost.ok && narGhost.note.includes('事件'), 'refs 全是事件 → 拒绝并说明（事件不是种子）')
+  const nar1 = await h.tools.get('narrate').execute(
+    { narrative: '思量一：我把受众的方向定下来了，说出去的话要算数。', refs: [narrSeed.id], changes: '想过怎么守' },
+    exec,
+  )
+  ok(nar1.ok && String(nar1.id).startsWith('n_'), `思量一记下了（${nar1.id}）`)
+  ok(String(nar1.note).includes('链的第一环'), '第一条是链的第一环')
+  const nar2 = await h.tools.get('narrate').execute(
+    { narrative: '思量二：守的方式是让账本自己长出过滤，不是靠我每轮盯。', refs: [narrSeed.id, 'f_某某'], changes: '又想过一层' },
+    exec,
+  )
+  ok(nar2.ok && String(nar2.note).includes('剔除'), '混入的事件引用被剔除并说明')
+  ok(String(nar2.note).includes(nar1.id), `第二条自动接上第一条的链（${nar2.note.slice(0, 60)}）`)
+  // 段：链头（思量二）在段里，思量一不在；没答四问的思量不挂段
+  const narSection = sec('dsh-remember:narration').text()
+  ok(narSection.includes('思量二') && !narSection.includes('思量一'), `思量段只出链头（${narSection.slice(0, 60)}）`)
+  const nar3 = await h.tools.get('narrate').execute({ narrative: '思量三：没答四问的一条。', refs: [narrSeed.id] }, exec)
+  ok(nar3.ok, '没答四问的思量也收下（翻得到）')
+  ok(!sec('dsh-remember:narration').text().includes('思量三'), '没答四问的思量不挂段')
+  const narBack = await h.tools.get('recall').execute({ query: '思量三' }, exec)
+  ok(narBack.items.some((x) => x.includes('思量三')), '没答四问的思量 recall 翻得到')
+  // 不进【我记得的】竞争池：思量条不出现在那个段里
+  ok(!sec('dsh-remember').text().includes('思量二'), '思量条不进【我记得的】竞争池')
+  // memory_list 的我执演化史
+  const narList = await h.tools.get('memory_list').execute({}, exec)
+  ok(narList.items.some((x) => x.includes('思量链')), 'memory_list 带我执演化史（思量链）')
+  // status.narration 全内存
+  const resNar = fakeRes()
+  await statusRoute.handler(fakeReq('GET'), resNar)
+  const stNar = JSON.parse(resNar.body)
+  ok(stNar.narration?.count >= 3 && stNar.narration?.latest?.id === nar3.id, `status.narration 带计数与链头（${JSON.stringify(stNar.narration?.latest ?? {})}）`)
 
   // ------------------------------------------------------------------ 情绪流
   // 意图层/快层里的真事，机器认成情绪（七类枚举，认不出不给 —— mood 没 detail 就不该记）

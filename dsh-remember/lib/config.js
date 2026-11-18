@@ -60,6 +60,14 @@ export const EDITABLE = {
   wakeCooldownMinutes: 'number',
   /** 受众过滤（借自晴猫，2026-11-17）：群轮/私聊轮不翻别的场的账。off=现状；soft=别的场排尾上；hard=不翻出来 */
   recallAudience: 'enum:off,soft,hard',
+  /** 思量（定案 A，2026-11-18）：恒审思量是「我」自己的动作——系统只给时机 */
+  narrationEnabled: 'boolean',
+  /** 思量的到期间隔（天）：超过就提示「有一阵没这么看过自己了」 */
+  narrationIntervalDays: 'number',
+  /** 思量段排在哪 */
+  narrationSectionOrder: 'number',
+  /** 思量段一行最多几个字 */
+  narrationSectionMaxChars: 'number',
   /** 情绪流：要不要从真事里认情绪 */
   emotionEnabled: 'boolean',
   /** 情绪流多久接一次真事（分钟） */
@@ -121,6 +129,9 @@ function inRange(key, value) {
     maxTextLength: [40, 8000],
     recallMaxChars: [1000, 200000],
     recallItemMax: [100, 4000],
+    narrationIntervalDays: [1, 30],
+    narrationSectionOrder: [1000, 9999],
+    narrationSectionMaxChars: [80, 2000],
     selfSectionOrder: [1000, 9999],
     selfMaxChars: [80, 2000],
     unsettledSectionOrder: [1000, 9999],

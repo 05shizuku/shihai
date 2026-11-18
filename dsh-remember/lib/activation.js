@@ -58,10 +58,12 @@ const MINUTE_MS = 60 * 1000
 
 /**
  * 新近这一路的半衰期（分钟）。
- * 慢层（自我、信念）不按分钟热，按月 —— τ = (30 + 270 × weight) 天。
+ * 慢层（自我、思量、信念）不按分钟热，按月 —— τ = (30 + 270 × weight) 天。
+ * 思量属于「我」的层（2026-11-18 定案 A）：它是我怎么看自己，淡忘按月不按天。
  */
 export function recencyTauMinutes(weight, kind = '') {
-  if (String(kind ?? '').trim().toLowerCase() === 'self') {
+  const k = String(kind ?? '').trim().toLowerCase()
+  if (k === 'self' || k === 'narration') {
     return (30 + 270 * clampWeight(weight)) * 24 * 60
   }
   return RECENCY_TAU_BASE_MIN + RECENCY_TAU_SPAN_MIN * clampWeight(weight)

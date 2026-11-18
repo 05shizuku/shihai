@@ -7,7 +7,7 @@
  *  3. 没写「三问」的条也能存（原话层永远收），但不会被挂到明天的开头。
  */
 
-export const KINDS = ['fact', 'decision', 'lesson', 'skill', 'open', 'self', 'habit', 'curiosity']
+export const KINDS = ['fact', 'decision', 'lesson', 'skill', 'open', 'self', 'habit', 'curiosity', 'narration']
 
 import { rankByQuery, MIN_RELEVANCE } from './search.js'
 
@@ -20,6 +20,7 @@ export const KIND_LABEL = {
   self: '我',
   habit: '习惯',
   curiosity: '好奇',
+  narration: '思量',
 }
 
 /**
@@ -293,6 +294,13 @@ export function makeNode(input = {}, now = Date.now()) {
      * any = 旧行/没记到（两边都给，宽松起步）。群轮的过滤按这个算；solo 轮全可见。
      */
     audience: cleanText(src.audience, 24) || 'any',
+    /**
+     * 思量链（2026-11-18 定案 A）：kind='narration' 时指上一条思量（写时自动接当前链头）；
+     * kind='self' 被 新值退下 时，新值盖 prevSelf 章指被退下的那条（退下是链条上的一环）。
+     * 0/空 = 链头。逐条相续，不覆盖任何东西。
+     */
+    prev: cleanText(src.prev, 40),
+    prevSelf: cleanText(src.prevSelf, 40),
     text,
     kind: normKind(src.kind),
     /** 只有 kind='self' 有意义：这条自我陈述占哪个槽位 */
@@ -658,6 +666,13 @@ export function supersedeSelf(nodes, slot, newId, now = Date.now()) {
     if (i >= 0) {
       const merged = [...(Array.isArray(out[i].replaces) ? out[i].replaces : []), ...superseded]
       out[i] = { ...out[i], replaces: [...new Set(merged)].slice(0, 8) }
+      // 我执演化链（2026-11-18 定案 A）：新值盖 prevSelf 章指被退下的那条 ——
+      // 退下不是终点，是链条上的一环。取最近的一条（按 lastAt）。
+      const demoted = superseded
+        .map((id) => out.find((n) => n && n.id === id))
+        .filter(Boolean)
+        .sort((a, b) => (Number(b.lastAt ?? b.at) || 0) - (Number(a.lastAt ?? a.at) || 0))
+      if (demoted[0]) out[i] = { ...out[i], prevSelf: demoted[0].id }
     }
   }
   return { nodes: out, superseded }
@@ -805,6 +820,7 @@ export function renderSection(
       n &&
       normKind(n.kind) !== 'self' &&
       normKind(n.kind) !== 'curiosity' &&
+      normKind(n.kind) !== 'narration' && // 思量另有自己的一段（定案 A：不进竞争池）
       !fastIds.has(n.id) &&
       !isSealed(n, now, dir) &&
       hasThought(n),

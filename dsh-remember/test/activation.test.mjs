@@ -40,6 +40,8 @@ test('两把钟：新近按分钟到小时，自我按月，分量淡按天', ()
   // 自我不吃分钟这一套：weight 0.5 → (30 + 135) 天，换算成分钟
   const month = (30 + 270 * 0.5) * 24 * 60
   assert.equal(recencyTauMinutes(0.5, 'self'), month)
+  // 思量也在「我」的层（2026-11-18 定案 A）：按月淡，不按天
+  assert.equal(recencyTauMinutes(0.5, 'narration'), month)
   // 「SELF」大小写无所谓
   assert.equal(recencyTauMinutes(0.5, 'Self'), month)
 })

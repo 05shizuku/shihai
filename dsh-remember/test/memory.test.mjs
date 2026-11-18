@@ -1075,3 +1075,23 @@ test('supersedeSelf（P0-2）：退下的 id 记进新条的 replaces（回滚�
   const me = r2.nodes.find((n) => n.id === fresh.id)
   assert.ok(Array.isArray(me.replaces) && me.replaces.includes(old2.id), '直接顶掉的记进 replaces')
 })
+
+test('supersedeSelf（定案 A）：新值盖 prevSelf 章——退下是链条上的一环（2026-11-18）', () => {
+  const old = makeNode({ text: '旧的我', kind: 'self', slot: 'identity', weight: 0.9, changes: '记' }, NOW)
+  const fresh = makeNode({ text: '新的我', kind: 'self', slot: 'identity', weight: 0.9, changes: '记' }, NOW)
+  // 真实顺序：先把新条放进账本，再顶位（supersedeSelf 只改账本里已有的条）
+  const r = supersedeSelf([old, fresh], 'identity', fresh.id, NOW)
+  const me = r.nodes.find((n) => n.id === fresh.id)
+  assert.equal(me.prevSelf, old.id, '新条盖 prevSelf 章指被退下的那条')
+  assert.equal(r.nodes.find((n) => n.id === old.id).superseded, true, '旧条照常退下')
+  // 链能走：沿 prevSelf 从现行走到旧条
+  const walked = []
+  let cur = me.prevSelf
+  while (cur) {
+    const n = r.nodes.find((x) => x.id === cur)
+    if (!n) break
+    walked.push(n)
+    cur = n.prevSelf
+  }
+  assert.equal(walked.length, 1, '链走一步到旧条')
+})

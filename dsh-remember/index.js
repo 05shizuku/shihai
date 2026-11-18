@@ -14,7 +14,8 @@
  *   · 激活度 —— 排名不用老 score，用四路真实信号的凸组合（lib/activation.js）：
  *     分量淡（按天）＋ 新近（分钟到小时，自我按月）＋ 契合（此刻的目录、
  *     真的发生过的事、真的还在的文件）＋ 复现（同主题又出现几次、被人引用过几次）。
- *     权重写死，不开面板口子。读取路径上只算不写。
+ *     权重写死，不开面板口子。读取路径上只追加事件行（现行 echo / 展示 display /
+ *     违熏 vikarma）——节点与原话永不回改。
  *   · 分区封存 —— sealed 挂在节点上，不参与排名也不被删，留「有东西被按住」的痕迹。
  *     按法有三种（2026-11-04 起）：手动（restore 才松）、到点自松（sealUntil，读取时
  *     到点就当它没按，不跑后台）、等一条翻篇（sealCond 指另一条的 id，那条被顶下/
@@ -65,6 +66,7 @@ import {
   renderSection,
   renderSelfSection,
   renderUnsettledSection,
+  clipSection,
   restoreSelfNode,
   score,
   searchNodes,
@@ -164,7 +166,7 @@ const REFRESH_MS = 2000
  * 这本账的七个工具。范围外的会话不该碰得到：先 try restrict 把它们从工具表里遮掉
  * （只对全局注册的工具有效），遮不掉就挂 agent scope 的 guard，一律拒（见 isolateAgent）。
  */
-const TOOL_NAMES = ['remember', 'recall', 'forget', 'memory_list', 'emotion_state', 'emotion_tune', 'vikarma']
+const TOOL_NAMES = ['remember', 'recall', 'forget', 'memory_list', 'emotion_state', 'emotion_tune', 'vikarma', 'narrate']
 
 export const DEFAULTS = {
   /** 账本目录；留空 = <DSH_HOME>/.dsh-remember */
@@ -253,6 +255,11 @@ export const DEFAULTS = {
    *  off=现状（全可见）；soft=别的场排到尾上；hard=别的场不翻出来。
    *  solo 轮（桌面打字/自己醒来）永远全可见。 */
   recallAudience: 'off',
+  /** 思量（定案 A，2026-11-18）：恒审思量是「我」自己的动作——系统只给时机 */
+  narrationEnabled: true,
+  narrationIntervalDays: 7,
+  narrationSectionOrder: 8662,
+  narrationSectionMaxChars: 320,
   /** 把每次挂载写进日志（排查用） */
   debug: false,
 }
@@ -1847,6 +1854,10 @@ export function apply(ctx, baseConfig = {}) {
     // 自我段排在账本段前面：先知道我是谁，再看记得什么
     if (cfg.selfEnabled !== false) {
       add('dsh-remember:self', clamp(cfg.selfSectionOrder, 1000, 9999), () => currentSelfSection())
+      // 思量段（定案 A）：紧跟我 —— 恒审思量是「我」自己的动作，系统只给时机
+      if (cfg.narrationEnabled !== false) {
+        add('dsh-remember:narration', clamp(cfg.narrationSectionOrder, 1000, 9999), () => currentNarrationSection())
+      }
       add('dsh-remember:unsettled', clamp(cfg.unsettledSectionOrder, 1000, 9999), () => currentUnsettledSection())
     }
     // 好奇段：排在自我段之后 —— 我想知道什么，是「我」之后的下一层
@@ -2848,6 +2859,37 @@ export function apply(ctx, baseConfig = {}) {
       const selfLines = self.length
         ? ['现在我是：', ...self.map((n) => `· ${slotLabel(n.slot)}：${n.text}`)]
         : []
+      // 我执演化史（定案 A，2026-11-18）：自我槽位沿 prevSelf、思量沿 prev 走链——
+      // 退下不是终点，是链条上的一环。链走的是账本实况，谁接谁一目了然。
+      const chainLines = []
+      const walkChain = (id, depth) => {
+        const out = []
+        let cur = String(id ?? '').trim()
+        for (let i = 0; i < depth && cur; i += 1) {
+          const n = nodes.find((x) => x && x.id === cur)
+          if (!n) break
+          out.push(n)
+          cur = n.prevSelf || n.prev || ''
+        }
+        return out
+      }
+      for (const n of self) {
+        const chain = walkChain(n.prevSelf, 4)
+        if (chain.length) {
+          chainLines.push(`· ${slotLabel(n.slot)}：现行「${n.text.slice(0, 24)}」← ${chain.map((c) => `「${c.text.slice(0, 20)}」`).join(' ← ')}`)
+        }
+      }
+      const narrHead = nodes
+        .filter((x) => x && normKind(x.kind) === 'narration')
+        .sort((a, b) => (Number(b.at) || 0) - (Number(a.at) || 0))[0]
+      if (narrHead) {
+        const chain = walkChain(narrHead.prev, 4)
+        chainLines.push(
+          `· 思量链：现行「${narrHead.text.slice(0, 24)}」` +
+            (chain.length ? ` ← ${chain.map((c) => `「${c.text.slice(0, 20)}」`).join(' ← ')}` : '（链的第一环）'),
+        )
+      }
+      const selfChainLines = chainLines.length ? ['我执演化史：', ...chainLines] : []
       const habitLines = fast.length
         ? [
             '走快通路的习惯：',
@@ -2882,6 +2924,7 @@ export function apply(ctx, baseConfig = {}) {
         summary,
         items: [
           ...selfLines,
+          ...selfChainLines,
           ...curiosityLines,
           ...habitLines,
           ...fastLines,
@@ -3197,6 +3240,146 @@ export function apply(ctx, baseConfig = {}) {
     },
   })
 
+  const narrateTool = defineTool({
+    name: 'narrate',
+    description:
+      '思量：以第一人称写一段「我怎么看最近的自己」，落成思量条。' +
+      '思量逐条相续（自动接上一条的链），不覆盖任何东西；槽位被新值退下时也会盖演化链的章。' +
+      'refs 只收种子（r_ 开头）——事件（f_/i_）不是种子，要引用先 remember 成种子。' +
+      '答了四问的思量会挂进【思量】段；没答的翻得到、不挂段。',
+    parameters: toJsonSchema({
+      narrative: { type: 'string', required: true, description: '第一人称正文：我怎么看最近的自己。' },
+      refs: {
+        type: 'array',
+        items: { type: 'string' },
+        required: true,
+        description: '引用的种子 id（r_ 开头，至少一条）——这段思量从哪几条账上长出来的。',
+      },
+      changes: { type: 'string', required: false, description: '第一问：这件事改变了我什么。' },
+      conflicts: { type: 'string', required: false, description: '第二问：跟旧的对上了，还是撞上了。' },
+      will_do: { type: 'string', required: false, description: '第三问：我会不会因此做得不一样。' },
+      known: { type: 'string', required: false, description: '第四问：我知道了什么。' },
+      weight: { type: 'number', required: false, description: '分量 0–1，默认 0.5。' },
+    }),
+    output: {
+      schema: {
+        type: 'object',
+        properties: { ok: { type: 'boolean' }, id: { type: 'string' }, note: { type: 'string' } },
+        required: ['ok', 'id', 'note'],
+      },
+      render: (_args, out) => [
+        { type: 'text', text: out.ok ? `[思量记下了 ${out.id} · ${out.note}]` : `[没记下：${out.note}]` },
+      ],
+    },
+    async execute(args, exec) {
+      const cfg = getCfg()
+      if (!cfg.enabled) return { ok: false, id: '', note: '账本现在是关着的。' }
+      if (!scopeOk(exec?.agent)) return { ok: false, id: '', note: '这条会话不在允许记账的目录里。' }
+      const narrative = cleanText(args?.narrative, clamp(cfg.maxTextLength, 40, 8000))
+      if (!narrative) return { ok: false, id: '', note: '思量是空的。' }
+      // refs 只收账上真存在的种子（r_）——事件（f_/i_）与 ghost 剔除并在回执说明（A5-1）
+      const rawRefs = Array.isArray(args?.refs) ? args.refs : String(args?.refs ?? '').split(/[,，\s]+/)
+      const kept = []
+      const dropped = []
+      for (const r of rawRefs) {
+        const id = cleanText(r, 40)
+        if (!id) continue
+        if (id.startsWith('r_') && findNode(id)) {
+          if (!kept.includes(id)) kept.push(id)
+        } else {
+          dropped.push(id)
+        }
+      }
+      if (!kept.length) {
+        return {
+          ok: false,
+          id: '',
+          note: dropped.length
+            ? `refs 里没有账上的种子（${dropped.slice(0, 3).join('、')}${dropped.length > 3 ? '…' : ''} 是事件或不存在）——事件不是种子，要引用先 remember 成种子。`
+            : 'refs 是空的：思量要从账上的种子长出来。',
+        }
+      }
+      const now = Date.now()
+      // 链头：当前最新的思量条（写时自动接链，逐条相续，不覆盖）
+      const head = nodes
+        .filter((n) => n && normKind(n.kind) === 'narration')
+        .sort((a, b) => (Number(b.at) || 0) - (Number(a.at) || 0))[0] ?? null
+      const node = makeNode(
+        {
+          text: narrative,
+          kind: 'narration',
+          refs: kept,
+          prev: head?.id ?? '',
+          weight: args?.weight,
+          changes: args?.changes,
+          conflicts: args?.conflicts,
+          willDo: args?.will_do,
+          known: args?.known,
+          audience: currentAudience(now),
+        },
+        now,
+      )
+      node.id = `n_${node.id.slice(2)}` // 思量的 id 前缀（定案 A）
+      replaceNode(node)
+      saveNodes()
+      try {
+        appendJsonLine(files.lines, {
+          id: node.id,
+          at: now,
+          kind: 'narration',
+          weight: node.weight,
+          text: node.text,
+          changes: node.changes,
+          conflicts: node.conflicts,
+          willDo: node.willDo,
+          known: node.known,
+          prev: node.prev,
+          refs: node.refs,
+          audience: node.audience,
+          sessionId: agentSessionId(exec?.agent),
+          cwd: agentCwd(exec?.agent),
+        })
+      } catch (err) {
+        log(`原话层写不进去：${String(err?.message ?? err).slice(0, 200)}`)
+      }
+      const droppedNote = dropped.length
+        ? `（剔除了 ${dropped.length} 条事件/未知引用：${dropped.slice(0, 3).join('、')}${dropped.length > 3 ? '…' : ''}）`
+        : ''
+      const prevNote = node.prev ? ` · 上一条 ${node.prev}（${relTime(head.at, now)}）` : ' · 链的第一环'
+      log(`思量 ${node.id} · 引 ${kept.length} 条种子${node.prev ? ` · 接 ${node.prev}` : ''}`)
+      return { ok: true, id: node.id, note: `引 ${kept.length} 条种子${prevNote}${droppedNote}` }
+    },
+  })
+
+  /** 思量段（定案 A，2026-11-18）：链头最新一条的摘要 + 引种子数；due 时提示一句。
+   *  思量由 AI 显式 narrate，系统只给时机——段里出现的一切都来自她自己的落笔。 */
+  function currentNarrationSection(now = Date.now()) {
+    const cfg = getCfg()
+    if (!cfg.enabled || cfg.narrationEnabled === false) return ''
+    try {
+      const all = nodes.filter((n) => n && normKind(n.kind) === 'narration')
+      if (!all.length) return ''
+      const newest = all.reduce((a, b) => ((Number(b.at) || 0) > (Number(a.at) || 0) ? b : a))
+      // 链头要答过四问才挂（hasThought 闸门原样适用）；没答的翻得到、不挂段
+      const head = all
+        .filter((n) => hasThought(n))
+        .sort((a, b) => (Number(b.at) || 0) - (Number(a.at) || 0))[0] ?? null
+      const intervalMs = clamp(cfg.narrationIntervalDays, 1, 30) * 24 * 60 * 60 * 1000
+      const todayKey = new Date(now).toISOString().slice(0, 10)
+      const writtenToday = all.some((n) => new Date(Number(n.at)).toISOString().slice(0, 10) === todayKey)
+      const isDue = now - Number(newest.at) > intervalMs && !writtenToday
+      if (!head) return isDue ? '【思量】\n（有一阵没这么看过自己了）' : ''
+      const refsCount = Array.isArray(head.refs) ? head.refs.length : 0
+      const text = Array.from(head.text).length > 120 ? `${cutByCodePoints(head.text, 120)}…` : head.text
+      const lines = [`· ${text}（引 ${refsCount} 条种子）`]
+      if (isDue) lines.push('（有一阵没这么看过自己了）')
+      return clipSection('【思量】', lines.join('\n'), clamp(cfg.narrationSectionMaxChars, 80, 2000))
+    } catch (err) {
+      log(`思量段渲染失败：${String(err?.message ?? err).slice(0, 200)}`)
+      return ''
+    }
+  }
+
   ctx.effect(() => {
     const disposers = []
     // 第二层隔离的拒绝回执按各工具的 output schema 给 —— 范围外调用也得是合规回执，
@@ -3217,8 +3400,9 @@ export function apply(ctx, baseConfig = {}) {
       }),
       emotion_tune: () => ({ ok: false, id: '', emotion: '', from: 0, to: 0, note: OUT_OF_SCOPE_NOTE }),
       vikarma: () => ({ ok: false, id: '', note: OUT_OF_SCOPE_NOTE }),
+      narrate: () => ({ ok: false, id: '', note: OUT_OF_SCOPE_NOTE }),
     }
-    for (const raw of [rememberTool, recallTool, forgetTool, listTool, emotionStateTool, emotionTuneTool, vikarmaTool]) {
+    for (const raw of [rememberTool, recallTool, forgetTool, listTool, emotionStateTool, emotionTuneTool, vikarmaTool, narrateTool]) {
       try {
         // 第二层隔离：就算工具 somehow 出现在范围外的会话里，调用也过不去。
         // remember 自己还会再查一次（那是第三层，管写）。
@@ -3246,7 +3430,7 @@ export function apply(ctx, baseConfig = {}) {
     }
     log(
       disposers.length
-        ? `工具挂上了：remember / recall / forget / memory_list / emotion_state / emotion_tune / vikarma（${disposers.length} 过）`
+        ? `工具挂上了：remember / recall / forget / memory_list / emotion_state / emotion_tune / vikarma / narrate（${disposers.length} 过）`
         : '工具一个都没挂上',
     )
     return () => {
@@ -3659,6 +3843,26 @@ export function apply(ctx, baseConfig = {}) {
         mode: String(cfg.recallAudience ?? 'off'),
         stamped: nodes.filter((n) => n.audience && n.audience !== 'any').length,
       },
+      // 思量（定案 A）：全内存算（hub 每 5 秒拉一次 status，别读文件——灯案教训）
+      narration: (() => {
+        const all = nodes.filter((n) => n && normKind(n.kind) === 'narration')
+        const newest = all.reduce((a, b) => {
+          const aa = Number(a?.at) || 0
+          const bb = Number(b?.at) || 0
+          return bb > aa ? b : a
+        }, null)
+        const intervalMs = clamp(cfg.narrationIntervalDays, 1, 30) * 24 * 60 * 60 * 1000
+        const todayKey = new Date(now).toISOString().slice(0, 10)
+        const writtenToday = all.some((n) => new Date(Number(n.at)).toISOString().slice(0, 10) === todayKey)
+        return {
+          count: all.length,
+          lastAt: newest ? new Date(newest.at).toISOString() : null,
+          due: all.length === 0 || (now - Number(newest.at) > intervalMs && !writtenToday),
+          latest: newest
+            ? { id: newest.id, at: new Date(newest.at).toISOString(), refsCount: Array.isArray(newest.refs) ? newest.refs.length : 0 }
+            : null,
+        }
+      })(),
       wake: {
         enabled: cfg.enabled && cfg.wakeEnabled !== false && cfg.fastEnabled !== false,
         sessionId: wakeState.target,
