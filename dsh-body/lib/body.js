@@ -360,6 +360,7 @@ export const INSULT_WORDS = ['丑', '蠢', '垃圾', '滚', '烦人', '闭嘴', 
 export const SAD_WORDS = ['难过', '伤心', '可怜', '孤独', '哭了', '想哭', '离开', '走了', '没了', '失去', '委屈', 'emo']
 
 export function classify(text, kind) {
+  if (kind === 'sprout') return 'sprout'
   if (kind === 'praise' || kind === 'insult' || kind === 'sad') return kind
   const s = String(text ?? '')
   if (INSULT_WORDS.some((w) => s.includes(w))) return 'insult'
@@ -368,10 +369,29 @@ export function classify(text, kind) {
   return 'neutral'
 }
 
+/** 执受的 mood 偏移系数（定案 C，2026-11-18）：极小，收方说了算——「系数我自己攒」 */
+const SPROUT_FACTOR = 0.05
+
 export function applyMoodEvent(state, ev, nowMs = Date.now()) {
   const kind = classify(ev?.text, ev?.kind)
   const next = { ...state }
   let reason = ''
+  if (kind === 'sprout') {
+    // 执受（定案 C）：带情绪的现行通知身体——按 detail.dominant 的正负给
+    // mood 标量极小偏移，不碰 anger/sadness 分向轴（那是社交事件的账）。
+    const level = clamp(Number(ev?.detail?.level) || 0, 0, 1)
+    const offset = clamp(SPROUT_FACTOR * level * 100, -2, 2)
+    const dominant = String(ev?.detail?.dominant ?? '')
+    const positive = dominant === 'warm' || dominant === 'pleased'
+    next.mood = clamp((Number(next.mood) || 0) + (positive ? offset : -offset), -100, 100)
+    next.lastMoodEvent = {
+      at: new Date(nowMs).toISOString(),
+      kind: 'sprout',
+      reason: String(ev?.text ?? '心头一动'),
+      from: 'dsh-remember',
+    }
+    return next
+  }
   if (kind === 'praise') {
     next.mood = clamp((Number(next.mood) || 0) + 12, -100, 100)
     next.anger = clamp((Number(next.anger) || 0) - 8, 0, 100)

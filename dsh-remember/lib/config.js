@@ -74,6 +74,11 @@ export const EDITABLE = {
   streamSectionMaxChars: 'number',
   /** recall 的缘起链投影：行尾「（x 前因「…」想起）」+ 机读 origins */
   recallOrigin: 'boolean',
+  /** 执受（定案 C，2026-11-18）：身心互绑是反射弧——带情绪的现行通知身体 */
+  sproutBodyEnabled: 'boolean',
+  sproutBodyMinLevel: 'number',
+  sproutBodyCooldownMinutes: 'number',
+  sproutBodyDailyCap: 'number',
   /** 情绪流：要不要从真事里认情绪 */
   emotionEnabled: 'boolean',
   /** 情绪流多久接一次真事（分钟） */
@@ -140,6 +145,9 @@ function inRange(key, value) {
     narrationSectionMaxChars: [80, 2000],
     streamSectionOrder: [1000, 9999],
     streamSectionMaxChars: [80, 2000],
+    sproutBodyMinLevel: [10, 100],
+    sproutBodyCooldownMinutes: [1, 120],
+    sproutBodyDailyCap: [1, 20],
     selfSectionOrder: [1000, 9999],
     selfMaxChars: [80, 2000],
     unsettledSectionOrder: [1000, 9999],

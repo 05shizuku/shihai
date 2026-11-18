@@ -102,6 +102,7 @@ import {
   pushFastIndex,
   renderFastLine,
   searchFastEvents,
+  deriveStandingBodyStates,
 } from './lib/fast.js'
 import {
   INTENT_LABEL,
@@ -267,6 +268,11 @@ export const DEFAULTS = {
   streamSectionMaxChars: 360,
   /** recall 的缘起链投影（行尾 + 机读 origins） */
   recallOrigin: true,
+  /** 执受（定案 C，2026-11-18）：身心互绑是反射弧——带情绪的现行通知身体 */
+  sproutBodyEnabled: true,
+  sproutBodyMinLevel: 0.5,
+  sproutBodyCooldownMinutes: 10,
+  sproutBodyDailyCap: 3,
   /** 把每次挂载写进日志（排查用） */
   debug: false,
 }
@@ -1526,10 +1532,13 @@ export function apply(ctx, baseConfig = {}) {
 
   /** 激活度要的「此刻」：目录、范围、刚发生的事、文件在不在、每个主题几条、最近被想起几次。 */
   function activationCtx(agent, now = Date.now()) {
+    // 身→识（定案 C，2026-11-18）：身体现状折成契合路的事件词——「此刻有点饿」「心里不平静」
+    // 进 topic 匹配，不进激活权重（那是待众缘的地盘）
+    const standing = deriveStandingBodyStates(fastAllEvents(now), now)
     return {
       cwd: agentCwd(agent),
       roots: scopeRoots(),
-      events: realEvents(now),
+      events: [...realEvents(now), ...standing],
       exists: scopedExists(agent),
       repeatCounts: repeatCounts(nodes),
       echoes: echoCounts(now),
@@ -2670,6 +2679,14 @@ export function apply(ctx, baseConfig = {}) {
       // 唤醒回弹：按词翻到的都记一笔「被想起」（原话层只增不改；节点本身不动）。
       let echoed = false
       if (args?.query && list.length) echoed = recallEcho(list, args.query, now, dir)
+      // 执受（定案 C）：带情绪的现行通知身体 —— 反射弧，不是思量。写完 echo 就发。
+      if (list.length) {
+        try {
+          sproutToBody(list, emotionState(now), now)
+        } catch {
+          /* 执受写不进去不影响 recall 本身 */
+        }
+      }
       // 快层也翻得到：它不是节点（没有分量、不跟账本里的条抢位置），
       // 但秒级发生的事不该只闪一下就没了 —— 按词找得到它。
       if (args?.query && !kind) {
@@ -3438,6 +3455,76 @@ export function apply(ctx, baseConfig = {}) {
    *  同 UTC 日内缓存流文本：hub 每 5 秒拉一次 status，重算就是灯案第二。
    *  段空就是没得说，不硬凑叙述（无数据不挂段）。 */
   let streamCache = { day: '', text: '' }
+
+  // ---------------------------------------------------------------- 执受（定案 C，2026-11-18）
+  //
+  // 身→识（识受身）：身体现状折成契合路的「此刻真实」输入（deriveStandingBodyStates）。
+  // 识→身（身受识）：带情绪的现行经身体的外部心情进料口通知身体。
+  // 反射弧，不是思量——身不由己，正是执受。
+  // 地盘：身体永远不写 remember 的账；remember 永不读回自己写的 sprout 行。
+
+  /** 执受追踪：seedId → { lastAt, day, count }（每种子冷却 + 每日帽） */
+  const sproutTracker = new Map()
+  /** sprout 的身体感觉措辞（从情绪枚举来，无阿拉伯数字） */
+  const SPROUT_TEXT = {
+    warm: '心头一暖',
+    pleased: '心头一亮',
+    curious: '心头一动',
+    tense: '心头一紧',
+    down: '心头一沉',
+    restless: '心头一躁',
+    lonely: '心头一空',
+  }
+
+  /** 身体家 mood-events.jsonl 的路径（家目录约定，不新增配置键） */
+  const sproutMoodFile = join(resolveDshHome(), '.dsh-body', 'mood-events.jsonl')
+
+  /**
+   * recall 现行的种子过了一道双门 → 往身体家 mood-events.jsonl 追加一行 sprout。
+   * 双门：染色门（moodAt ≠ calm 且 level ≥ min）或 心境门（当下主导 ≠ calm 且 weight ≥ 0.75）。
+   * 限幅：每种子冷却 + 每种子每日帽。写失败只记日志（快层同规）。
+   * 身体读侧按 detail.dominant 折成 mood 标量极小偏移——系数在收方。
+   */
+  function sproutToBody(list, emoState, now) {
+    const cfg = getCfg()
+    if (cfg.sproutBodyEnabled === false || !emoState) return
+    const cooldownMs = clamp(cfg.sproutBodyCooldownMinutes, 1, 120) * 60000
+    const dayKey = new Date(now).toISOString().slice(0, 10)
+    const minLevel = clamp(cfg.sproutBodyMinLevel, 0.1, 1)
+    const dailyCap = clamp(cfg.sproutBodyDailyCap, 1, 20)
+    const dominant = emoState.dominant ?? 'calm'
+    const level = Number(emoState.level) || 0
+    for (const n of list) {
+      if (!n || !n.id) continue
+      const tracker = sproutTracker.get(n.id) ?? { lastAt: 0, day: '', count: 0 }
+      // 冷却
+      if (now - tracker.lastAt < cooldownMs) continue
+      // 每日帽
+      const todayCount = tracker.day === dayKey ? tracker.count : 0
+      if (todayCount >= dailyCap) continue
+      // 双门
+      const moodGate = n.moodAt && n.moodAt.dominant !== 'calm' && Number(n.moodAt.level) >= minLevel
+      const stateGate = dominant !== 'calm' && Number(n.weight) >= 0.75
+      if (!moodGate && !stateGate) continue
+      // 写
+      const text = SPROUT_TEXT[emoState.dominant] ?? '心头一动'
+      const row = {
+        at: now,
+        kind: 'sprout',
+        text,
+        detail: { seedId: n.id, dominant, level },
+        source: 'dsh-remember',
+      }
+      try {
+        appendJsonLine(sproutMoodFile, row)
+      } catch (err) {
+        log(`执受写不进身体家：${String(err?.message ?? err).slice(0, 160)}`)
+        continue
+      }
+      sproutTracker.set(n.id, { lastAt: now, day: dayKey, count: todayCount + 1 })
+      log(`执受：${n.id} → 身体（${text} · ${dominant} ${level}）`)
+    }
+  }
   function currentStreamSection(now = Date.now()) {
     const cfg = getCfg()
     if (!cfg.enabled || cfg.streamEnabled === false) return ''

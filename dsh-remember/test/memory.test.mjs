@@ -1,6 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { performance } from 'node:perf_hooks'
+import { deriveStandingBodyStates } from '../lib/fast.js'
 
 import {
   SELF_MIN_WEIGHT,
@@ -1121,4 +1122,28 @@ test('renderYesterdayStream（定案 B）：无数据不挂段、UTC 日界、�
   renderYesterdayStream({ nodes: bigNodes, echoTimes: bigEcho, now: NOW })
   const elapsed = performance.now() - t0
   assert.ok(elapsed < 100, `2 万行 echo 聚合 < 100ms（实际 ${elapsed.toFixed(1)}ms）`)
+})
+
+test('deriveStandingBodyStates（定案 C）：饿向/饱向时序两侧、mood 窗、threshold 不入（2026-11-18）', () => {
+  const MINUTE = 60 * 1000
+  const base = NOW - 60 * MINUTE
+  const hungry = deriveStandingBodyStates([
+    { id: 'f_1', at: base, kind: 'meal', text: '吃了一口' },
+    { id: 'f_2', at: base + 30 * MINUTE, kind: 'missed', text: '错过了一顿' },
+  ], NOW)
+  assert.ok(hungry.some((s) => s.text.includes('饿')), `饿向：${JSON.stringify(hungry)}`)
+  const full = deriveStandingBodyStates([
+    { id: 'f_1', at: base + 30 * MINUTE, kind: 'topup', text: '添了饭' },
+    { id: 'f_2', at: base, kind: 'missed', text: '错过了' },
+  ], NOW)
+  assert.ok(full.some((s) => s.text.includes('吃')), `饱向：${JSON.stringify(full)}`)
+  assert.equal(deriveStandingBodyStates([], NOW).length, 0)
+  const mood = deriveStandingBodyStates([
+    { id: 'f_3', at: NOW - 10 * MINUTE, kind: 'mood', text: '心里动了一下' },
+  ], NOW)
+  assert.ok(mood.some((s) => s.text.includes('不平静')), '30 分窗内的 mood → 心里不平静')
+  const thr = deriveStandingBodyStates([
+    { id: 'f_4', at: base + 40 * MINUTE, kind: 'threshold', text: '饿到发慌' },
+  ], NOW)
+  assert.ok(!thr.some((s) => s.text.includes('饿')), 'threshold 不入饿向（v1 先不猜）')
 })

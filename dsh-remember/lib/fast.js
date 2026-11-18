@@ -128,3 +128,43 @@ export function fastSummary(events, { weighed = new Set() } = {}) {
   }
   return { total: list.length, pending, byKind }
 }
+
+/**
+ * 身→识（定案 C，2026-11-18）：从快层事件推导身体的「此刻状态」，
+ * 折成契合路的话题词追加进 ctx.events —— 让身体现状参与 topic 匹配，
+ * 不进激活权重（那是待众缘的地盘）。口径唯一：状态推导只住这一处。
+ *
+ * 推导规则：
+ *   饿/饱：missed 晚于最近一次 meal/topup → 饿；反之 → 刚吃过
+ *   心里不平静：30 分钟窗内有 mood 事件
+ *   threshold 不入饿向（「到线」没钉进 detail.kind，v1 先不猜）
+ *
+ * @returns {Array<{text: string, at: number, kind: string}>} 追加进 ctx.events 的状态词
+ */
+export function deriveStandingBodyStates(fastEvents, now = Date.now()) {
+  const events = (Array.isArray(fastEvents) ? fastEvents : []).filter(Boolean)
+  const out = []
+  let lastMealAt = 0
+  let lastMissedAt = 0
+  let hasRecentMood = false
+  const MOOD_WINDOW_MS = 30 * 60 * 1000
+  for (const ev of events) {
+    const at = Number(ev?.at) || 0
+    if (ev.kind === 'meal' || ev.kind === 'topup') {
+      if (at > lastMealAt) lastMealAt = at
+    } else if (ev.kind === 'missed') {
+      if (at > lastMissedAt) lastMissedAt = at
+    } else if (ev.kind === 'mood' && now - at >= 0 && now - at < MOOD_WINDOW_MS) {
+      hasRecentMood = true
+    }
+  }
+  if (lastMissedAt > lastMealAt && lastMissedAt > 0) {
+    out.push({ text: '此刻有点饿', at: lastMissedAt, kind: 'derived' })
+  } else if (lastMealAt > 0) {
+    out.push({ text: '此刻刚吃过', at: lastMealAt, kind: 'derived' })
+  }
+  if (hasRecentMood) {
+    out.push({ text: '心里不平静', at: now, kind: 'derived' })
+  }
+  return out
+}
