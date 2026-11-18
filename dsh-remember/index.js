@@ -66,6 +66,7 @@ import {
   renderSection,
   renderSelfSection,
   renderUnsettledSection,
+  renderYesterdayStream,
   clipSection,
   restoreSelfNode,
   score,
@@ -260,6 +261,12 @@ export const DEFAULTS = {
   narrationIntervalDays: 7,
   narrationSectionOrder: 8662,
   narrationSectionMaxChars: 320,
+  /** 瀑流（定案 B，2026-11-18）：昨日之流是读侧聚合——同 UTC 日缓存，不重算 */
+  streamEnabled: true,
+  streamSectionOrder: 8715,
+  streamSectionMaxChars: 360,
+  /** recall 的缘起链投影（行尾 + 机读 origins） */
+  recallOrigin: true,
   /** 把每次挂载写进日志（排查用） */
   debug: false,
 }
@@ -491,10 +498,10 @@ export function apply(ctx, baseConfig = {}) {
   const displayDays = new Map()
   /** 违熏索引（seedId -> {at, reason, count}）：recall 翻到时行尾提醒 + status 聚合用 */
   const vikarmaAt = new Map()
-  /** 违熏的内存聚合（total / byReason）—— status 每几秒被拉一次，别为它整本解析。
+  /** 违熏的内存聚合（total / byReason / byDay）—— status 每几秒被拉一次，别为它整本解析。
    *  与 vikarmaAt 同源同写（只在 loadVikarmaIndex / vikarma 写入两处更新）：
-   *  账本只增不减、没有删除操作，两者天然一致。 */
-  const vikarmaAgg = { total: 0, byReason: {} }
+   *  账本只增不减、没有删除操作，两者天然一致。byDay 供瀑流段数「昨日记了几笔」。 */
+  const vikarmaAgg = { total: 0, byReason: {}, byDay: {} }
   loadEchoIndex(Date.now())
   loadVikarmaIndex()
 
@@ -1329,7 +1336,15 @@ export function apply(ctx, baseConfig = {}) {
             // 上限给足余量：窗口 42 天（3τ），热条一个月被熏上百次也不该把最老的挤掉
             echoAt.set(key, list.slice(-200))
             const prevLatest = latestEchoRow.get(key)
-            if (!prevLatest || at > prevLatest.at) latestEchoRow.set(key, { at, rowId })
+            if (!prevLatest || at > prevLatest.at) {
+              // 瀑流/缘起链（定案 B）：顺手多存 query 与同现的种子——echo 行自带，零成本
+              latestEchoRow.set(key, {
+                at,
+                rowId,
+                query: String(row.query ?? ''),
+                with: (row.refs ?? []).map(String).filter((x) => x !== key),
+              })
+            }
           }
         }
       }
@@ -1410,7 +1425,12 @@ export function apply(ctx, baseConfig = {}) {
         const arr = echoAt.get(rid) ?? []
         arr.push(now)
         echoAt.set(rid, arr.slice(-200))
-        latestEchoRow.set(rid, { at: now, rowId: row.id })
+        latestEchoRow.set(rid, {
+          at: now,
+          rowId: row.id,
+          query: String(row.query ?? ''),
+          with: ids.filter((x) => x !== rid),
+        })
       }
       echoStatsCache = { at: 0, stats: new Map() } // 回声变了，熏习统计作废
       return true
@@ -1473,6 +1493,8 @@ export function apply(ctx, baseConfig = {}) {
         })
         vikarmaAgg.total += 1
         vikarmaAgg.byReason[reason] = (vikarmaAgg.byReason[reason] ?? 0) + 1
+        const day = new Date(at).toISOString().slice(0, 10)
+        vikarmaAgg.byDay[day] = (vikarmaAgg.byDay[day] ?? 0) + 1
       }
     } catch {
       /* 读不出就当没有 */
@@ -1867,6 +1889,11 @@ export function apply(ctx, baseConfig = {}) {
     // 习惯段（快通路）：排在自我段之后、账本段之前 —— 习惯是身体反应那一档
     if (cfg.habitEnabled !== false) {
       add('dsh-remember:habit', clamp(cfg.habitSectionOrder, 1000, 9999), () => currentHabitSection())
+    }
+    // 瀑流段（定案 B）：昨日之流，读侧聚合——同 UTC 日缓存，零文件读。
+    // order 8715：习惯（8680）之后、我记得的（8720）之前
+    if (cfg.streamEnabled !== false) {
+      add('dsh-remember:stream', clamp(cfg.streamSectionOrder, 1000, 9999), () => currentStreamSection())
     }
     // 情绪笔记段：默认不挂。开了也只是递一行笔记，不替我说话。
     if (cfg.emotionSectionEnabled !== false) {
@@ -2510,6 +2537,10 @@ export function apply(ctx, baseConfig = {}) {
           ok: { type: 'boolean' },
           items: { type: 'array', items: { type: 'string' } },
           echoed: { type: 'boolean', description: '这次翻到的记了一笔「被想起」没有。' },
+          origins: {
+            type: 'object',
+            description: '缘起链投影（定案 B）：id → 最近一次现行的 {lastSproutAt, lastQuery, with}。机器可读。',
+          },
           note: { type: 'string' },
         },
         required: ['ok', 'items', 'note'],
@@ -2591,6 +2622,7 @@ export function apply(ctx, baseConfig = {}) {
         }
       }
       let clipped = 0
+      const origins = {} // 缘起链的机读投影（定案 B）：id → 最近一次现行的 {lastSproutAt, lastQuery, with}
       const items = list.map((n) => {
         const t = String(n.text ?? '')
         const recolor = recolors.get(n.id)
@@ -2603,7 +2635,28 @@ export function apply(ctx, baseConfig = {}) {
           vk && now - vk.at < 30 * 24 * 60 * 60 * 1000
             ? `\n（上次现行时没兑现：${vk.reason}，${relTime(vk.at, now)}）`
             : ''
-        const suffix = recolorSuffix + vkSuffix
+        // 缘起链投影（定案 B，2026-11-18）：最近一次现行的缘（query）与同现种子——
+        // 人读尾巴在 vikarma 之后；机读 origins 跟着 output 走。echo 行本就带 query/refs，零回填。
+        const le = cfg.recallOrigin === false ? null : latestEchoRow.get(n.id)
+        let originSuffix = ''
+        if (le) {
+          origins[n.id] = {
+            lastSproutAt: new Date(le.at).toISOString(),
+            lastQuery: le.query ?? '',
+            with: Array.isArray(le.with) ? le.with : [],
+          }
+          const withNames = (Array.isArray(le.with) ? le.with : [])
+            .map((id) => {
+              const w = findNode(id)
+              return w ? `「${cutByCodePoints(w.text, 12)}」` : null
+            })
+            .filter(Boolean)
+            .slice(0, 3)
+          originSuffix = `\n（${relTime(le.at, now)}前因「${String(le.query || '（无缘）').slice(0, 24)}」想起${
+            withNames.length ? `，当时与 ${withNames.join('、')} 一起浮上来` : ''
+          }）`
+        }
+        const suffix = recolorSuffix + vkSuffix + originSuffix
         if (itemMax && Array.from(t).length > itemMax) {
           clipped += 1
           // 判断和切都按码点 —— UTF-16 的 length/slice 会把 emoji 当两个字，
@@ -2666,7 +2719,7 @@ export function apply(ctx, baseConfig = {}) {
           })
         }
       }
-      return { ok: true, items, echoed, note }
+      return { ok: true, items, echoed, note, origins }
     },
   })
 
@@ -3217,6 +3270,8 @@ export function apply(ctx, baseConfig = {}) {
       })
       vikarmaAgg.total += 1
       vikarmaAgg.byReason[reason] = (vikarmaAgg.byReason[reason] ?? 0) + 1
+      const vkDay = new Date(now).toISOString().slice(0, 10)
+      vikarmaAgg.byDay[vkDay] = (vikarmaAgg.byDay[vkDay] ?? 0) + 1
       // 原话层留痕，跟 forget 一个路数
       try {
         appendJsonLine(files.lines, {
@@ -3353,8 +3408,7 @@ export function apply(ctx, baseConfig = {}) {
 
   /** 思量段（定案 A，2026-11-18）：链头最新一条的摘要 + 引种子数；due 时提示一句。
    *  思量由 AI 显式 narrate，系统只给时机——段里出现的一切都来自她自己的落笔。 */
-  function currentNarrationSection(now = Date.now()) {
-    const cfg = getCfg()
+  function currentNarrationSection(now = Date.now()) {    const cfg = getCfg()
     if (!cfg.enabled || cfg.narrationEnabled === false) return ''
     try {
       const all = nodes.filter((n) => n && normKind(n.kind) === 'narration')
@@ -3376,6 +3430,35 @@ export function apply(ctx, baseConfig = {}) {
       return clipSection('【思量】', lines.join('\n'), clamp(cfg.narrationSectionMaxChars, 80, 2000))
     } catch (err) {
       log(`思量段渲染失败：${String(err?.message ?? err).slice(0, 200)}`)
+      return ''
+    }
+  }
+
+  /** 瀑流段（定案 B，2026-11-18）：昨日之流是读侧聚合——
+   *  同 UTC 日内缓存流文本：hub 每 5 秒拉一次 status，重算就是灯案第二。
+   *  段空就是没得说，不硬凑叙述（无数据不挂段）。 */
+  let streamCache = { day: '', text: '' }
+  function currentStreamSection(now = Date.now()) {
+    const cfg = getCfg()
+    if (!cfg.enabled || cfg.streamEnabled === false) return ''
+    try {
+      const day = new Date(now).toISOString().slice(0, 10)
+      if (streamCache.day === day) return streamCache.text
+      const dayMs = 24 * 60 * 60 * 1000
+      const we = Math.floor(now / dayMs) * dayMs // 今日 UTC 起点 = 昨日窗口终点
+      const yesterdayKey = new Date(we - 1).toISOString().slice(0, 10)
+      const vikarmaYesterday = Number(vikarmaAgg.byDay[yesterdayKey] ?? 0)
+      const text = renderYesterdayStream({
+        nodes,
+        echoTimes: echoAt,
+        vikarmaNewCount: vikarmaYesterday,
+        now,
+        maxChars: clamp(cfg.streamSectionMaxChars, 80, 2000),
+      })
+      streamCache = { day, text }
+      return text
+    } catch (err) {
+      log(`瀑流段渲染失败：${String(err?.message ?? err).slice(0, 200)}`)
       return ''
     }
   }

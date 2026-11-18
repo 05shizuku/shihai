@@ -10,6 +10,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 import { DEFAULTS, apply } from '../index.js'
+import { renderYesterdayStream } from '../lib/memory.js'
 
 let pass = 0
 let fail = 0
@@ -225,17 +226,20 @@ try {
   // 还没记事的时候：段文本是空的，但段落该挂还是要挂
   h.created.forEach((fn) => fn(h.agent))
   const sec = (name) => h.sections.find((s) => s.name === name)
-  eq(h.sections.length, 6, '六个段都挂进了 system prompt（「我」「思量」「还没定的」「好奇」「习惯」在前，账本在后）')
+  eq(h.sections.length, 7, '七个段都挂进了 system prompt（「我」「思量」「还没定的」「好奇」「习惯」「瀑流」在前，账本在后）')
   eq(h.sections[0].name, 'dsh-remember:self', '第一段是「我」')
   eq(h.sections[1].name, 'dsh-remember:narration', '第二段是「思量」（定案 A：紧跟我）')
   eq(h.sections[2].name, 'dsh-remember:unsettled', '第三段是「还没定的」')
   eq(h.sections[3].name, 'dsh-remember:curiosity', '第四段是「好奇」')
   eq(h.sections[4].name, 'dsh-remember:habit', '第五段是「习惯」（快通路）')
-  eq(h.sections[5].name, 'dsh-remember', '第六段是「我记得的」')
-  ok(Number(h.sections[0].order) < Number(h.sections[1].order), '「我」排在「还没定的」前面')
-  ok(Number(h.sections[1].order) < Number(h.sections[2].order), '「还没定的」排在「好奇」前面')
-  ok(Number(h.sections[2].order) < Number(h.sections[3].order), '「好奇」排在「习惯」前面')
-  ok(Number(h.sections[3].order) < Number(h.sections[4].order), '「习惯」排在「我记得的」前面')
+  eq(h.sections[5].name, 'dsh-remember:stream', '第六段是「瀑流」（定案 B：习惯之后、账本之前）')
+  eq(h.sections[6].name, 'dsh-remember', '第七段是「我记得的」')
+  ok(Number(h.sections[0].order) < Number(h.sections[1].order), '「我」排在「思量」前面')
+  ok(Number(h.sections[1].order) < Number(h.sections[2].order), '「思量」排在「还没定的」前面')
+  ok(Number(h.sections[2].order) < Number(h.sections[3].order), '「还没定的」排在「好奇」前面')
+  ok(Number(h.sections[3].order) < Number(h.sections[4].order), '「好奇」排在「习惯」前面')
+  ok(Number(h.sections[4].order) < Number(h.sections[5].order), '「习惯」排在「瀑流」前面')
+  ok(Number(h.sections[5].order) < Number(h.sections[6].order), '「瀑流」排在「我记得的」前面')
   eq(String(sec('dsh-remember:self').text()), '', '「我」空着的时候不挂空话')
   eq(String(sec('dsh-remember:curiosity').text()), '', '「好奇」空着的时候不挂空话')
   eq(String(sec('dsh-remember:habit').text()), '', '习惯空着的时候不挂空话')
@@ -952,6 +956,36 @@ try {
   await statusRoute.handler(fakeReq('GET'), resNar)
   const stNar = JSON.parse(resNar.body)
   ok(stNar.narration?.count >= 3 && stNar.narration?.latest?.id === nar3.id, `status.narration 带计数与链头（${JSON.stringify(stNar.narration?.latest ?? {})}）`)
+
+  // 瀑流（定案 B，2026-11-18）：昨日之流，读侧聚合——同 UTC 日缓存，零文件读
+  // 今天的账不进昨日窗：主流烟里账全是今天写的，段应为空（不硬凑叙述）
+  eq(sec('dsh-remember:stream').text(), '', '今天的账不进昨日之流（段空就是没得说）')
+  // 昨日数据用独立小环境造：node + echo 都盖昨日的章
+  const yDir = join(dir, 'y-book')
+  const yNode = { id: 'r_y-t1', at: Date.now() - 24 * 60 * 60 * 1000, lastAt: Date.now() - 24 * 60 * 60 * 1000, text: '昨日之流试验：昨天写的账', kind: 'fact', weight: 0.5, changes: 'x', tags: [], refs: [], touches: [], audience: 'any', happenedAt: 0, prev: '', prevSelf: '', anchor: false, anchorWhy: '', restoredAt: 0, replaces: [], contexts: [], hits: 0, answered: false, moodAt: null, sealed: false, sealUntil: 0, sealCond: '', faded: false, superseded: false, supersededBy: '', supersededAt: 0 }
+  const yEcho = { id: 'e_y1', at: Date.now() - 24 * 60 * 60 * 1000 + 60000, kind: 'echo', text: '被想起：「昨日之流试验」→ r_y-t1', query: '昨日之流试验', refs: ['r_y-t1'], source: 'recall' }
+  const yEcho2 = { id: 'e_y2', at: Date.now() - 24 * 60 * 60 * 1000 + 120000, kind: 'echo', text: '被想起：「昨日之流试验」→ r_y-t1', query: '昨日之流试验', refs: ['r_y-t1'], source: 'recall' }
+  mkdirSync(yDir, { recursive: true })
+  writeFileSync(join(yDir, 'memory.json'), JSON.stringify({ version: 1, updatedAt: Date.now(), nodes: [yNode] }))
+  writeFileSync(join(yDir, 'echo.jsonl'), JSON.stringify(yEcho) + '\n' + JSON.stringify(yEcho2) + '\n')
+  writeFileSync(join(yDir, 'lines.jsonl'), JSON.stringify({ id: 'r_y-t1', at: yNode.at, kind: 'fact', text: yNode.text, weight: 0.5 }) + '\n')
+  const hY = makeHarness(yDir, targetRoot, {})
+  hY.created.forEach((fn) => fn(hY.agent))
+  const ySec = hY.sections.find((s) => s.name === 'dsh-remember:stream')
+  ok(ySec && ySec.text().includes('昨天写下 1 条账'), `瀑流段出昨日数据（${ySec?.text().slice(0, 80)}）`)
+  ok(ySec.text().includes('最惦记的是'), '瀑流段带现行最频主题（反复现行）')
+  // 同日第二次渲染不重算（缓存）：text 一致即视为命中缓存
+  const ySec2 = hY.sections.find((s) => s.name === 'dsh-remember:stream')
+  eq(ySec2.text(), ySec.text(), '同 UTC 日内瀑流段走缓存')
+  // UTC 日界：23:59 与 00:01 分属两天 —— 用 renderYesterdayStream 直测（借 lib 纯函数）
+  const dayMs = 24 * 60 * 60 * 1000
+  const noonUtc = Date.UTC(2026, 10, 17, 23, 59) // 11-17 23:59 UTC（界前：还是 17 号）
+  const justPast = Date.UTC(2026, 10, 18, 0, 1) // 11-18 00:01 UTC（界后：已是 18 号）
+  const yNodeLate = { ...yNode, at: noonUtc, text: '界前写的' }
+  const yEchoLate = new Map([['r_y-t1', [noonUtc]]])
+  const b1 = renderYesterdayStream({ nodes: [yNodeLate], echoTimes: yEchoLate, now: noonUtc - 60000 })
+  const b2 = renderYesterdayStream({ nodes: [yNodeLate], echoTimes: yEchoLate, now: justPast + 60000 })
+  ok(b1 === '' && b2.includes('昨天写下'), `UTC 日界两侧分属两天（界前 ${b1 ? '有段' : '空'} / 界后 ${b2 ? '有段' : '空'}）`)
 
   // ------------------------------------------------------------------ 情绪流
   // 意图层/快层里的真事，机器认成情绪（七类枚举，认不出不给 —— mood 没 detail 就不该记）

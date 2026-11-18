@@ -68,6 +68,12 @@ export const EDITABLE = {
   narrationSectionOrder: 'number',
   /** 思量段一行最多几个字 */
   narrationSectionMaxChars: 'number',
+  /** 瀑流（定案 B，2026-11-18）：昨日之流是读侧聚合——同 UTC 日缓存，不重算 */
+  streamEnabled: 'boolean',
+  streamSectionOrder: 'number',
+  streamSectionMaxChars: 'number',
+  /** recall 的缘起链投影：行尾「（x 前因「…」想起）」+ 机读 origins */
+  recallOrigin: 'boolean',
   /** 情绪流：要不要从真事里认情绪 */
   emotionEnabled: 'boolean',
   /** 情绪流多久接一次真事（分钟） */
@@ -132,6 +138,8 @@ function inRange(key, value) {
     narrationIntervalDays: [1, 30],
     narrationSectionOrder: [1000, 9999],
     narrationSectionMaxChars: [80, 2000],
+    streamSectionOrder: [1000, 9999],
+    streamSectionMaxChars: [80, 2000],
     selfSectionOrder: [1000, 9999],
     selfMaxChars: [80, 2000],
     unsettledSectionOrder: [1000, 9999],

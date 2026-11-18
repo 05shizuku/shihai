@@ -422,7 +422,9 @@ cooldownMinutes, kinds, beats, lastWakeAt, lastText }` 看得到心跳跑到哪�
 | `dsh-remember:self` | 【我】三个槽位现在各自的那一句 | order 8660，≤400 字 |
 | `dsh-remember:curiosity` | 【好奇】活跃的那些（我想知道什么） | order 8670，≤320 字 |
 | `dsh-remember:habit` | 【习惯】走快通路的那些 | order 8680，≤320 字 |
-| `dsh-remember` | 【我记得的】激活度最高的 3 条 + 没结的 2 条 | order 8720，≤900 字 |
+| dsh-remember:narration | 【思量】链头最新一条 + due 提示 | order 8662，≤320 字 |
+| dsh-remember:stream | 【昨日之流】昨日账动聚合（读侧，同 UTC 日缓存） | order 8715，≤360 字 |
+| dsh-remember | 【我记得的】激活度最高的 3 条 + 没结的 2 条 | order 8720，≤900 字 |
 
 再往后还有一段 `dsh-body:fast`（order 8750），那是 dsh-body 自己挂的【刚刚】，
 不属于这本账；这本账只负责把它写出来的事抄一份、翻得到、等着被掂量（见上一节）。
@@ -448,7 +450,9 @@ cooldownMinutes, kinds, beats, lastWakeAt, lastText }` 看得到心跳跑到哪�
 | `memory_list` | 账本现在什么样：几条、最重的是哪些、现在好奇的是哪些、哪些习惯上了快通路、最近写了什么 |
 | `emotion_state` | 看我心里此刻攒出来的那些情绪：按各自的半衰期淡下去的笔记（只是上次的笔记，不是现在必须摆出的样子） |
 | `emotion_tune` | 改一种情绪的系数（权重／半衰期）：只往 `DSH 安装目录/.dsh\.dsh-remember\emotion.jsonl` 追加一行（从多少改到多少、为什么），原话只增不改；半衰期也只对往后的事件生效（事件行写死当时的值，不追溯重算） |
-| `vikarma` | 记一笔违熏：种子说「会做得不一样」（will_do）但实际没做到。只往 `vikarma.jsonl` 追加一行（seedId + echoId 双键、expected 自动取 will_do、reason 三选一），**不进复现轴** —— 它量的是校正质量，扣现行倾向就把逻辑搞反了。recall 翻到时行尾提醒（30 天内） |
+| 
+arrate | 思量（定案 A，2026-11-18）：以第一人称写一段「我怎么看最近的自己」，落成思量条。refs 只收种子（r_ 开头）——事件不是种子，要引用先 remember 成种子。逐条相续不覆盖；答四问挂【思量】段，没答翻得到 |
+| | ikarma | 记一笔违熏：种子说「会做得不一样」（will_do）但实际没做到。只往 `vikarma.jsonl` 追加一行（seedId + echoId 双键、expected 自动取 will_do、reason 三选一），**不进复现轴** —— 它量的是校正质量，扣现行倾向就把逻辑搞反了。recall 翻到时行尾提醒（30 天内） |
 
 `memory_list` 里现在多一段「现在好奇的：」，每条是
 `· <主题>：<我想知道什么>（惦记 N 次）`，下面跟一句

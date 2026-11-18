@@ -1,5 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import { performance } from 'node:perf_hooks'
 
 import {
   SELF_MIN_WEIGHT,
@@ -26,6 +27,7 @@ import {
   parseSealUntil,
   rankNodes,
   recordCuriosity,
+  renderYesterdayStream,
   recordHabit,
   recordSkill,
   relSealLeft,
@@ -1094,4 +1096,29 @@ test('supersedeSelf（定案 A）：新值盖 prevSelf 章——退下是链条�
     cur = n.prevSelf
   }
   assert.equal(walked.length, 1, '链走一步到旧条')
+})
+
+test('renderYesterdayStream（定案 B）：无数据不挂段、UTC 日界、性能钉（2026-11-18）', () => {
+  // 无数据 → 空串（不硬凑叙述）
+  assert.equal(renderYesterdayStream({ nodes: [], echoTimes: new Map(), now: NOW }), '')
+  // UTC 日界：23:59 与 00:01 分属两天
+  const dayMs = 24 * 60 * 60 * 1000
+  const justBefore = Date.UTC(2026, 10, 17, 23, 59)
+  const justAfter = Date.UTC(2026, 10, 18, 0, 1)
+  const n = makeNode({ text: '界前写的', kind: 'fact', weight: 0.5 }, justBefore)
+  const et = new Map([['r_x', [justBefore]]])
+  assert.ok(renderYesterdayStream({ nodes: [n], echoTimes: new Map(), now: justAfter }).includes('昨天写下'), '界后看界前写的 → 在昨日窗内')
+  assert.equal(renderYesterdayStream({ nodes: [n], echoTimes: et, now: justBefore - 60000 }), '', '界前看自己 → 还在今天，不出昨日段')
+  // 性能钉（B3-5）：2 万行 echo 数据下 < 100ms —— 防灯案复发
+  const bigEcho = new Map()
+  for (let i = 0; i < 20000; i++) {
+    bigEcho.set(`r_perf${i}`, [NOW - (i % 3) * dayMs]) // 分布在三天内
+  }
+  const bigNodes = Array.from({ length: 500 }, (_, i) =>
+    makeNode({ text: `性能钉${i}`, kind: 'fact', weight: 0.5 }, NOW - (i % 2) * dayMs),
+  )
+  const t0 = performance.now()
+  renderYesterdayStream({ nodes: bigNodes, echoTimes: bigEcho, now: NOW })
+  const elapsed = performance.now() - t0
+  assert.ok(elapsed < 100, `2 万行 echo 聚合 < 100ms（实际 ${elapsed.toFixed(1)}ms）`)
 })

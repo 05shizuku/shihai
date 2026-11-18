@@ -634,6 +634,45 @@ export function renderSelfSection(nodes, { now = Date.now(), maxChars = 400, tit
  * 「还没定的」那段：doubt（还没认下的我）和 open（没结的事）合成一个摊位，
  * 固定晒分量最重的一条，剩下的数个数——不装没有，也不全倒出来。
  */
+/**
+ * 瀑流（定案 B，2026-11-18）：昨日之流是读侧聚合，不写任何新文件。
+ * 素材窗口 = 昨日 UTC 日（与 display 天集同口径）；部件有数据才出，全无数据整段不挂。
+ * 纯函数：nodes / echoTimes（id → 被想起的时间戳数组）/ vikarmaNewCount 由调用方喂——
+ * UTC 日界、性能钉都在单测里钉死。
+ */
+export function renderYesterdayStream({ nodes = [], echoTimes = new Map(), vikarmaNewCount = 0, now = Date.now(), maxChars = 360 } = {}) {
+  const dayMs = 24 * 60 * 60 * 1000
+  const todayStart = Math.floor(Number(now) / dayMs) * dayMs // UTC 日起点
+  const ws = todayStart - dayMs
+  const we = todayStart
+  // ① 昨日新写节点数（单次过滤，不整本扫）
+  const nodeList = Array.isArray(nodes) ? nodes : []
+  const written = nodeList.filter((n) => {
+    const at = Number(n?.at) || 0
+    return at >= ws && at < we
+  })
+  // ② 现行最频主题：昨日窗内被想起最多的种子（echoTimes 是内存索引，零文件读）
+  let topSeed = null
+  let topCount = 0
+  for (const [id, times] of echoTimes instanceof Map ? echoTimes : []) {
+    let c = 0
+    for (const t of Array.isArray(times) ? times : []) if (t >= ws && t < we) c += 1
+    if (c > topCount) {
+      topCount = c
+      topSeed = nodeList.find((n) => n && n.id === id) ?? null
+    }
+  }
+  // ③ 撞车未结：昨日写下的、conflicts 非空的
+  const clash = written.find((n) => cleanText(n?.conflicts))
+  const parts = []
+  if (written.length) parts.push(`昨天写下 ${written.length} 条账`)
+  if (topSeed && topCount >= 2) parts.push(`最惦记的是「${cutByCodePoints(topSeed.text, 16)}」（反复现行）`)
+  if (clash) parts.push(`「${cutByCodePoints(clash.text, 20)}」跟旧的对撞还没结`)
+  if (vikarmaNewCount > 0) parts.push(`记了 ${vikarmaNewCount} 笔违熏`)
+  if (!parts.length) return ''
+  return clipSection('【昨日之流】', parts.join('；') + '。', Math.max(80, maxChars))
+}
+
 export function renderUnsettledSection(nodes, { now = Date.now(), maxChars = 240, title = '还没定的' } = {}) {
   const list = unsettledNodes(nodes, now)
   if (!list.length) return ''
