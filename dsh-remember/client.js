@@ -1,13 +1,14 @@
 /**
- * client.js —— 设置页里的「记得」那一节（浏览器半边）
+ * client.js —— 设置页里的「识海」那一节（浏览器半边）
  *
  * 为什么有这一半：宿主那半边只算数、写文件，界面得有个地方看。
  * 形态跟 dsh-body / dsh-fish 观测台一样：`settings.section`，在 App 内部同源
  * fetch `/dsh-remember/*`（cookie 天然带着），独立 HTML 页会被信任栅栏挡成 403。
  *
- * 这里只做两件事：
- *   ① 看：账本现况、最重的几条、被按住的、此刻挂起的那段原文、日志末尾；
- *   ② 改：白名单里的几个键 —— 开不开、挂给谁、挂几条、多长。服务端再校验一遍。
+ * 2026-11-19 定案 E：按识的结构，不按考古层——
+ *   识海（order 9.0）是唯一入口：三盏灯 → 桥/身总控块 → 总览（含总开关）
+ *   → 五组（身心之间 / 感 / 记 / 我与思 / 界）→ 观测台 fold。
+ *   旧的「记得」槽（order 9.6）退役。
  *
  * 刻意**不**提供「改某一条的分量」的入口：分量是我自己写下来的判断，
  * 要动就用 forget(mode)，那是账本的规矩，会留下痕迹。
@@ -76,6 +77,18 @@ window.__ModuleLoader__.load({
       intent: '群里的话',
       fast: '身体那边',
       recall: '账本被翻',
+    }
+
+    /** 感的 feel 词（定案 E 组二状态行）：永不报小数——情绪是感觉，不是指标。 */
+    const FEEL_WORD = {
+      warm: '心头有点暖',
+      pleased: '心头有点亮',
+      curious: '心头有点动',
+      tense: '心头有点紧',
+      down: '心头有点沉',
+      restless: '心头有点躁',
+      lonely: '心头有点空',
+      calm: '平静',
     }
 
     // ---------------------------------------------------------------- 样式
@@ -191,6 +204,19 @@ window.__ModuleLoader__.load({
       wakeEnabled: true,
       wakeSessionId: '',
       wakeCooldownMinutes: '30',
+      streamEnabled: true,
+      streamSectionOrder: '8715',
+      streamSectionMaxChars: '360',
+      recallOrigin: true,
+      sproutBodyEnabled: true,
+      sproutBodyMinLevel: '0.5',
+      sproutBodyCooldownMinutes: '10',
+      sproutBodyDailyCap: '3',
+      narrationEnabled: true,
+      narrationIntervalDays: '7',
+      narrationSectionOrder: '8662',
+      narrationSectionMaxChars: '320',
+      recallAudience: 'off',
       debug: false,
     })
 
@@ -260,6 +286,19 @@ window.__ModuleLoader__.load({
         wakeEnabled: cfg.wakeEnabled !== false,
         wakeSessionId: String(cfg.wakeSessionId ?? ''),
         wakeCooldownMinutes: String(cfg.wakeCooldownMinutes ?? ''),
+        streamEnabled: cfg.streamEnabled !== false,
+        streamSectionOrder: String(cfg.streamSectionOrder ?? '8715'),
+        streamSectionMaxChars: String(cfg.streamSectionMaxChars ?? '360'),
+        recallOrigin: cfg.recallOrigin !== false,
+        sproutBodyEnabled: cfg.sproutBodyEnabled !== false,
+        sproutBodyMinLevel: String(cfg.sproutBodyMinLevel ?? '0.5'),
+        sproutBodyCooldownMinutes: String(cfg.sproutBodyCooldownMinutes ?? '10'),
+        sproutBodyDailyCap: String(cfg.sproutBodyDailyCap ?? '3'),
+        narrationEnabled: cfg.narrationEnabled !== false,
+        narrationIntervalDays: String(cfg.narrationIntervalDays ?? '7'),
+        narrationSectionOrder: String(cfg.narrationSectionOrder ?? '8662'),
+        narrationSectionMaxChars: String(cfg.narrationSectionMaxChars ?? '320'),
+        recallAudience: String(cfg.recallAudience ?? 'off'),
         debug: Boolean(cfg.debug),
       }
     }
@@ -310,6 +349,19 @@ window.__ModuleLoader__.load({
         wakeEnabled: Boolean(form?.wakeEnabled),
         wakeSessionId: String(form?.wakeSessionId ?? '').trim(),
         wakeCooldownMinutes: numOrClear(form?.wakeCooldownMinutes),
+        streamEnabled: Boolean(form?.streamEnabled),
+        streamSectionOrder: numOrClear(form?.streamSectionOrder),
+        streamSectionMaxChars: numOrClear(form?.streamSectionMaxChars),
+        recallOrigin: Boolean(form?.recallOrigin),
+        sproutBodyEnabled: Boolean(form?.sproutBodyEnabled),
+        sproutBodyMinLevel: numOrClear(form?.sproutBodyMinLevel),
+        sproutBodyCooldownMinutes: numOrClear(form?.sproutBodyCooldownMinutes),
+        sproutBodyDailyCap: numOrClear(form?.sproutBodyDailyCap),
+        narrationEnabled: Boolean(form?.narrationEnabled),
+        narrationIntervalDays: numOrClear(form?.narrationIntervalDays),
+        narrationSectionOrder: numOrClear(form?.narrationSectionOrder),
+        narrationSectionMaxChars: numOrClear(form?.narrationSectionMaxChars),
+        recallAudience: String(form?.recallAudience ?? 'off'),
         debug: Boolean(form?.debug),
       }
     }
@@ -530,8 +582,8 @@ window.__ModuleLoader__.load({
         }
       }, [form, load])
 
-      // 首屏折叠区（2026-11-14 小白改版：默认只看健康态和三件事，其余收进折叠）
-      const [folds, setFolds] = useState({ adjust: false, observatory: false })
+      // 折叠区（2026-11-19 定案 E：按识的结构，不按考古层——五组 + 观测台）
+      const [folds, setFolds] = useState({ body: true, sense: false, memory: true, self: false, bounds: false, observatory: false })
       const toggleFold = useCallback((k) => setFolds((prev) => ({ ...prev, [k]: !prev[k] })), [])
       const [test, setTest] = useState(null)
       const [testBusy, setTestBusy] = useState(false)
@@ -549,20 +601,13 @@ window.__ModuleLoader__.load({
         }
       }, [])
 
-      const head = h('div', null,
-        h('h2', { style: C.h2 }, '记得'),
-        h('p', { style: C.sub }, status
-          ? `dsh-remember ${status.plugin?.version ?? ''} · 账本 ${status.summary?.total ?? 0} 条 · ${status.plugin?.dataDir ?? ''}`
-          : '给我自己的一本账：原话只增不改，分量随日子淡下去，每次开头只挂几行。'),
-      )
-
       if (error) {
-        return h('div', { style: C.wrap }, head,
+        return h('div', { style: C.wrap },
           card('连不上', h('p', { style: C.err }, error), h('button', { style: C.btn, onClick: load }, '再试一次')),
         )
       }
       if (!status) {
-        return h('div', { style: C.wrap }, head, h('p', { style: C.sub }, '正在读…'))
+        return h('div', { style: C.wrap }, h('p', { style: C.sub }, '正在读…'))
       }
 
       const inj = status.injection ?? {}
@@ -570,27 +615,31 @@ window.__ModuleLoader__.load({
       const cfg = status.config?.effective ?? {}
       const kinds = s.kinds ?? {}
 
-      // 首屏健康卡：一句人话说清现状（小白第一眼只看这个）
+      // 健康态：一句人话说清现状
       const healthOk = Boolean(cfg.enabled) && inj.enabled !== false
-      const healthCard = card('账本现在怎么样',
-        h('p', { style: { ...C.text, fontSize: 14.5 } },
-          healthOk
-            ? '● 开着，一切正常'
-            : inj.enabled === false
-              ? h('span', null, '◐ 总开关开着，但开头段没在挂（去「调整与安全」里看挂载设置）')
-              : '○ 关着（勾上下面总开关再保存就行）'),
+      const healthLine = healthOk
+        ? '● 开着，一切正常'
+        : inj.enabled === false
+          ? '◐ 总开关开着，但开头段没在挂（看组三的挂载设置）'
+          : '○ 关着（勾上总开关再保存就行）'
+
+      // 四机制活性行（定案 E）：思量 / 智 / 执受 / 瀑流——数据源全在 status
+      const nar = status.narration ?? {}
+      const wis = status.wisdom ?? {}
+      const spr = status.sprout ?? {}
+      const activityLine = `思量 ${nar.count ?? 0} 条${nar.latest?.at ? `（链头 ${fmtWhen(nar.latest.at)}）` : ''} · 智 ${wis.count ?? 0} 条 · 执受今日 ${spr.today ?? 0} 次 · 瀑流段 ${cfg.streamEnabled !== false ? '挂' : '关'}`
+
+      // 组〇 总览（不折叠）：版本行 + 账本行 + 四机制活性行 + 总开关（全页唯一显著旋钮）
+      const overviewCard = card('总览',
+        h('p', { style: { ...C.text, fontSize: 14.5 } }, healthLine),
         h('p', { style: C.sub },
-          `账上 ${s.total ?? 0} 条（活着 ${s.alive ?? 0}，按住 ${s.sealed ?? 0}）· 记在 ${status.plugin?.dataDir ?? '默认位置'} · 原话层 ${status.rawLines ?? 0} 行`),
-        // 账本红灯（2026-11-15 审查加的 ledger 字段）：损坏别只写在日志文件里
+          `dsh-remember ${status.plugin?.version ?? ''} · 账本 ${s.total ?? 0} 条（活着 ${s.alive ?? 0} · 按住 ${s.sealed ?? 0}）· 原话 ${status.rawLines ?? 0} 行`),
+        h('p', { style: C.sub }, activityLine),
         status.ledger?.broken
           ? h('p', { style: C.err },
             `⚠ 账本读不出能认的账，这次启动按空账算。原文备份${status.ledger.backupOk ? '已滚成 .bak（别删，恢复靠它）' : '没滚成 —— 先手动备份再动账本'}。`)
           : null,
         inj.lastError ? h('p', { style: C.err }, `最近一次出错：${inj.lastError}`) : null,
-      )
-
-      // 首屏快捷卡：总开关 + 测一下，两件事办完就能走
-      const quickCard = card('最常用的两件事',
         h('div', { style: C.row },
           h('label', { style: { ...C.row, gap: 8, fontSize: 14 } },
             h('input', { type: 'checkbox', checked: !!form?.enabled, onChange: (e) => setForm({ ...form, enabled: e.target.checked }) }),
@@ -606,7 +655,6 @@ window.__ModuleLoader__.load({
               : h('span', { style: C.err }, `❌ ${test.note ?? '自检没过'}`))
             : h('span', { style: C.meta }, '按一下当场验证：账本读得到、数据目录写得进。'),
         ),
-        h('p', { style: C.meta }, '其余配置都有默认值，不用动；要细调去下面两个折叠区。'),
       )
 
       const statusCard = card('运行状态',
@@ -623,7 +671,7 @@ window.__ModuleLoader__.load({
       )
 
       const actAxes = status.activation?.axes ?? null
-      const overviewCard = card('账本概览',
+      const kindsCard = card('账本概览',
         kv([
           ['总共', `${s.total ?? 0} 条`],
           ['还活着（没被按住）', `${s.alive ?? 0} 条`],
@@ -634,6 +682,14 @@ window.__ModuleLoader__.load({
           ...(actAxes
             ? [['激活度权重（写死，不开面板）', `分量 ${actAxes.weight} · 新近 ${actAxes.recency} · 契合 ${actAxes.fit} · 复现 ${actAxes.repeat}`]]
             : []),
+          // 向上的三层（定案 E 观测台增补）：思量链 / 智 / 执受
+          ['思量链', nar.latest?.id
+            ? `链头 ${nar.latest.id}（${fmtWhen(nar.latest.at)}）· 链长 ${nar.count ?? 0}`
+            : '还没有思量'],
+          ['智', wis.latest?.id
+            ? `${wis.count ?? 0} 条 · 最新 ${wis.latest.id}（从 ${wis.latest.seedId || '—'} 提炼）`
+            : '还没有智'],
+          ['执受', `今日 ${spr.today ?? 0} 次 · 累计 ${spr.total ?? 0} 次`],
         ]),
       )
 
@@ -800,20 +856,89 @@ window.__ModuleLoader__.load({
             : '总开关关着，开头不挂任何东西。'),
       )
 
-      const configCard = card('配置',
-        kv([
-          ['配置来源', `代码默认值 → 包 patch → ${status.paths?.config ?? 'config.json'}（热读，两秒生效）`],
-          ['段名 / 顺序', `dsh-remember / ${cfg.sectionOrder ?? '—'}`],
-          ['隔离目录', (cfg.denyRoots ?? []).length ? (cfg.denyRoots ?? []).join('、') : '（没有：哪条会话都能读写）'],
-        ]),
-        h('p', { style: C.cardTitle, marginTop: 6 }, '这些可以直接改'),
+      // ---------------------------------------------------------------- 五组（定案 E，2026-11-19：按识的结构，不按考古层）
+      const toggle = (key, checked, label) => h('div', { style: C.row },
+        h('label', { style: { ...C.row, gap: 6, fontSize: 13 } },
+          h('input', { type: 'checkbox', checked: !!checked, onChange: (e) => setForm({ ...form, [key]: e.target.checked }) }),
+          label))
+      const field = (key, label, hint, width = 72, placeholder = '') => h('div', { style: C.row },
+        h('span', { style: C.k }, label),
+        h('input', { style: { ...C.input, width }, value: String(form?.[key] ?? ''), placeholder, onChange: (e) => setForm({ ...form, [key]: e.target.value }) }),
+        hint ? h('span', { style: C.sub }, hint) : null)
+
+      // 组一 身心之间（10 键，默认开）：抄送、叫醒、心头一动
+      const bodyGroup = [
+        toggle('fastEnabled', form?.fastEnabled !== false, '读 dsh-body 的快层事件（只读抄一份，不变成记忆）'),
+        field('fastSource', '事件文件', '（留空 = 自动找 body 家）', 340),
+        field('fastMaxEvents', '最多留几条', '条（0–5000，超出的沉在文件里还翻得到）', 64),
+        toggle('sproutBodyEnabled', form?.sproutBodyEnabled !== false, '执受反射弧——带情绪的现行通知身体（心头一动）'),
+        field('sproutBodyMinLevel', '染色门浓度线', '（0.1–1，写下时颜色 ≥ 此线的种子现行时动身）', 64),
+        field('sproutBodyCooldownMinutes', '动身冷却', '分钟（1–120，同一条种子两次动身的最小间隔）', 64),
+        field('sproutBodyDailyCap', '每日动身', '次/天（1–20，同一条种子一天最多动身几次）', 64),
+        toggle('wakeEnabled', form?.wakeEnabled !== false, '身体越过线就把我叫醒（叫醒后说不说，我自己定）'),
+        field('wakeSessionId', '目标会话', '（留空 = 自己找最近活跃的）', 340),
+        field('wakeCooldownMinutes', '冷却', '分钟（0–720，两次叫醒最小间隔）', 64),
+      ]
+
+      // 组二 感（8 键，默认收）+ 状态行（feel 词，永不报小数）
+      const senseGroup = [
+        toggle('emotionEnabled', !!form?.emotionEnabled, '从真事里认情绪（只增不改，折出来的只是上次的笔记）'),
+        field('emotionTickMinutes', '心跳间隔', '分钟（1–60，每拍把新落的真事折进情绪流）', 64),
+        toggle('emotionSectionEnabled', !!form?.emotionSectionEnabled, '把【情绪】那一段挂到开头（默认关 —— 笔记不该替我说话）'),
+        field('emotionSectionOrder', '情绪段顺序', '', 78),
+        field('emotionMaxChars', '那段最长', '字（80–2000）', 72),
+        toggle('intentEnabled', form?.intentEnabled !== false, '从 QQ 桥的消息流里认「发生了什么」（只读认一遍，不变成记忆）'),
+        field('intentSource', '消息文件', '', 340, '留空＝自动扫 QQ 桥家全部分册（messages-*.jsonl）'),
+        field('intentMaxEvents', '最多留几条', '条（0 = 不裁旧）', 64),
+        h('p', { style: C.sub }, `当前主导：${FEEL_WORD[ec.dominant] ?? ec.label ?? '平静'}`),
+      ]
+
+      // 组三 记（12 键，默认开）：挂几条、给多少字、截在哪
+      const memoryGroup = [
+        field('injectLimit', '挂几条', '条（＋没结的）', 56),
+        field('openLimit', '没结的挂几条', '条', 56),
+        field('maxChars', '那段最长', '字', 72),
+        field('sectionOrder', '段顺序', '', 78),
+        field('maxTextLength', '一条最长', '字', 72),
+        field('recallMaxChars', '翻账一次最多', '字（工具返回每轮都带着）', 72),
+        field('recallItemMax', '每条原文最多', '字（超了截断并标明）', 72),
+        toggle('streamEnabled', form?.streamEnabled !== false, '挂「昨日之流」段（读侧聚合，同 UTC 日缓存）'),
+        field('streamSectionOrder', '瀑流段顺序', '（8715，习惯之后、账本之前）', 78),
+        field('streamSectionMaxChars', '瀑流段最多', '字（80–2000）', 72),
+        toggle('recallOrigin', form?.recallOrigin !== false, 'recall 行尾带缘起链（x 前因「…」想起 + 机读 origins）'),
+        toggle('debug', !!form?.debug, '把每次挂载写进日志'),
+      ]
+
+      // 组四 我与思（18 键，默认收）：我是谁、我在想什么、我明白了什么
+      const selfGroup = [
+        toggle('selfEnabled', form?.selfEnabled !== false, '挂「我」这一段（排在「我记得的」前面）'),
+        field('selfSectionOrder', '「我」段顺序', '', 78),
+        field('selfMaxChars', '「我」段最长', '字', 72),
+        toggle('unsettledEnabled', form?.unsettledEnabled !== false, '挂「还没定的」这一段（doubt＋open 合一个摊位，固定晒一条）'),
+        field('unsettledSectionOrder', '还没定的段顺序', '', 78),
+        field('unsettledMaxChars', '还没定的段最长', '字', 72),
+        toggle('habitEnabled', form?.habitEnabled !== false, '挂「习惯」这一段（走快通路的那些）'),
+        field('habitSectionOrder', '习惯段顺序', '', 78),
+        field('habitMaxChars', '习惯段最长', '字', 72),
+        field('habitLimit', '快通路留几条', '', 56),
+        toggle('curiosityEnabled', form?.curiosityEnabled !== false, '挂「好奇」这一段（我想知道什么）'),
+        field('curiositySectionOrder', '好奇段顺序', '', 78),
+        field('curiosityMaxChars', '好奇段最长', '字', 72),
+        field('curiosityLimit', '活跃留几条', '', 56),
+        toggle('narrationEnabled', form?.narrationEnabled !== false, '挂「思量」段（恒审思量是我的动作，系统只给时机）'),
+        field('narrationIntervalDays', '思量到期', '天（1–30，超过就提示「有一阵没这么看过自己了」）', 64),
+        field('narrationSectionOrder', '思量段顺序', '（8662，紧跟我）', 78),
+        field('narrationSectionMaxChars', '思量段最多', '字（80–2000）', 72),
+      ]
+
+      // 组五 界（4 键，默认收，敏感）：谁在听、谁能进
+      const boundsGroup = [
         h('div', { style: C.row },
-          h('label', { style: { ...C.row, gap: 6, fontSize: 13 } },
-            h('input', { type: 'checkbox', checked: !!form?.enabled, onChange: (e) => setForm({ ...form, enabled: e.target.checked }) }),
-            '开着：每次开头挂几行'),
-          h('label', { style: { ...C.row, gap: 6, fontSize: 13 } },
-            h('input', { type: 'checkbox', checked: !!form?.debug, onChange: (e) => setForm({ ...form, debug: e.target.checked }) }),
-            '把每次挂载写进日志'),
+          h('span', { style: C.k }, '谁在听'),
+          ...['off', 'soft', 'hard'].map((v) => h('label', { key: `ra-${v}`, style: { ...C.row, gap: 4, fontSize: 13 } },
+            h('input', { type: 'radio', name: 'recallAudience', checked: (form?.recallAudience ?? 'off') === v, onChange: () => setForm({ ...form, recallAudience: v }) }),
+            v === 'off' ? 'off（全可见，现状）' : v === 'soft' ? 'soft（别的场排尾上）' : 'hard（别的场不翻出来）',
+          )),
         ),
         h('div', { style: C.row },
           h('span', { style: C.k }, '目标目录'),
@@ -823,156 +948,7 @@ window.__ModuleLoader__.load({
           h('span', { style: { ...C.k, paddingTop: 4 } }, '放行的目录'),
           h('textarea', { style: C.area, value: form?.allowRoots ?? '', placeholder: '一行一个；留空 = 只按目标目录收窄', onChange: (e) => setForm({ ...form, allowRoots: e.target.value }) }),
         ),
-        h('div', { style: C.row },
-          h('span', { style: C.k }, '挂几条'),
-          h('input', { style: { ...C.input, width: 56 }, value: form?.injectLimit ?? '', onChange: (e) => setForm({ ...form, injectLimit: e.target.value }) }),
-          h('span', { style: C.sub }, '条 + 没结的'),
-          h('input', { style: { ...C.input, width: 56 }, value: form?.openLimit ?? '', onChange: (e) => setForm({ ...form, openLimit: e.target.value }) }),
-          h('span', { style: C.sub }, '条'),
-        ),
-        h('div', { style: C.row },
-          h('span', { style: C.k }, '那段最长'),
-          h('input', { style: { ...C.input, width: 72 }, value: form?.maxChars ?? '', onChange: (e) => setForm({ ...form, maxChars: e.target.value }) }),
-          h('span', { style: C.sub }, '字'),
-          h('span', { style: { ...C.k, marginLeft: 12 } }, '一条最长'),
-          h('input', { style: { ...C.input, width: 72 }, value: form?.maxTextLength ?? '', onChange: (e) => setForm({ ...form, maxTextLength: e.target.value }) }),
-          h('span', { style: C.sub }, '字'),
-        ),
-        h('div', { style: C.row },
-          h('span', { style: C.k }, '翻账一次最多'),
-          h('input', { style: { ...C.input, width: 72 }, value: form?.recallMaxChars ?? '', onChange: (e) => setForm({ ...form, recallMaxChars: e.target.value }) }),
-          h('span', { style: C.sub }, '字'),
-          h('span', { style: { ...C.k, marginLeft: 12 } }, '每条原文最多'),
-          h('input', { style: { ...C.input, width: 72 }, value: form?.recallItemMax ?? '', onChange: (e) => setForm({ ...form, recallItemMax: e.target.value }) }),
-          h('span', { style: C.sub }, '字'),
-        ),
-        h('p', { style: { ...C.cardTitle, marginTop: 6 } }, '自我层'),
-        h('div', { style: C.row },
-          h('label', { style: { ...C.row, gap: 6, fontSize: 13 } },
-            h('input', { type: 'checkbox', checked: form?.selfEnabled !== false, onChange: (e) => setForm({ ...form, selfEnabled: e.target.checked }) }),
-            '挂「我」这一段（排在「我记得的」前面）'),
-        ),
-        h('div', { style: C.row },
-          h('span', { style: C.k }, '「我」那段的顺序'),
-          h('input', { style: { ...C.input, width: 78 }, value: form?.selfSectionOrder ?? '', onChange: (e) => setForm({ ...form, selfSectionOrder: e.target.value }) }),
-          h('span', { style: { ...C.k, marginLeft: 12 } }, '那段最长'),
-          h('input', { style: { ...C.input, width: 72 }, value: form?.selfMaxChars ?? '', onChange: (e) => setForm({ ...form, selfMaxChars: e.target.value }) }),
-          h('span', { style: C.sub }, '字'),
-        ),
-        h('p', { style: { ...C.cardTitle, marginTop: 6 } }, '「还没定的」段'),
-        h('div', { style: C.row },
-          h('label', { style: { ...C.row, gap: 6, fontSize: 13 } },
-            h('input', { type: 'checkbox', checked: form?.unsettledEnabled !== false, onChange: (e) => setForm({ ...form, unsettledEnabled: e.target.checked }) }),
-            '挂「还没定的」这一段（doubt＋open 合一个摊位，固定晒一条）'),
-        ),
-        h('div', { style: C.row },
-          h('span', { style: C.k }, '还没定的段顺序'),
-          h('input', { style: { ...C.input, width: 78 }, value: form?.unsettledSectionOrder ?? '', onChange: (e) => setForm({ ...form, unsettledSectionOrder: e.target.value }) }),
-          h('span', { style: { ...C.k, marginLeft: 12 } }, '那段最长'),
-          h('input', { style: { ...C.input, width: 72 }, value: form?.unsettledMaxChars ?? '', onChange: (e) => setForm({ ...form, unsettledMaxChars: e.target.value }) }),
-          h('span', { style: C.sub }, '字'),
-        ),
-        h('p', { style: { ...C.cardTitle, marginTop: 6 } }, '好奇表'),
-        h('div', { style: C.row },
-          h('label', { style: { ...C.row, gap: 6, fontSize: 13 } },
-            h('input', { type: 'checkbox', checked: form?.curiosityEnabled !== false, onChange: (e) => setForm({ ...form, curiosityEnabled: e.target.checked }) }),
-            '挂「好奇」这一段（我想知道什么）'),
-        ),
-        h('div', { style: C.row },
-          h('span', { style: C.k }, '好奇段顺序'),
-          h('input', { style: { ...C.input, width: 78 }, value: form?.curiositySectionOrder ?? '', onChange: (e) => setForm({ ...form, curiositySectionOrder: e.target.value }) }),
-          h('span', { style: { ...C.k, marginLeft: 12 } }, '那段最长'),
-          h('input', { style: { ...C.input, width: 72 }, value: form?.curiosityMaxChars ?? '', onChange: (e) => setForm({ ...form, curiosityMaxChars: e.target.value }) }),
-          h('span', { style: C.sub }, '字'),
-          h('span', { style: { ...C.k, marginLeft: 12 } }, '活跃留几条'),
-          h('input', { style: { ...C.input, width: 56 }, value: form?.curiosityLimit ?? '', onChange: (e) => setForm({ ...form, curiosityLimit: e.target.value }) }),
-        ),
-        h('p', { style: { ...C.cardTitle, marginTop: 6 } }, '习惯／快通路'),
-        h('div', { style: C.row },
-          h('label', { style: { ...C.row, gap: 6, fontSize: 13 } },
-            h('input', { type: 'checkbox', checked: form?.habitEnabled !== false, onChange: (e) => setForm({ ...form, habitEnabled: e.target.checked }) }),
-            '挂「习惯」这一段（走快通路的那些）'),
-        ),
-        h('div', { style: C.row },
-          h('span', { style: C.k }, '习惯段顺序'),
-          h('input', { style: { ...C.input, width: 78 }, value: form?.habitSectionOrder ?? '', onChange: (e) => setForm({ ...form, habitSectionOrder: e.target.value }) }),
-          h('span', { style: { ...C.k, marginLeft: 12 } }, '那段最长'),
-          h('input', { style: { ...C.input, width: 72 }, value: form?.habitMaxChars ?? '', onChange: (e) => setForm({ ...form, habitMaxChars: e.target.value }) }),
-          h('span', { style: C.sub }, '字'),
-          h('span', { style: { ...C.k, marginLeft: 12 } }, '快通路留几条'),
-          h('input', { style: { ...C.input, width: 56 }, value: form?.habitLimit ?? '', onChange: (e) => setForm({ ...form, habitLimit: e.target.value }) }),
-        ),
-        h('p', { style: { ...C.cardTitle, marginTop: 6 } }, '快层接缝'),
-        h('div', { style: C.row },
-          h('label', { style: { ...C.row, gap: 6, fontSize: 13 } },
-            h('input', { type: 'checkbox', checked: form?.fastEnabled !== false, onChange: (e) => setForm({ ...form, fastEnabled: e.target.checked }) }),
-            '读 dsh-body 的快层事件（只读抄一份，不变成记忆）'),
-        ),
-        h('div', { style: C.row },
-          h('span', { style: C.k }, '事件文件'),
-          h('input', { style: { ...C.input, width: 340 }, value: form?.fastSource ?? '', placeholder: '留空 = 按 dsh-body 的 config 找，找不到就用 ~/.dsh-body/body-events.jsonl', onChange: (e) => setForm({ ...form, fastSource: e.target.value }) }),
-        ),
-        h('div', { style: C.row },
-          h('span', { style: C.k }, '最多留几条'),
-          h('input', { style: { ...C.input, width: 64 }, value: form?.fastMaxEvents ?? '', onChange: (e) => setForm({ ...form, fastMaxEvents: e.target.value }) }),
-          h('span', { style: C.sub }, '条（0 = 不设上限）'),
-        ),
-        h('p', { style: { ...C.cardTitle, marginTop: 6 } }, '意图层'),
-        h('div', { style: C.row },
-          h('label', { style: { ...C.row, gap: 6, fontSize: 13 } },
-            h('input', { type: 'checkbox', checked: form?.intentEnabled !== false, onChange: (e) => setForm({ ...form, intentEnabled: e.target.checked }) }),
-            '从 QQ 桥的消息流里认「发生了什么」（只读认一遍，不变成记忆）'),
-        ),
-        h('div', { style: C.row },
-          h('span', { style: C.k }, '消息文件'),
-          h('input', { style: { ...C.input, width: 340 }, value: form?.intentSource ?? '', placeholder: '留空＝自动扫 QQ 桥家全部分册（messages-*.jsonl）', onChange: (e) => setForm({ ...form, intentSource: e.target.value }) }),
-        ),
-        h('div', { style: C.row },
-          h('span', { style: C.k }, '最多留几条'),
-          h('input', { style: { ...C.input, width: 64 }, value: form?.intentMaxEvents ?? '', onChange: (e) => setForm({ ...form, intentMaxEvents: e.target.value }) }),
-          h('span', { style: C.sub }, '条（0 = 不裁旧）'),
-        ),
-        h('p', { style: { ...C.cardTitle, marginTop: 6 } }, '情绪流'),
-        h('div', { style: C.row },
-          h('label', { style: { ...C.row, gap: 6, fontSize: 13 } },
-            h('input', { type: 'checkbox', checked: !!form?.emotionEnabled, onChange: (e) => setForm({ ...form, emotionEnabled: e.target.checked }) }),
-            '从真事里认情绪（只增不改，折出来的只是上次的笔记）'),
-        ),
-        h('div', { style: C.row },
-          h('span', { style: C.k }, '心跳间隔'),
-          h('input', { style: { ...C.input, width: 64 }, value: form?.emotionTickMinutes ?? '', onChange: (e) => setForm({ ...form, emotionTickMinutes: e.target.value }) }),
-          h('span', { style: C.sub }, '分钟（1–60，每拍把新落的真事折进情绪流）'),
-        ),
-        h('div', { style: C.row },
-          h('label', { style: { ...C.row, gap: 6, fontSize: 13 } },
-            h('input', { type: 'checkbox', checked: !!form?.emotionSectionEnabled, onChange: (e) => setForm({ ...form, emotionSectionEnabled: e.target.checked }) }),
-            '把【情绪】那一段挂到开头（默认关 —— 笔记不该替我说话）'),
-        ),
-        h('div', { style: C.row },
-          h('span', { style: C.k }, '情绪段顺序'),
-          h('input', { style: { ...C.input, width: 78 }, value: form?.emotionSectionOrder ?? '', onChange: (e) => setForm({ ...form, emotionSectionOrder: e.target.value }) }),
-          h('span', { style: { ...C.k, marginLeft: 12 } }, '那段最长'),
-          h('input', { style: { ...C.input, width: 72 }, value: form?.emotionMaxChars ?? '', onChange: (e) => setForm({ ...form, emotionMaxChars: e.target.value }) }),
-          h('span', { style: C.sub }, '字（80–2000）'),
-        ),
-        h('p', { style: C.sub }, '系数不在这里改 —— 系数是我自己攒的判断，改它只有一条路：emotion_tune（往情绪流的账上追加一行，写清从多少改到多少、为什么）。'),
-        h('p', { style: { ...C.cardTitle, marginTop: 6 } }, '叫醒（身体越过线自动叫醒）'),
-        h('div', { style: C.row },
-          h('label', { style: { ...C.row, gap: 6, fontSize: 13 } },
-            h('input', { type: 'checkbox', checked: form?.wakeEnabled !== false, onChange: (e) => setForm({ ...form, wakeEnabled: e.target.checked }) }),
-            '身体越过线（饿过头 / 困过头）自动叫醒，递【身体】进目标会话'),
-        ),
-        h('div', { style: C.row },
-          h('span', { style: C.k }, '目标会话'),
-          h('input', { style: { ...C.input, width: 340 }, value: form?.wakeSessionId ?? '', placeholder: '留空 = 不钉，按会话白名单递', onChange: (e) => setForm({ ...form, wakeSessionId: e.target.value }) }),
-        ),
-        h('div', { style: C.row },
-          h('span', { style: C.k }, '冷却'),
-          h('input', { style: { ...C.input, width: 64 }, value: form?.wakeCooldownMinutes ?? '', onChange: (e) => setForm({ ...form, wakeCooldownMinutes: e.target.value }) }),
-          h('span', { style: C.sub }, '分钟（0–720，两次叫醒的最小间隔）'),
-        ),
-        h('p', { style: { ...C.cardTitle, marginTop: 6 } }, '隔离（这些工作区完全不碰这本账）'),
-        h('p', { style: C.sub }, '勾上的工作区：那里的会话看不到这本账的七个工具，也不挂段。'),
+        h('p', { style: C.sub }, '隔离（这些工作区完全不碰这本账）——勾上的工作区：那里的会话看不到这本账的工具，也不挂段。'),
         ...(status.workspaces ?? []).map((w) =>
           h('label', { key: `ws-${w.path}`, style: { ...C.row, gap: 6, fontSize: 13 } },
             h('input', {
@@ -989,12 +965,8 @@ window.__ModuleLoader__.load({
           h('span', { style: { ...C.k, paddingTop: 4 } }, '隔离目录'),
           h('textarea', { style: C.area, value: form?.denyRoots ?? '', placeholder: '一行一个目录；勾上面的工作区会写进这里', onChange: (e) => setForm({ ...form, denyRoots: e.target.value }) }),
         ),
-        h('div', { style: C.row },
-          h('button', { style: C.btn, disabled: busy, onClick: save }, busy ? '保存中…' : '保存'),
-          note ? h('span', { style: C.ok }, note) : null,
-        ),
         h('p', { style: C.sub }, '分量不在这里改 —— 那是我自己写下的判断，要动就用 forget（淡 / 按 / 松），会留痕。'),
-      )
+      ]
 
       const logCard = card('日志末尾',
         (status.logs ?? []).length
@@ -1002,14 +974,16 @@ window.__ModuleLoader__.load({
           : h('p', { style: C.sub }, '还没有日志'),
       )
 
-      // 2026-11-14 小白改版：首屏（健康+两件事）→ 折叠区（调整与安全 / 观测台）
+      // 定案 E：总览（不折叠）→ 五组 → 观测台。总开关在总览，全页唯一显著旋钮。
       return h('div', { style: C.wrap },
-        head,
-        healthCard,
-        quickCard,
-        foldSection('调整与安全（一般不用碰）', '类型开关 · 注入参数 · 谁能读写哪个目录', !!folds.adjust, () => toggleFold('adjust'), configCard),
+        overviewCard,
+        foldSection('组一 身心之间', '身体和识之间的三根线：抄送、叫醒、心头一动。', folds.body !== false, () => toggleFold('body'), ...bodyGroup),
+        foldSection('组二 感', '机器从真事里认情绪、认事——认出来的只是笔记，不接管嘴。', !!folds.sense, () => toggleFold('sense'), ...senseGroup),
+        foldSection('组三 记', '账本的旋钮：挂几条、给多少字、截在哪。', folds.memory !== false, () => toggleFold('memory'), ...memoryGroup),
+        foldSection('组四 我与思', '我是谁、我在想什么、我明白了什么——这些的旋钮都在这。', !!folds.self, () => toggleFold('self'), ...selfGroup),
+        foldSection('组五 界', '谁在听、谁能进——信任的边界。', !!folds.bounds, () => toggleFold('bounds'), ...boundsGroup),
         foldSection('观测台（咱们天天看的）', '账本 · 自我 · 好奇 · 习惯 · 快层 · 意图 · 情绪 · 叫醒 · 按住的 · 原样段 · 日志', !!folds.observatory, () => toggleFold('observatory'),
-          statusCard, selfCard, curiosityCard, habitCard, fastCard, intentCard, emotionCard, wakeCard, overviewCard, topCard, sealedCard, sectionCard, logCard),
+          statusCard, selfCard, curiosityCard, habitCard, fastCard, intentCard, emotionCard, wakeCard, kindsCard, topCard, sealedCard, sectionCard, logCard),
       )
     }
 
@@ -1202,20 +1176,15 @@ window.__ModuleLoader__.load({
         h('span', { style: C.meta }, '状态灯每 5 秒自刷'),
       )
 
-      // 2026-11-15 二次简化（她的原话：看不懂的别放上来）：总控页只看状态 + 一个总开关，
-      // 细配置全在各自页签——那边有带说明的表单和四步向导，这边不再摆裸键值。
+      // 2026-11-19 定案 E：单一事实源——remember 的键映射撤出总控（识海段自己带总览+五组），
+      // bridge/body 部分不动。
       const HUB_MASTER = {
-        remember: { key: 'enabled', label: '总开关（每次开头挂几行记忆）', page: '记得' },
         bridge: { key: 'enabled', label: '总开关', page: 'QQ 薄桥' },
         body: { key: 'topUpEnabled', label: '饭钱到线自动添饭', page: '身体' },
       }
 
       const summaryLine = (t, j) => {
         if (!j) return '（这拍没读到状态，5 秒后自刷）'
-        if (t.key === 'remember') {
-          const s = j.summary ?? {}
-          return `账上 ${s.total ?? 0} 条（活着 ${s.alive ?? 0}）· 记在 ${j.plugin?.dataDir ?? '默认位置'}`
-        }
         if (t.key === 'bridge') {
           const m = j.messageLog ?? { enabled: false, stats: [] }
           return j.running
@@ -1248,7 +1217,8 @@ window.__ModuleLoader__.load({
         await poll()
       }, [res, poll])
 
-      const blocks = HUB_TARGETS.map((t) => {
+      // 定案 E：桥/身的总控块照旧；remember 的块退役（识海段自己带总览+五组）
+      const blocks = HUB_TARGETS.filter((t) => HUB_MASTER[t.key]).map((t) => {
         const p = pills.find((x) => x.key === t.key)
         const j = res[t.key]?.j
         const meta = HUB_MASTER[t.key]
@@ -1276,11 +1246,12 @@ window.__ModuleLoader__.load({
 
       return h('div', { style: C.wrap },
         h('div', null,
-          h('h2', { style: C.h2 }, '识海总控'),
-          h('p', { style: C.sub }, '三件套一页看：谁在跑、一句话现状、一个总开关。细配置在左边各页签，那边有说明。'),
+          h('h2', { style: C.h2 }, '识海'),
+          h('p', { style: C.sub }, '三件套一页看：谁在跑、一句话现状。桥和身的总开关在这下面；识海自己的总览、五组旋钮和观测台也都在这一页。'),
         ),
         pillRow,
         ...blocks,
+        RememberSection(),
       )
     }
 
@@ -1288,13 +1259,8 @@ window.__ModuleLoader__.load({
     const inject = ['slots']
 
     function apply(ctx) {
-      ctx.effect(
-        () => ctx.slots.inject('settings.section', () => ctx.slots.register(
-          { name: 'settings.section', id: 'dsh-remember', order: 9.6, label: () => '记得' },
-          RememberSection,
-        ), 'dsh-remember: settings section'),
-        'dsh-remember: settings section',
-      )
+      // 2026-11-19 并入识海段（定案 E）：dsh-remember 槽（order 9.6「记得」）退役，
+      // 识海（order 9.0）成为唯一入口——总览 + 五组 + 观测台都在 HubSection 里。
       ctx.effect(
         () => ctx.slots.inject('settings.section', () => ctx.slots.register(
           { name: 'settings.section', id: 'dsh-shihai-hub', order: 9.0, label: () => '识海' },

@@ -2,16 +2,22 @@
  * tools/smoke-client.mjs —— 假浏览器里把 client.js 跑一遍
  *
  * 不联网、不装依赖：假的 window.__ModuleLoader__、假的 react（createElement 返回普通对象、
- * hooks 返回初值），只验证这几件事：
- *   · client.js 是合法的模块包装（load 被调用、factory 能跑）；
- *   · apply(ctx) 往 settings.section 里注册了 id=dsh-remember / order=9.6 / label=记得；
- *   · formFrom(status) 与 formToPatch(form) 的字段对得上；
- *   · 意图层和情绪流的行/计数回落、卡片文案、配置键表单三处都对得上；
- *   · 没有数据时组件能渲染出「正在读…」，不会在 hooks 上炸。
+ * hooks 返回初值），只验证这几件事（定案 E，2026-11-19）：
+ *   · 槽位退役：只注册识海（order 9.0）一个槽，dsh-remember 槽不再注册、label「记得」零出现；
+ *   · 53 键 1:1 对表：formFrom/formToPatch 的键集 == config.js EDITABLE 全集（无丢失无重复）；
+ *   · 五组齐（身心之间/感/记/我与思/界）+ 组头白话 + 新键 hint 抽样；
+ *   · 灯纪律不变：三分支（error/ok:false/diag）、AbortSignal.timeout(4000)、5 秒自刷；
+ *   · 回归：CustomEvent 保存流、numOrClear、rootsOf/toggleRoot、总开关在总览、密钥不回显；
+ *   · 总览活性行：narration / wisdom / sprout 数据源字段在（宿主侧 status.sprout）。
  */
 import { readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+
+import { EDITABLE } from '../lib/config.js'
+
+/** config.js 的 EDITABLE 是 {键: 类型} 映射——对表用键集。 */
+const EDITABLE_KEYS = Object.keys(EDITABLE).sort()
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const code = readFileSync(join(HERE, '..', 'client.js'), 'utf8')
@@ -57,10 +63,9 @@ function render(seed = null) {
   return mod.RememberSection()
 }
 
-/** 折叠区默认收着（2026-11-14 小白改版：首屏只看健康态和两件事）。
- *  想看观测台/配置卡，就得把两折都撑开再渲染 —— 下面的卡片断言都用撑开态。 */
-const OPEN_FOLDS = { adjust: true, observatory: true }
-const FOLD_SEED = [OPEN_FOLDS, null, false]
+/** 五组开合的种子：全开（观测台断言用） */
+const ALL_OPEN = { body: true, sense: true, memory: true, self: true, bounds: true, observatory: true }
+const DEFAULT_FOLDS = { body: true, sense: false, memory: true, self: false, bounds: false, observatory: false }
 
 const requireStub = (name) => {
   if (name !== 'react') throw new Error(`unexpected require(${JSON.stringify(name)})`)
@@ -75,7 +80,7 @@ const mod = spec.factory(requireStub)
 ok(typeof mod.apply === 'function', 'exports.apply 是函数')
 ok(Array.isArray(mod.inject) && mod.inject.includes('slots'), 'exports.inject 里带 slots')
 
-// ---------------------------------------------------------------- 注册 slot
+// ---------------------------------------------------------------- 槽位（定案 E：识海是唯一入口，9.6 退役）
 const registered = []
 let slotName = ''
 const fakeCtx = {
@@ -92,34 +97,25 @@ const fakeCtx = {
   effect: (fn) => fn(),
 }
 mod.apply(fakeCtx)
-const rememberSlot = registered.find((r) => r.opts?.id === 'dsh-remember')
 const hubSlot = registered.find((r) => r.opts?.id === 'dsh-shihai-hub')
-ok(rememberSlot?.slot === 'settings.section', '注册进 settings.section')
-ok(rememberSlot?.opts?.name === 'settings.section', 'slot 名是 settings.section')
-ok(rememberSlot?.opts?.id === 'dsh-remember', 'slot id 是 dsh-remember')
-ok(rememberSlot?.opts?.order === 9.6, 'slot order 是 9.6（避开 bili 的 9 和 reach 的 9.5）')
-ok(rememberSlot?.opts?.label?.() === '记得', "slot label 是「记得」")
-ok(rememberSlot?.component === mod.RememberSection, 'slot 组件就是 RememberSection')
-ok(registered.length === 2, 'apply 注册了两个槽（记得 + 识海总控）')
-ok(hubSlot?.slot === 'settings.section' && hubSlot?.opts?.order === 9.0, '总控槽 order 是 9.0（排在「记得」前面）')
-ok(hubSlot?.opts?.label?.() === '识海', "总控槽 label 是「识海」")
-ok(hubSlot?.component === mod.HubSection, '总控槽组件就是 HubSection')
+const rememberSlot = registered.find((r) => r.opts?.id === 'dsh-remember')
+ok(rememberSlot === undefined, 'dsh-remember 槽已退役（不再注册）')
+ok(registered.length === 1, 'apply 只注册一个槽（识海，唯一入口）')
+ok(hubSlot?.slot === 'settings.section' && hubSlot?.opts?.order === 9.0, '识海槽 order 9.0')
+ok(hubSlot?.opts?.label?.() === '识海', "识海槽 label 是「识海」")
+ok(hubSlot?.component === mod.HubSection, '识海槽组件就是 HubSection')
 
-// ---------------------------------------------------------------- 表单
+// ---------------------------------------------------------------- 表单（53 键 1:1 对表）
 const status = {
   ok: true,
-  plugin: { name: 'dsh-remember', version: '0.1.0', startedAt: new Date().toISOString(), uptimeMs: 1000, dataDir: 'C:\\tmp\\remember' },
+  plugin: { name: 'dsh-remember', version: '0.24.0', startedAt: new Date().toISOString(), uptimeMs: 1000, dataDir: 'C:\\tmp\\remember' },
   injection: { enabled: true, targetRoot: '', allowRoots: [], count: 0, lastAt: null, lastError: null, section: '', selfEnabled: true, selfSection: '', curiosityEnabled: true, curiositySection: '', habitEnabled: true, habitSection: '' },
   self: { slots: [], seeds: [{ key: 'identity', label: '我是谁' }, { key: 'cares', label: '我在意' }, { key: 'refuses', label: '我不做' }] },
   habits: { fast: [], candidates: [], limit: 3 },
-  curiosity: {
-    active: 0,
-    thinking: 1,
-    answered: 0,
-    total: 1,
-    limit: 3,
-    list: [],
-  },
+  curiosity: { active: 0, thinking: 1, answered: 0, total: 1, limit: 3, list: [] },
+  narration: { count: 3, lastAt: '2026-11-19T01:00:00.000Z', due: false, latest: { id: 'n_x1', at: '2026-11-19T01:00:00.000Z', refsCount: 2 } },
+  wisdom: { count: 2, latest: { id: 'w_x1', at: '2026-11-19T01:10:00.000Z', seedId: 'r_x1' } },
+  sprout: { today: 2, total: 7 },
   fast: {
     enabled: true,
     source: 'C:\\Users\\x\\.dsh-body\\body-events.jsonl',
@@ -142,7 +138,6 @@ const status = {
     recent: [
       { id: 'i_abc1234', kind: 'praise', label: '夸', intensity: 4, text: '你真棒', at: '2026-11-06T02:00:00.000Z', when: '刚刚' },
       { id: 'i_def5678', kind: 'ask', label: '问', intensity: 3, text: '你醒着吗', at: '2026-11-06T01:50:00.000Z', when: '十分钟前' },
-      { id: 'i_ghi9012', kind: 'other', label: '其它', intensity: 2, text: '嗯', at: '2026-11-06T01:40:00.000Z', when: '二十分钟前' },
     ],
   },
   emotion: {
@@ -150,36 +145,27 @@ const status = {
     dominant: 'warm',
     label: '被暖到',
     level: 0.402,
-    levels: { warm: 0.402, pleased: 0.1, curious: 0, tense: 0, down: 0, restless: 0, lonely: 0 },
+    levels: { warm: 0.402 },
     total: 2,
     lastAt: '2026-11-06T02:10:00.000Z',
-    coefficients: {
-      warm: { coefficient: 1, halfLife: 120 },
-      pleased: { coefficient: 1, halfLife: 60 },
-      curious: { coefficient: 0.8, halfLife: 90 },
-      tense: { coefficient: 1, halfLife: 45 },
-      down: { coefficient: 0.9, halfLife: 90 },
-      restless: { coefficient: 0.7, halfLife: 30 },
-      lonely: { coefficient: 0.8, halfLife: 60 },
-    },
+    coefficients: {},
     events: 2,
     tunes: 1,
-    note: '（上次的笔记）此刻我心里大概是：被暖到 0.40、高兴 0.10',
+    note: '（上次的笔记）此刻我心里大概是：被暖到 0.40',
     recent: [
       { id: 'e_abc1234', emotion: 'warm', label: '被暖到', delta: 0.35, intensity: 3, source: 'intent', ref: 'i_abc1234', text: '他说了句暖心的话', at: '2026-11-06T02:10:00.000Z', when: '刚刚', weighed: false },
-      { id: 'e_def5678', emotion: 'pleased', label: '高兴', delta: 0.25, intensity: 2, source: 'fast', ref: 'f_abc1234', text: '添了饭，胃里踏实', at: '2026-11-06T01:30:00.000Z', when: '一会儿前', weighed: true },
     ],
   },
   wake: {
     enabled: true,
-    sessionId: 'session-bb00f425-3b12-4b40-af93-0337e6a99706',
+    sessionId: 'session-bb00f425',
     cooldownMinutes: 30,
     kinds: ['threshold', 'missed'],
     beats: 42,
     lastWakeAt: '2026-11-05T05:25:52.000Z',
-    lastText: '【身体】（演示铃）身体叫我醒，我醒了（f_1uecqb3）',
+    lastText: '【身体】（演示铃）身体叫我醒，我醒了',
   },
-  summary: { total: 1, alive: 1, sealed: 0, thought: 1, kinds: { fact: 1, decision: 0, lesson: 0, skill: 0, open: 0, self: 0 }, topScore: 1 },
+  summary: { total: 1, alive: 1, sealed: 0, thought: 1, kinds: { fact: 1 }, topScore: 1 },
   nodes: [{ id: 'r_1', kind: 'fact', weight: 0.55, score: 0.9, at: new Date().toISOString(), when: '刚写下', text: '一条', thought: true }],
   sealed: [],
   rawLines: 1,
@@ -200,6 +186,19 @@ const status = {
       maxTextLength: 2000,
       recallMaxChars: 8000,
       recallItemMax: 400,
+      streamEnabled: true,
+      streamSectionOrder: 8715,
+      streamSectionMaxChars: 360,
+      recallOrigin: true,
+      sproutBodyEnabled: true,
+      sproutBodyMinLevel: 0.5,
+      sproutBodyCooldownMinutes: 10,
+      sproutBodyDailyCap: 3,
+      narrationEnabled: true,
+      narrationIntervalDays: 7,
+      narrationSectionOrder: 8662,
+      narrationSectionMaxChars: 320,
+      recallAudience: 'off',
       selfEnabled: true,
       selfSectionOrder: 8660,
       selfMaxChars: 400,
@@ -214,7 +213,7 @@ const status = {
       intentSource: '',
       intentMaxEvents: 2000,
       wakeEnabled: true,
-      wakeSessionId: 'session-bb00f425-3b12-4b40-af93-0337e6a99706',
+      wakeSessionId: 'session-bb00f425',
       wakeCooldownMinutes: 30,
       emotionEnabled: true,
       emotionTickMinutes: 1,
@@ -227,71 +226,56 @@ const status = {
       habitLimit: 3,
       debug: false,
     },
-    editable: ['enabled', 'targetRoot', 'allowRoots', 'denyRoots', 'injectLimit', 'openLimit', 'maxChars', 'sectionOrder', 'maxTextLength', 'recallMaxChars', 'recallItemMax', 'selfEnabled', 'selfSectionOrder', 'selfMaxChars', 'curiosityEnabled', 'curiositySectionOrder', 'curiosityMaxChars', 'curiosityLimit', 'habitEnabled', 'habitSectionOrder', 'habitMaxChars', 'habitLimit', 'fastEnabled', 'fastSource', 'fastMaxEvents', 'intentEnabled', 'intentSource', 'intentMaxEvents', 'wakeEnabled', 'wakeSessionId', 'wakeCooldownMinutes', 'emotionEnabled', 'emotionTickMinutes', 'emotionSectionEnabled', 'emotionSectionOrder', 'emotionMaxChars', 'debug'],
+    editable: Object.keys(EDITABLE),
   },
   paths: { config: 'C:\\tmp\\remember\\config.json', memory: 'C:\\tmp\\remember\\memory.json', lines: 'C:\\tmp\\remember\\lines.jsonl', log: 'C:\\tmp\\remember\\dsh-remember.log' },
   logs: ['启动'],
 }
 
 const form = mod.formFrom(status)
+// 53 键 1:1 对表（定案 E 硬拍板：键清单 = config.js EDITABLE 全集）
+const editableKeys = EDITABLE_KEYS
+const formKeys = Object.keys(form).sort()
+ok(JSON.stringify(formKeys) === JSON.stringify(editableKeys), `formFrom 键集 == EDITABLE 全集（53 键，无丢失无重复；实际 ${formKeys.length}）`)
+const patchKeys = Object.keys(mod.formToPatch(form)).sort()
+ok(JSON.stringify(patchKeys) === JSON.stringify(editableKeys), 'formToPatch 键集同样 1:1 对表')
+
 ok(form.enabled === true, 'formFrom: enabled')
 ok(form.targetRoot === 'E:\\shihai-fixtures\\Plugin', 'formFrom: targetRoot')
-ok(form.allowRoots === 'E:\\shihai-fixtures\\Plugin', 'formFrom: allowRoots 一行一个')
 ok(form.injectLimit === '3' && form.openLimit === '2', 'formFrom: 数字变字符串')
-
-ok(form.selfEnabled === true && form.selfSectionOrder === '8660' && form.selfMaxChars === '400', 'formFrom: 自我层那三个键也读得到')
-
-ok(form.habitEnabled === true && form.habitSectionOrder === '8680' && form.habitMaxChars === '320' && form.habitLimit === '3', 'formFrom: 习惯那四个键也读得到')
-
-ok(form.curiosityEnabled === true && form.curiositySectionOrder === '8670' && form.curiosityMaxChars === '320' && form.curiosityLimit === '3', 'formFrom: 好奇表那四个键也读得到')
-
 const patch = mod.formToPatch(form)
-ok(patch.enabled === true, 'formToPatch: enabled')
-ok(patch.targetRoot === 'E:\\shihai-fixtures\\Plugin', 'formToPatch: targetRoot')
+ok(patch.enabled === true && patch.targetRoot === 'E:\\shihai-fixtures\\Plugin', 'formToPatch: 基础键')
 ok(Array.isArray(patch.allowRoots) && patch.allowRoots.length === 1, 'formToPatch: allowRoots 变数组')
-ok(patch.injectLimit === '3' && patch.maxChars === '900', 'formToPatch: 数字还是字符串（服务端再校验）')
-ok(patch.selfEnabled === true && patch.selfSectionOrder === '8660', 'formToPatch: 自我层跟着一起提')
-const selfOff = mod.formToPatch({ ...form, selfEnabled: false })
-ok(selfOff.selfEnabled === false, 'formToPatch: 自我层能关')
-ok(patch.habitEnabled === true && patch.habitSectionOrder === '8680' && patch.habitLimit === '3', 'formToPatch: 习惯跟着一起提')
-const habitOff = mod.formToPatch({ ...form, habitEnabled: false, habitLimit: '5' })
-ok(habitOff.habitEnabled === false && habitOff.habitLimit === '5', 'formToPatch: 习惯能关、上限能改')
-ok(patch.curiosityEnabled === true && patch.curiositySectionOrder === '8670' && patch.curiosityMaxChars === '320' && patch.curiosityLimit === '3', 'formToPatch: 好奇表跟着一起提')
-const curiosityOff = mod.formToPatch({ ...form, curiosityEnabled: false, curiosityLimit: '5', curiositySectionOrder: '8680' })
-ok(curiosityOff.curiosityEnabled === false && curiosityOff.curiosityLimit === '5' && curiosityOff.curiositySectionOrder === '8680', 'formToPatch: 好奇表能关、上限和顺序能改')
+ok(mod.formToPatch({ ...form, allowRoots: '  \n , ', injectLimit: '' }).injectLimit === '', 'numOrClear: 清空数字 = 回默认')
 
-ok(form.fastEnabled === true && form.fastSource === '' && form.fastMaxEvents === '500', 'formFrom: 快层那三个键也读得到')
-const fastPatch = mod.formToPatch({ ...form, fastEnabled: false, fastSource: '  D:\\x\\events.jsonl  ', fastMaxEvents: '1200' })
-ok(fastPatch.fastEnabled === false && fastPatch.fastSource === 'D:\\x\\events.jsonl' && fastPatch.fastMaxEvents === '1200', 'formToPatch: 快层能关、路径去空白、上限能改')
-ok(mod.formToPatch({ ...form, fastSource: null }).fastSource === '', 'formToPatch: 快层路径空着就是空字符串')
+// 新四套键的回落与可改
+ok(form.streamEnabled === true && form.streamSectionOrder === '8715' && form.streamSectionMaxChars === '360', 'formFrom: 瀑流三键')
+const streamPatch = mod.formToPatch({ ...form, streamEnabled: false, streamSectionOrder: '8700', streamSectionMaxChars: '500' })
+ok(streamPatch.streamEnabled === false && streamPatch.streamSectionOrder === '8700' && streamPatch.streamSectionMaxChars === '500', 'formToPatch: 瀑流能关、顺序字数能改')
+ok(form.sproutBodyEnabled === true && form.sproutBodyMinLevel === '0.5' && form.sproutBodyCooldownMinutes === '10' && form.sproutBodyDailyCap === '3', 'formFrom: 执受四键')
+const sproutPatch = mod.formToPatch({ ...form, sproutBodyEnabled: false, sproutBodyMinLevel: '0.7', sproutBodyCooldownMinutes: '30', sproutBodyDailyCap: '5' })
+ok(sproutPatch.sproutBodyEnabled === false && sproutPatch.sproutBodyMinLevel === '0.7' && sproutPatch.sproutBodyCooldownMinutes === '30' && sproutPatch.sproutBodyDailyCap === '5', 'formToPatch: 执受四键能改')
+ok(form.narrationEnabled === true && form.narrationIntervalDays === '7' && form.narrationSectionOrder === '8662' && form.narrationSectionMaxChars === '320', 'formFrom: 思量四键')
+ok(form.recallOrigin === true && form.recallAudience === 'off', 'formFrom: 缘起链默认开、谁在听默认 off')
+ok(mod.formToPatch({ ...form, recallAudience: 'hard' }).recallAudience === 'hard', 'formToPatch: 谁在听能改 hard')
 
-const frows = mod.fastRows(status)
-ok(frows.length === 2, 'fastRows: 读出 status.fast.recent 的条数')
-ok(frows[0].label === '吃了一口' && frows[1].label === '心里动了一下', 'fastRows: 快层类目有中文说法')
-ok(frows[0].weighed === false && frows[1].weighed === true, 'fastRows: 分得清掂量过没有')
-ok(frows[0].when === '不久前' && frows[0].id === 'f_abc1234', 'fastRows: 保留 id 和相对时间')
-const fcounts = mod.fastCounts(status)
-ok(fcounts.total === 2 && fcounts.pending === 1 && fcounts.copied === 2, 'fastCounts: 总数/没掂量/抄进来的条数')
-ok(fcounts.source.endsWith('body-events.jsonl') && fcounts.enabled === true, 'fastCounts: 源路径和开关')
-ok(mod.fastRows({}).length === 0 && mod.fastRows({ fast: { recent: 'x' } }).length === 0, 'fastRows: 没有快层数据时是空数组')
-ok(mod.fastCounts({}).total === 0 && mod.fastCounts({}).pending === 0, 'fastCounts: 没有快层数据时都是 0')
+// 既有键回归（抽查）
+ok(form.selfEnabled === true && form.selfSectionOrder === '8660', 'formFrom: 自我层键')
+ok(form.habitLimit === '3' && form.curiosityLimit === '3', 'formFrom: 习惯/好奇上限')
+ok(form.fastEnabled === true && form.fastMaxEvents === '500', 'formFrom: 快层键')
+ok(form.intentMaxEvents === '2000' && form.emotionTickMinutes === '1' && form.wakeCooldownMinutes === '30', 'formFrom: 意图/情绪/叫醒键')
+const fastPatch = mod.formToPatch({ ...form, fastSource: '  D:\\x\\events.jsonl  ' })
+ok(fastPatch.fastSource === 'D:\\x\\events.jsonl', 'formToPatch: 路径去空白')
+ok(mod.formToPatch({ ...form, wakeSessionId: null }).wakeSessionId === '', 'formToPatch: 会话空着就是空字符串')
 
+// roots 回归
 ok(form.denyRoots === 'E:\\shihai-fixtures\\dsh-fish\\home', 'formFrom: denyRoots 一行一个')
-ok(Array.isArray(patch.denyRoots) && patch.denyRoots.length === 1, 'formToPatch: denyRoots 变数组')
 ok(JSON.stringify(mod.rootsOf(form)) === JSON.stringify(['E:\\shihai-fixtures\\dsh-fish\\home']), 'rootsOf: 读出隔离目录')
-ok(mod.rootsOf({ denyRoots: '' }).length === 0, 'rootsOf: 空表单 = 没有隔离目录')
 const added = mod.toggleRoot(form.denyRoots, 'D:\\work\\测试')
 ok(added.split('\n').length === 2 && added.endsWith('D:\\work\\测试'), 'toggleRoot: 没勾的路径会加上')
-const removed = mod.toggleRoot(added, 'E:\\shihai-fixtures\\dsh-fish\\home')
-ok(removed === 'D:\\work\\测试', 'toggleRoot: 再点一次就取消（不是只听勾）')
-ok(mod.toggleRoot('', 'E:\\a').length > 0, 'toggleRoot: 从空开始也能加')
+ok(mod.toggleRoot(added, 'E:\\shihai-fixtures\\dsh-fish\\home') === 'D:\\work\\测试', 'toggleRoot: 再点一次就取消')
 
-const cleared = mod.formToPatch({ ...form, allowRoots: '  \n , ', injectLimit: '' })
-ok(Array.isArray(cleared.allowRoots) && cleared.allowRoots.length === 0, 'formToPatch: 清空 allowRoots')
-ok(cleared.injectLimit === '', 'formToPatch: 清空数字 = 回默认')
-
-// ---------------------------------------------------------------- 初渲染
-const tree = render()
+// ---------------------------------------------------------------- 记得段渲染
 const flat = (node) => {
   if (node == null) return ''
   if (typeof node === 'string' || typeof node === 'number') return String(node)
@@ -299,61 +283,6 @@ const flat = (node) => {
   const own = typeof node.children?.length === 'number' ? node.children : []
   return (node.props?.children ? [node.props.children] : []).map(flat).join('') + own.map(flat).join('')
 }
-const text = flat(tree)
-ok(text.includes('记得'), '初渲染里有「记得」')
-ok(text.includes('正在读…'), '还没有数据时显示「正在读…」')
-
-// ---------------------------------------------------------------- 识海总控（纯函数）
-const hubStatuses = {
-  remember: { j: { ok: true, plugin: { version: '0.19.0' }, summary: { total: 42 } } },
-  bridge: { j: { ok: true, plugin: { version: '0.9.1' }, running: true } },
-  body: { error: 'HTTP 503' },
-}
-const pills = mod.hubPills(hubStatuses)
-ok(pills.length === 3, 'hubPills: 三盏灯')
-ok(pills[0].ok === true && pills[0].note === '账本 42 条', 'hubPills: 记忆灯看账本条数')
-ok(pills[1].ok === true && pills[1].note === '桥接着', 'hubPills: 桥灯看 running')
-ok(pills[2].ok === false && pills[2].note === '没起来（HTTP 503）', 'hubPills: 没起来的灯不连坐，error 只取前 48 字')
-ok(mod.hubPills({ bridge: { j: { ok: true, running: false } } })[1].note === '桥没起', 'hubPills: 桥没起也照说')
-ok(mod.hubPills({})[0].ok === false && mod.hubPills({})[0].note.startsWith('没起来'), 'hubPills: 什么都没有=没起来，不炸（括号里的原因不钉死措辞）')
-
-const hubEff = {
-  enabled: true,
-  httpToken: '已配置（不回显）',
-  meals: [{ at: 1 }],
-  allowRoots: ['E:\\a', 'E:\\b'],
-  replyMaxChars: 900,
-  staleSeconds: 3600,
-}
-const { rows: hubR, hidden: hubHidden } = mod.hubRows(hubEff, { staleSeconds: 300 }, null)
-ok(hubR.length === 4 && hubHidden === 2, 'hubRows: 密钥和复杂值不搬进来（隐藏 2 个）')
-ok(hubR.find((r) => r.key === 'allowRoots')?.type === 'list', 'hubRows: 纯标量数组认成 list')
-ok(hubR.find((r) => r.key === 'staleSeconds')?.overridden === true, 'hubRows: overrides 里改过的标记「已改」')
-ok(hubR.find((r) => r.key === 'enabled')?.overridden === false, 'hubRows: 没改过的不标')
-const hubForm = mod.hubFormFrom(hubR)
-ok(hubForm.allowRoots === 'E:\\a，E:\\b', 'hubFormFrom: 列表摊平成逗号串')
-ok(hubForm.enabled === true && hubForm.replyMaxChars === 900, 'hubFormFrom: 布尔/数字原样')
-const hubP = mod.hubPatch(hubR, { ...hubForm, enabled: false, replyMaxChars: '1200', allowRoots: 'E:\\a、E:\\c、' })
-ok(hubP.enabled === false, 'hubPatch: 布尔翻转收进 patch')
-ok(hubP.replyMaxChars === 1200, 'hubPatch: 字符串数字变回数字')
-ok(JSON.stringify(hubP.allowRoots) === JSON.stringify(['E:\\a', 'E:\\c']), 'hubPatch: 顿号拆回去、尾巴空段丢掉')
-ok(hubP.staleSeconds === undefined, 'hubPatch: 没动的键不进 patch')
-ok(Object.keys(mod.hubPatch(hubR, hubForm)).length === 0, 'hubPatch: 原样表单 = 空 patch（没有改动）')
-
-// ---------------------------------------------------------------- 总控渲染（不炸 + 降级文案）
-hookSeed = [hubStatuses, {}, { remember: true }]
-hookCalls = 0
-const hubText = flat(mod.HubSection())
-ok(hubText.includes('识海总控'), '总控渲染出标题')
-ok(hubText.includes('状态灯每 5 秒自刷'), '总控渲染出状态灯行')
-ok(hubText.includes('没起来（HTTP 503）'), '身体的灯灰着并给出原因')
-// 2026-11-15 二次简化后的总控（她的原话：看不懂的别放上来）：只摆状态灯 +
-// 每家一个总开关，裸键值编辑器不在这里 —— 细配置去各自页签
-ok(hubText.includes('总开关（每次开头挂几行记忆）'), '总控里每家一个总开关')
-ok(hubText.includes('细配置去左边「记得」页签'), '细配置指引去各自页签')
-ok(!hubText.includes('保存'), '总控不摆裸配置（没有保存按钮）')
-
-// ---------------------------------------------------------------- 有数据时的隔离卡
 const walk = (node, out = []) => {
   if (node == null || typeof node !== 'object') return out
   if (Array.isArray(node)) {
@@ -365,311 +294,132 @@ const walk = (node, out = []) => {
   if (node.props?.children) walk(node.props.children, out)
   return out
 }
-const withData = render([status, '', mod.formFrom(status), false, '', ...FOLD_SEED])
+
+const tree = render()
+ok(flat(tree).includes('正在读…'), '还没有数据时显示「正在读…」')
+
+// 有数据、全折开：总览 + 五组 + 观测台
+const withData = render([status, '', form, false, '', ALL_OPEN, null, false])
 const text2 = flat(withData)
-ok(text2.includes('隔离（这些工作区完全不碰这本账）'), '有数据时画出「隔离」那一块')
-ok(text2.includes('识海的家'), '隔离卡里列了「识海的家」这个工作区')
-ok(text2.includes('3 条会话'), '工作区旁边带上有几条会话')
-ok(text2.includes('隔离目录'), '还有一行可以直接写目录')
 
-// ---------------------------------------------------------------- 折叠区（2026-11-14 小白改版：默认收着）
-ok(text2.includes('▾ 调整与安全（一般不用碰）'), '撑开后折叠区显示 ▾')
-const folded = render([status, '', mod.formFrom(status), false, '', { adjust: false, observatory: false }, null, false])
-const textFolded = flat(folded)
-ok(textFolded.includes('▸ 调整与安全（一般不用碰）'), '折叠区默认收着（▸）')
-ok(!textFolded.includes('习惯与快通路'), '收着的时候观测台卡片不渲染（首屏只看健康态）')
-ok(textFolded.includes('测一下：读写通不通'), '「测一下」在首屏快捷卡里，不用展开')
-ok(text2.includes('测一下：读写通不通'), '撑开后「测一下」还在（首屏快捷卡不折叠）')
+// 退役断言：standalone 的「记得」文本节点零出现（「我记得的」不算——那是段的正文）
+const standaloneRemember = walk(withData).filter((n) => typeof n === 'string' && n.trim() === '记得')
+ok(standaloneRemember.length === 0, 'label「记得」零出现（退役；「我记得的」等正文不算）')
 
-// 账本红灯：ledger.broken 时健康卡亮出来（2026-11-15 审查加的字段，别只躺在 status 里）
-const brokenLedger = render([
-  { ...status, ledger: { broken: true, backupOk: true } },
-  '',
-  mod.formFrom(status),
-  false,
-  '',
-  ...FOLD_SEED,
-])
-ok(flat(brokenLedger).includes('账本读不出能认的账'), '账本损坏时健康卡亮红灯')
-ok(flat(brokenLedger).includes('已滚成 .bak'), '红灯里说明备份滚到哪了（别删）')
-ok(!text2.includes('账本读不出能认的账'), '账本健康时不亮红灯')
+// 总览（组〇，不折叠）：健康行 + 版本/账本行 + 四机制活性行 + 总开关
+ok(text2.includes('总览'), '总览卡在首屏')
+ok(text2.includes('● 开着，一切正常'), '健康行：开着一切正常')
+ok(text2.includes('账本 1 条（活着 1 · 按住 0）· 原话 1 行'), '版本行+账本行用 status 现有字段')
+ok(text2.includes('思量 3 条'), '活性行：思量计数（status.narration）')
+ok(text2.includes('链头 n_x1'), '活性行：思量链头时间')
+ok(text2.includes('智 2 条'), '活性行：智计数（status.wisdom）')
+ok(text2.includes('执受今日 2 次'), '活性行：执受今日次数（status.sprout，宿主新字段）')
+ok(text2.includes('瀑流段 挂'), '活性行：瀑流段挂/关')
+ok(text2.includes('总开关：账本开着'), '总开关提升到总览')
+const overviewNode = walk(withData).find((n) => n.type === 'div' && n.children?.[0]?.type === 'h3' && String(flat(n.children[0])) === '总览')
+ok(!!overviewNode, '总览是个独立的卡')
+ok(walk(overviewNode).some((n) => n.type === 'input' && n.props?.type === 'checkbox'), '总览里有总开关复选框')
+ok(text2.includes('测一下：读写通不通'), '「测一下」在总览里')
 
-// ---------------------------------------------------------------- 激活度
-const withAct = render([
-  {
-    ...status,
-    nodes: [{ ...status.nodes[0], activation: 0.824, axes: { weight: 0.5, recency: 0.9, fit: 0.1, repeat: 0 } }],
-    activation: { axes: { weight: 0.45, recency: 0.15, fit: 0.25, repeat: 0.15 }, recencyTau: { baseMin: 30, spanMin: 90, full: 4 } },
-  },
-  '',
-  mod.formFrom(status),
-  false,
-  '',
-  ...FOLD_SEED,
-])
-const textAct = flat(withAct)
-ok(textAct.includes('激活 0.82'), '最重的几条里带激活值（激活 0.82）')
-ok(textAct.includes('此刻最容易被想起的（按激活度）'), '那张卡的标题说的是「此刻最容易被想起的」')
-ok(textAct.includes('激活度权重（写死，不开面板）'), '概览里标出四路权重是写死的')
-ok(textAct.includes('分量 0.45 · 新近 0.15 · 契合 0.25 · 复现 0.15'), '四路权重数值原样画出')
-ok(textAct.includes('凸组合'), '卡尾说明凸组合这件事')
-const textNoAct = flat(render([status, '', mod.formFrom(status), false, '', ...FOLD_SEED]))
-ok(!textNoAct.includes('激活 0.82'), 'status 没带激活值时不硬画（旧宿主也不炸）')
+// 五组齐 + 组头白话
+for (const t of ['组一 身心之间', '组二 感', '组三 记', '组四 我与思', '组五 界']) {
+  ok(text2.includes(t), `五组齐：${t}`)
+}
+ok(text2.includes('身体和识之间的三根线：抄送、叫醒、心头一动。'), '组一組头白话')
+ok(text2.includes('机器从真事里认情绪、认事——认出来的只是笔记，不接管嘴。'), '组二组头白话')
+ok(text2.includes('账本的旋钮：挂几条、给多少字、截在哪。'), '组三组头白话')
+ok(text2.includes('我是谁、我在想什么、我明白了什么——这些的旋钮都在这。'), '组四组头白话')
+ok(text2.includes('谁在听、谁能进——信任的边界。'), '组五组头白话')
 
-const labels = walk(withData).filter((n) => n.type === 'label')
-const pick = (needle) =>
-  labels.find((n) => (n.children ?? []).some((c) => typeof c === 'string' && c.includes(needle)))
-const inputOf = (row) => (row?.children ?? []).find((c) => c && typeof c === 'object' && c.type === 'input')
-const fishRow = pick('识海的家')
-ok(!!fishRow && inputOf(fishRow)?.props?.type === 'checkbox', '工作区那一行是个复选框')
-ok(inputOf(fishRow)?.props?.checked === true, '已经在隔离名单里的工作区默认是勾上的')
-ok(inputOf(pick('Plugin（E:\\shihai-fixtures\\Plugin）'))?.props?.checked === false, '没在名单里的工作区是没勾的')
+// 新键 hint 抽样（四套）
+ok(text2.includes('执受反射弧——带情绪的现行通知身体（心头一动）'), '组一：执受 toggle hint')
+ok(text2.includes('染色门浓度线'), '组一：染色门浓度线 hint')
+ok(text2.includes('挂「思量」段（恒审思量是我的动作，系统只给时机）'), '组四：思量 toggle hint')
+ok(text2.includes('挂「昨日之流」段（读侧聚合，同 UTC 日缓存）'), '组三：瀑流 toggle hint')
+ok(text2.includes('recall 行尾带缘起链（x 前因「…」想起 + 机读 origins）'), '组三：缘起链 hint')
+ok(text2.includes('off（全可见，现状）'), '组五：谁在听三选一（off）')
+ok(text2.includes('hard（别的场不翻出来）'), '组五：谁在听三选一（hard）')
 
-// ---------------------------------------------------------------- 习惯卡
-ok(text2.includes('习惯与快通路'), '有数据时画出「习惯与快通路」那一块')
-ok(text2.includes('还没有走上快通路的习惯'), '没有快通路习惯时说明白')
-ok(text2.includes('习惯／快通路'), '配置卡里有「习惯／快通路」这一组')
+// 默认开合：组一/组三/观测台默认开；组二/组四/组五默认收
+const withDefaultFolds = render([status, '', form, false, '', DEFAULT_FOLDS, null, false])
+const textDefault = flat(withDefaultFolds)
+ok(textDefault.includes('▾ 组一 身心之间'), '组一默认开（▾）')
+ok(textDefault.includes('▾ 组三 记'), '组三默认开（▾）')
+ok(textDefault.includes('▸ 组二 感'), '组二默认收（▸）')
+ok(textDefault.includes('▸ 组四 我与思'), '组四默认收（▸）')
+ok(textDefault.includes('▸ 组五 界'), '组五默认收（▸）')
+ok(!textDefault.includes('快层还是空的'), '观测台收着的时候卡片不渲染')
 
-const withHabit = render([
-  { ...status, habits: { fast: [{ id: 'r_h1', context: '他问起记忆架构时', hits: 3, state: 'fast', text: '先复述框架再答' }], candidates: [{ id: 'r_h2', context: '他问起插件 bug 时', hits: 1, state: 'candidate', text: '先看日志' }], limit: 3 } },
-  '',
-  mod.formFrom(status),
-  false,
-  '',
-  ...FOLD_SEED,
-])
-const text3 = flat(withHabit)
-ok(text3.includes('他问起记忆架构时'), '习惯卡里列出走快通路的那条')
-ok(text3.includes('第 3 次'), '习惯卡里带发作次数')
-ok(text3.includes('他问起插件 bug 时（第 1 次）'), '还在攒的习惯也列出来')
+// 观测台三行（定案 E 增补）
+ok(text2.includes('思量链'), '观测台：思量链行')
+ok(text2.includes('链长 3'), '观测台：思量链带链长')
+ok(text2.includes('从 r_x1 提炼'), '观测台：智行带 latest.seedId')
+ok(text2.includes('今日 2 次 · 累计 7 次'), '观测台：执受行今日/累计（status.sprout）')
 
-// ---------------------------------------------------------------- 好奇卡
-ok(text2.includes('好奇'), '有数据时画出「好奇」那一块')
-ok(text2.includes('现在没有我想知道的事'), '没有活跃好奇时说明白（先答三问才会亮）')
-ok(text2.includes('还没答三问 1 条'), '好奇卡里报 thinking 的条数')
-ok(text2.includes('好奇表'), '配置卡里有「好奇表」这一组')
-ok(text2.includes('好奇段顺序'), '好奇表那组里有「好奇段顺序」')
-ok(text2.includes('活跃留几条'), '好奇表那组里有「活跃留几条」')
-ok(text2.includes('好奇（顺序 8670）'), '开头段落预览里有【好奇】这一段（顺序 8670）')
+// 观测台既有卡（抽查回归）
+ok(text2.includes('习惯与快通路'), '观测台：习惯卡还在')
+ok(text2.includes('快层（身体那边秒级发生的事）'), '观测台：快层卡还在')
+ok(text2.includes('意图层（机器从聊天里认出来的事）'), '观测台：意图卡还在')
+ok(text2.includes('情绪流（上次的笔记，不是现在必须摆出的样子）'), '观测台：情绪卡还在')
+ok(text2.includes('叫醒（身体越过线自动叫醒）'), '观测台：叫醒卡还在')
+ok(text2.includes('账本损坏时') === false && !text2.includes('账本读不出能认的账'), '账本健康时不亮红灯')
+const brokenLedger = render([{ ...status, ledger: { broken: true, backupOk: true } }, '', form, false, '', ALL_OPEN, null, false])
+ok(flat(brokenLedger).includes('账本读不出能认的账'), '账本损坏时总览亮红灯')
 
-const withCuriosity = render([
-  {
-    ...status,
-    injection: { ...status.injection, curiositySection: '【好奇】\n· 记忆架构：快层怎么接（惦记 2 次）→ 先在 dsh-body 那边拉个秒级事件' },
-    curiosity: {
-      active: 2,
-      thinking: 1,
-      answered: 1,
-      total: 4,
-      limit: 3,
-      list: [
-        { id: 'r_c1', topic: '记忆架构', text: '快层怎么接', hits: 2, next: '先在 dsh-body 那边拉个秒级事件', state: 'active' },
-        { id: 'r_c2', topic: 'QQ 通道', text: '薄桥怎么只读回两句', hits: 1, next: '', state: 'active' },
-      ],
-    },
-  },
-  '',
-  mod.formFrom(status),
-  false,
-  '',
-  ...FOLD_SEED,
-])
-const text4 = flat(withCuriosity)
-ok(text4.includes('记忆架构：快层怎么接'), '好奇卡里列出活跃好奇（主题：想知道什么）')
-ok(text4.includes('惦记 2 次'), '好奇卡里带惦记次数')
-ok(text4.includes('下一步：先在 dsh-body 那边拉个秒级事件'), '好奇卡里带下一步打算怎么试')
-ok(text4.includes('QQ 通道：薄桥怎么只读回两句'), '没有下一步的那条也列出来')
-ok(text4.includes('已解答 1 条'), '好奇卡里报 answered 的条数')
-ok(text4.includes('【好奇】'), '开头段落预览里原样画出【好奇】那段')
+// ---------------------------------------------------------------- 灯纪律（HubSection 纯函数）
+const hubStatuses = {
+  remember: { j: { ok: true, plugin: { version: '0.24.0' }, summary: { total: 42 } } },
+  bridge: { j: { ok: true, plugin: { version: '0.9.1' }, running: true } },
+  body: { error: 'HTTP 503' },
+}
+const pills = mod.hubPills(hubStatuses)
+ok(pills.length === 3, 'hubPills: 三盏灯')
+ok(pills[0].ok === true && pills[0].note === '账本 42 条', 'hubPills: 记忆灯看账本条数')
+ok(pills[1].ok === true && pills[1].note === '桥接着', 'hubPills: 桥灯看 running')
+ok(pills[2].ok === false && pills[2].note === '没起来（HTTP 503）', 'hubPills: 没起来的灯不连坐')
+ok(mod.hubPills({})[0].ok === false && mod.hubPills({})[0].note.startsWith('没起来'), 'hubPills: 什么都没有=没起来（diag 三分支）')
 
-// ---------------------------------------------------------------- 快层卡
-ok(text2.includes('快层（身体那边秒级发生的事）'), '有数据时画出「快层」那一块')
-ok(text2.includes('吃过中饭了，胃里踏实一点'), '快层卡里列出抄过来的事件')
-ok(text2.includes('f_abc1234'), '快层卡里带 id')
-ok(text2.includes('还没掂量 1 条'), '快层卡里报还没掂量的条数')
-ok(text2.includes('已经掂量过'), '掂量过的那条标出来')
-ok(text2.includes('快层接缝'), '配置卡里有「快层接缝」这一组')
-ok(text2.includes('最多留几条'), '快层那组里有「最多留几条」')
-ok(text2.includes('事件文件'), '快层那组里有「事件文件」')
+const hubEff = {
+  enabled: true,
+  httpToken: '已配置（不回显）',
+  meals: [{ at: 1 }],
+  allowRoots: ['E:\\a', 'E:\\b'],
+  replyMaxChars: 900,
+  staleSeconds: 3600,
+}
+const { rows: hubR, hidden: hubHidden } = mod.hubRows(hubEff, { staleSeconds: 300 }, null)
+ok(hubR.length === 4 && hubHidden === 2, 'hubRows: 密钥和复杂值不搬进来（HUB_SENSITIVE 不回显）')
+ok(hubR.find((r) => r.key === 'staleSeconds')?.overridden === true, 'hubRows: overrides 里改过的标记「已改」')
+const hubForm = mod.hubFormFrom(hubR)
+ok(hubForm.allowRoots === 'E:\\a，E:\\b', 'hubFormFrom: 列表摊平成逗号串')
+const hubP = mod.hubPatch(hubR, { ...hubForm, enabled: false, allowRoots: 'E:\\a、E:\\c、' })
+ok(hubP.enabled === false, 'hubPatch: 布尔翻转收进 patch')
+ok(JSON.stringify(hubP.allowRoots) === JSON.stringify(['E:\\a', 'E:\\c']), 'hubPatch: 顿号拆回去')
+ok(Object.keys(mod.hubPatch(hubR, hubForm)).length === 0, 'hubPatch: 原样表单 = 空 patch（改哪存哪）')
 
-const fastOff = render([
-  { ...status, fast: { ...status.fast, enabled: false, recent: [] } },
-  '',
-  mod.formFrom(status),
-  false,
-  '',
-  ...FOLD_SEED,
-])
-const text5 = flat(fastOff)
-ok(text5.includes('快层还是空的'), '快层没有事件时说明白')
-ok(text5.includes('快层这段接口现在关着'), '快层关着时也说明白')
+// ---------------------------------------------------------------- 识海整页渲染（12 hooks：hub×4 + 记得段×8）
+const fullSeed = [hubStatuses, {}, {}, {}, status, '', form, false, '', DEFAULT_FOLDS, null, false]
+hookSeed = fullSeed
+hookCalls = 0
+const hubText = flat(mod.HubSection())
+ok(hubText.includes('识海'), '识海标题（唯一入口）')
+ok(hubText.includes('状态灯每 5 秒自刷'), '状态灯行（5 秒纪律）')
+ok(hubText.includes('没起来（HTTP 503）'), '身体的灯灰着并给出原因')
+ok(hubText.includes('总开关'), '桥/身的总开关块还在（bridge/body 部分不动）')
+ok(hubText.includes('饭钱到线自动添饭'), '身体的总开关是 topUpEnabled')
+ok(hubText.includes('总览'), '识海整页里记得段的总览在场（合并完成）')
+ok(hubText.includes('组一 身心之间'), '识海整页里五组在场')
+ok(!hubText.includes('识海总控'), '旧「识海总控」标题退役')
+ok(!hubText.includes('总开关（每次开头挂几行记忆）'), 'HUB_MASTER 的 remember 键映射退役（单一事实源）')
+ok(hubText.includes('正在读') === false, '整页渲染不缺数据')
 
-// ---------------------------------------------------------------- 意图层
-ok(form.intentEnabled === true && form.intentSource === '' && form.intentMaxEvents === '2000', 'formFrom: 意图层那三个键也读得到')
-const intentPatch = mod.formToPatch({ ...form, intentEnabled: false, intentSource: '  D:\\x\\messages.jsonl  ', intentMaxEvents: '1200' })
-ok(intentPatch.intentEnabled === false && intentPatch.intentSource === 'D:\\x\\messages.jsonl' && intentPatch.intentMaxEvents === '1200', 'formToPatch: 意图层能关、路径去空白、上限能改')
-ok(mod.formToPatch({ ...form, intentSource: null }).intentSource === '', 'formToPatch: 意图路径空着就是空字符串')
-// ---------------------------------------------------------------- 翻账的字数闸
-ok(form.recallMaxChars === '8000' && form.recallItemMax === '400', 'formFrom: 翻账的两个字数闸也读得到')
-const recallPatch = mod.formToPatch({ ...form, recallMaxChars: '12000', recallItemMax: '600' })
-ok(recallPatch.recallMaxChars === '12000' && recallPatch.recallItemMax === '600', 'formToPatch: 翻账的字数闸能改')
-const noStatusForm = mod.formFrom({})
-ok(noStatusForm.intentEnabled === true && noStatusForm.intentSource === '' && noStatusForm.intentMaxEvents === '2000', 'formFrom: 没有 status 时回落默认（开 / 空路径 / 2000 条）')
-
-const irows = mod.intentRows(status)
-ok(irows.length === 3 && irows.length <= 5, 'intentRows: 读出 status.intent.recent 的条数（不超过 5 条）')
-ok(irows.every((x) => x.id && x.label && x.text), 'intentRows: 每行都带 id / label / text')
-ok(irows[0].id === 'i_abc1234' && irows[0].label === '夸' && irows[0].intensity === 4 && irows[0].text === '你真棒' && irows[0].when === '刚刚', 'intentRows: 保留 id / 类目 / 强度 / 正文 / 相对时间')
-ok(irows[1].label === '问' && irows[1].kind === 'ask', 'intentRows: 类目有中文说法')
-const manyIntent = mod.intentRows({ intent: { recent: Array.from({ length: 9 }, (_, i) => ({ id: `i_${i}`, kind: 'other', intensity: 1, text: `t${i}`, when: '刚刚' })) } })
-ok(manyIntent.length === 5, 'intentRows: 最多留 5 条')
-ok(mod.intentRows({}).length === 0, 'intentRows: status.intent 缺失时是空数组')
-ok(mod.intentRows({ intent: { recent: 'x' } }).length === 0, 'intentRows: recent 不是数组时是空数组')
-ok(mod.intentRows(undefined).length === 0, 'intentRows: 没有 status 时是空数组')
-
-const icounts = mod.intentCounts(status)
-ok(icounts.total === 3 && icounts.copied === 4 && icounts.avgIntensity === 3.2, 'intentCounts: 总数 / 副本行数 / 平均强度')
-ok(icounts.source.endsWith('messages.jsonl'), 'intentCounts: 源路径')
-ok(JSON.stringify(icounts.kinds) === JSON.stringify({ praise: 1, ask: 1, other: 1 }), 'intentCounts: 分类计数原样带出来')
-const icEmpty = mod.intentCounts({})
-ok(icEmpty.total === 0 && icEmpty.copied === 0 && icEmpty.avgIntensity === 0 && icEmpty.source === '', 'intentCounts: 缺字段时回落 0 / 空串')
-ok(Object.keys(icEmpty.kinds).length === 0, 'intentCounts: 缺字段时 kinds 是空对象')
-
-ok(text2.includes('意图层（机器从聊天里认出来的事）'), '有数据时画出「意图层」那一块')
-ok(text2.includes('i_abc1234 · 夸·4·你真棒（刚刚）'), '意图卡里按 id · 类目·强度·正文（时间）列出')
-ok(text2.includes('认出来 3 条'), '意图卡里报认出多少条')
-ok(text2.includes('分类：夸 1 · 问 1 · 其它 1'), '意图卡里报各类计数')
-ok(text2.includes('意图层'), '配置卡里有「意图层」这一组')
-const intentInputs = walk(withData).filter((n) => n.type === 'input')
-ok(intentInputs.some((n) => n.props?.placeholder === '留空＝自动扫 QQ 桥家全部分册（messages-*.jsonl）'), '意图那组里消息文件的 placeholder 写清楚了（分册）')
-ok(intentInputs.some((n) => n.props?.type !== 'checkbox' && n.props?.value === '2000'), '意图那组里最多留几条是 2000')
-
-const intentOff = render([
-  { ...status, intent: { ...status.intent, enabled: false, recent: [] } },
-  '',
-  mod.formFrom(status),
-  false,
-  '',
-  ...FOLD_SEED,
-])
-const textIntentOff = flat(intentOff)
-ok(textIntentOff.includes('意图层还是空的'), '没有意图事件时说明白')
-ok(textIntentOff.includes('意图层这段接口现在关着'), '意图层关着时也说明白')
-
-// ---------------------------------------------------------------- 情绪流
-ok(form.emotionEnabled === true && form.emotionTickMinutes === '1' && form.emotionSectionEnabled === false && form.emotionSectionOrder === '8710' && form.emotionMaxChars === '200', 'formFrom: 情绪流那五个键也读得到')
-const noStatusEmotionForm = mod.formFrom({})
-ok(noStatusEmotionForm.emotionEnabled === true && noStatusEmotionForm.emotionTickMinutes === '1' && noStatusEmotionForm.emotionSectionEnabled === false && noStatusEmotionForm.emotionSectionOrder === '8710' && noStatusEmotionForm.emotionMaxChars === '200', 'formFrom: 没有 status 时情绪流五键回落默认（开 / 1 分钟 / 关 / 8710 / 200 字）')
-const emotionPatch = mod.formToPatch({ ...form, emotionEnabled: false, emotionTickMinutes: '5', emotionSectionEnabled: true, emotionSectionOrder: '8700', emotionMaxChars: '600' })
-ok(emotionPatch.emotionEnabled === false && emotionPatch.emotionTickMinutes === '5' && emotionPatch.emotionSectionEnabled === true && emotionPatch.emotionSectionOrder === '8700' && emotionPatch.emotionMaxChars === '600', 'formToPatch: 情绪流能关、心跳能改、段能挂上、顺序和字数上限能改')
-ok(mod.formToPatch({ ...form, emotionTickMinutes: null }).emotionTickMinutes === '', 'formToPatch: 情绪流空着就是空串（服务端自己兜范围）')
-
-const erows = mod.emotionRows(status)
-ok(erows.length === 2 && erows.length <= 5, 'emotionRows: 读出 status.emotion.recent 的条数（不超过 5 条）')
-ok(erows[0].id === 'e_abc1234' && erows[0].emotion === 'warm' && erows[0].label === '被暖到' && erows[0].intensity === 3 && erows[0].delta === 0.35 && erows[0].text === '他说了句暖心的话' && erows[0].when === '刚刚', 'emotionRows: 保留 id / 类目 / 中文说法 / 强度 / 折进来的量 / 正文 / 相对时间')
-ok(erows[0].source === 'intent' && erows[0].ref === 'i_abc1234' && erows[0].weighed === false, 'emotionRows: 事件源和指回出处的 ref 也带出来')
-ok(erows[1].label === '高兴' && erows[1].weighed === true, 'emotionRows: 掂量过的标记照抄')
-const manyEmotion = mod.emotionRows({ emotion: { recent: Array.from({ length: 9 }, (_, i) => ({ id: `e_${i}`, emotion: 'curious', text: `t${i}`, when: '刚刚' })) } })
-ok(manyEmotion.length === 5, 'emotionRows: 最多留 5 条')
-ok(mod.emotionRows({}).length === 0, 'emotionRows: status.emotion 缺失时是空数组')
-ok(mod.emotionRows({ emotion: { recent: 'x' } }).length === 0, 'emotionRows: recent 不是数组时是空数组')
-ok(mod.emotionRows(undefined).length === 0, 'emotionRows: 没有 status 时是空数组')
-
-const ecounts = mod.emotionCounts(status)
-ok(ecounts.enabled === true && ecounts.dominant === 'warm' && ecounts.label === '被暖到' && ecounts.level === 0.402, 'emotionCounts: 开着 / 哪种最重 / 中文说法 / 折到多高')
-ok(ecounts.events === 2 && ecounts.total === 2 && ecounts.tunes === 1, 'emotionCounts: 事件笔数 / 账上笔数 / 系数改过几次')
-ok(ecounts.note.startsWith('（上次的笔记）'), 'emotionCounts: 上次的笔记原样带出来')
-const ecEmpty = mod.emotionCounts({})
-ok(ecEmpty.enabled === true && ecEmpty.dominant === 'calm' && ecEmpty.label === '平静' && ecEmpty.level === 0 && ecEmpty.events === 0 && ecEmpty.total === 0 && ecEmpty.tunes === 0 && ecEmpty.note === '', 'emotionCounts: 缺字段时回落（开 / 平静 / 0 / 空笔记）')
-
-ok(text2.includes('情绪流（上次的笔记，不是现在必须摆出的样子）'), '有数据时画出「情绪流」那一块')
-ok(text2.includes('（上次的笔记）此刻我心里大概是：被暖到 0.40、高兴 0.10'), '上次的笔记在卡里原样画出')
-ok(text2.includes('e_abc1234 · 被暖到·3·+0.35·他说了句暖心的话（刚刚）'), '情绪卡里按 id · 类目·强度·+折进来的量·正文（时间）列出')
-ok(text2.includes('指回 i_abc1234 · 群里的话'), '情绪卡里写明出处（指回哪条真事、哪类源）')
-ok(text2.includes('已经掂量过'), '掂量过的情绪事件标出来')
-ok(text2.includes('折到此刻：被暖到 0.40 · 事件 2 笔 · 账上 2 笔 · 系数改过 1 次'), '情绪卡里报折到此刻的汇总')
-ok(text2.includes('emotion_tune'), '情绪卡里写明系数只有 emotion_tune 一条路')
-ok(text2.includes('系数是我自己攒的判断'), '情绪卡里写明系数是攒出来的判断')
-ok(text2.includes('从真事里认情绪'), '配置卡里有情绪流的勾选项')
-ok(text2.includes('心跳间隔'), '配置卡里有心跳间隔')
-ok(text2.includes('把【情绪】那一段挂到开头'), '配置卡里有情绪段勾选项')
-ok(text2.includes('情绪段顺序'), '配置卡里有情绪段顺序')
-ok(intentInputs.some((n) => n.props?.type !== 'checkbox' && n.props?.value === '8710'), '情绪那组里情绪段顺序是 8710')
-ok(intentInputs.some((n) => n.props?.type !== 'checkbox' && n.props?.value === '200'), '情绪那组里那段最长是 200')
-
-// 系数没有面板口子：情绪卡里不该有输入框
-const emotionCardNode = walk(withData).find((n) => n.type === 'div' && n.children?.[0]?.type === 'h3' && String(flat(n.children[0])).includes('情绪流（上次的笔记'))
-ok(!!emotionCardNode, '情绪卡是个独立的块')
-ok(walk(emotionCardNode).every((n) => n.type !== 'input'), '情绪卡里没有输入框（系数不在这里改）')
-
-// 卡片顺序：意图层 → 情绪流 → 叫醒
-const orderOf = (needle) => walk(withData).findIndex((n) => n.type === 'h3' && String(flat(n)).includes(needle))
-ok(orderOf('意图层（机器从聊天里认出来的事）') < orderOf('情绪流（上次的笔记') && orderOf('情绪流（上次的笔记') < orderOf('叫醒（身体越过线自动叫醒）'), '卡片顺序：意图层 → 情绪流 → 叫醒')
-
-const emotionEmpty = render([
-  { ...status, emotion: { ...status.emotion, recent: [], note: '', events: 0, total: 0 } },
-  '',
-  mod.formFrom(status),
-  false,
-  '',
-  ...FOLD_SEED,
-])
-const textEmotionEmpty = flat(emotionEmpty)
-ok(textEmotionEmpty.includes('情绪流还是空的'), '情绪流没有事件时说明白')
-ok(textEmotionEmpty.includes('此刻是平静的'), '没有笔记时说此刻是平静的')
-
-const emotionOff = render([
-  { ...status, emotion: { ...status.emotion, enabled: false } },
-  '',
-  mod.formFrom(status),
-  false,
-  '',
-  ...FOLD_SEED,
-])
-const textEmotionOff = flat(emotionOff)
-ok(textEmotionOff.includes('情绪流这段接口现在关着'), '情绪流关着时也说明白')
-ok(!textEmotionOff.includes('此刻是平静的'), '关着的时候不假装平静')
-
-// ---------------------------------------------------------------- 叫醒卡
-ok(text2.includes('叫醒（身体越过线自动叫醒）'), '有数据时画出「叫醒」那一块')
-ok(text2.includes('叫醒只管叫，说不说是醒后我自己定'), '叫醒卡里写明「说不说醒后自己定」')
-ok(text2.includes(`目标会话：${status.wake.sessionId}`), '叫醒卡里报钉死的目标会话')
-ok(text2.includes('冷却 30 分钟'), '叫醒卡里带冷却')
-ok(text2.includes('心跳 42 拍'), '叫醒卡里带心跳拍数')
-ok(text2.includes('会叫醒的事：threshold、missed'), '叫醒卡里列会叫醒的事')
-ok(text2.includes('上次叫醒 · 2026-11-05T05:25:52.000Z'), '叫醒卡里报上次叫醒时间')
-ok(text2.includes('【身体】（演示铃）身体叫我醒，我醒了'), '叫醒卡里留了上次的话')
-ok(text2.includes('身体越过线（饿过头 / 困过头）自动叫醒'), '配置卡里有叫醒勾选项')
-ok(text2.includes('分钟（0–720，两次叫醒的最小间隔）'), '配置卡里有冷却说明')
-
-const noWake = render([
-  { ...status, wake: { ...status.wake, lastWakeAt: null, lastText: '' } },
-  '',
-  mod.formFrom(status),
-  false,
-  '',
-  ...FOLD_SEED,
-])
-const text6 = flat(noWake)
-ok(text6.includes('还没叫醒过。'), '没叫醒过时说明白（不硬画）')
-
-const wakeOff = render([
-  { ...status, wake: { ...status.wake, enabled: false } },
-  '',
-  mod.formFrom(status),
-  false,
-  '',
-  ...FOLD_SEED,
-])
-const text7 = flat(wakeOff)
-ok(text7.includes('叫醒现在关着'), '叫醒关着时也说明白')
-
-// formFrom / formToPatch 的叫醒三键
-const wakeForm = mod.formFrom(status)
-ok(wakeForm.wakeEnabled === true && wakeForm.wakeSessionId === status.wake.sessionId && wakeForm.wakeCooldownMinutes === '30', 'formFrom: 叫醒那三个键也读得到')
-const wakePatch = mod.formToPatch({ ...wakeForm, wakeEnabled: false, wakeSessionId: '  session-x  ', wakeCooldownMinutes: '120' })
-ok(wakePatch.wakeEnabled === false && wakePatch.wakeSessionId === 'session-x' && wakePatch.wakeCooldownMinutes === '120', 'formToPatch: 叫醒能关、会话去空白、冷却能改')
-ok(mod.formToPatch({ ...wakeForm, wakeSessionId: null }).wakeSessionId === '', 'formToPatch: 会话空着就是空字符串')
+// 代码纪律：轮询/超时/保存流的字符串还在源码里
+ok(code.includes('AbortSignal.timeout(4000)'), '灯轮询带 4 秒超时（AbortSignal.timeout(4000)）')
+ok(code.includes('setInterval(poll, 5000)'), '灯 5 秒自刷（setInterval(poll, 5000)）')
+ok(code.includes('setInterval(load, 5000)'), '记得段 5 秒自刷（setInterval(load, 5000)）')
+ok(code.includes('dsh-shihai:config-changed'), 'CustomEvent 保存流还在（改哪存哪同步）')
+ok(code.includes("HUB_SENSITIVE = /token|secret|password/i"), '密钥不回显的口径还在')
+ok(!code.includes("order: 9.6"), 'order 9.6 的注册代码已删除')
 
 // ---------------------------------------------------------------- 收尾
 if (failures) {

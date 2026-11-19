@@ -3465,6 +3465,8 @@ export function apply(ctx, baseConfig = {}) {
 
   /** 执受追踪：seedId → { lastAt, day, count }（每种子冷却 + 每日帽） */
   const sproutTracker = new Map()
+  /** 执受累计（观测耳目，v0.24.0）：内存求和，零文件读——今日/累计各一个数 */
+  const sproutAgg = { day: '', today: 0, total: 0 }
   /** sprout 的身体感觉措辞（从情绪枚举来，无阿拉伯数字） */
   const SPROUT_TEXT = {
     warm: '心头一暖',
@@ -3526,6 +3528,12 @@ export function apply(ctx, baseConfig = {}) {
         continue
       }
       sproutTracker.set(n.id, { lastAt: now, day: dayKey, count: todayCount + 1 })
+      if (sproutAgg.day !== dayKey) {
+        sproutAgg.day = dayKey
+        sproutAgg.today = 0
+      }
+      sproutAgg.today += 1
+      sproutAgg.total += 1
       log(`执受：${n.id} → 身体（${text} · ${feelDominant} ${feelLevel}）`)
     }
   }
@@ -4149,6 +4157,8 @@ export function apply(ctx, baseConfig = {}) {
         lastWakeAt: wakeState.lastWakeAt ? new Date(wakeState.lastWakeAt).toISOString() : null,
         lastText: wakeState.lastText,
       },
+      // 执受（定案 E，v0.24.0）：观测耳目——sproutTracker 内存求和，零文件读
+      sprout: { today: sproutAgg.today, total: sproutAgg.total },
       sealed,
       workspaces: listWorkspaces(),
       // 计数走 countLines（只数行不 parse）—— status 每几秒被拉一次，别为它整本解析
