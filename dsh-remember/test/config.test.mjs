@@ -3,6 +3,19 @@ import assert from 'node:assert/strict'
 
 import { EDITABLE, applyConfigPatch, describePatch } from '../lib/config.js'
 
+test('sproutBody 同感冷却/全局日帽：inRange 边界（定案 C-amend，2026-11-19）', () => {
+  const patch = (p) => applyConfigPatch({ overrides: {}, effective: {}, patch: p })
+  assert.equal(patch({ sproutBodyFeelCooldownMinutes: 30 }).overrides.sproutBodyFeelCooldownMinutes, 30)
+  assert.equal(patch({ sproutBodyFeelCooldownMinutes: 720 }).overrides.sproutBodyFeelCooldownMinutes, 720)
+  assert.ok(patch({ sproutBodyFeelCooldownMinutes: 10 }).rejected.some((x) => x.key === 'sproutBodyFeelCooldownMinutes'), '低于 30 拒')
+  assert.ok(patch({ sproutBodyFeelCooldownMinutes: 1000 }).rejected.some((x) => x.key === 'sproutBodyFeelCooldownMinutes'), '高于 720 拒')
+  assert.equal(patch({ sproutBodyDailyTotalCap: 3 }).overrides.sproutBodyDailyTotalCap, 3)
+  assert.equal(patch({ sproutBodyDailyTotalCap: 50 }).overrides.sproutBodyDailyTotalCap, 50)
+  assert.ok(patch({ sproutBodyDailyTotalCap: 2 }).rejected.some((x) => x.key === 'sproutBodyDailyTotalCap'), '低于 3 拒')
+  assert.ok(patch({ sproutBodyDailyTotalCap: 51 }).rejected.some((x) => x.key === 'sproutBodyDailyTotalCap'), '高于 50 拒')
+  assert.equal(Object.keys(EDITABLE).length, 55, 'EDITABLE 全集 55 键')
+})
+
 const effective = { enabled: true, injectLimit: 3, openLimit: 2, maxChars: 900, targetRoot: '', allowRoots: [] }
 
 test('认识的键才收，不认识的当场拒并说为什么', () => {

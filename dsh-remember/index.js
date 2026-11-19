@@ -273,6 +273,8 @@ export const DEFAULTS = {
   sproutBodyMinLevel: 0.5,
   sproutBodyCooldownMinutes: 10,
   sproutBodyDailyCap: 3,
+  sproutBodyFeelCooldownMinutes: 30,
+  sproutBodyDailyTotalCap: 12,
   /** 把每次挂载写进日志（排查用） */
   debug: false,
 }
@@ -3465,6 +3467,9 @@ export function apply(ctx, baseConfig = {}) {
 
   /** 执受追踪：seedId → { lastAt, day, count }（每种子冷却 + 每日帽） */
   const sproutTracker = new Map()
+  /** 感觉冷却（定案 C-amend）：同一种感觉不重复播报——只记上一次报了什么。全局单槽：
+   *  warm→tense→warm 的快速交替会被单槽天然压住；报的是「这件事的颜色」，不是「我此刻的天气」。 */
+  const feelTracker = { dominant: '', at: 0 }
   /** 执受累计（观测耳目，v0.24.0）：内存求和，零文件读——今日/累计各一个数 */
   const sproutAgg = { day: '', today: 0, total: 0 }
   /** sprout 的身体感觉措辞（从情绪枚举来，无阿拉伯数字） */
@@ -3491,9 +3496,16 @@ export function apply(ctx, baseConfig = {}) {
     const cfg = getCfg()
     if (cfg.sproutBodyEnabled === false || !emoState) return
     const cooldownMs = clamp(cfg.sproutBodyCooldownMinutes, 1, 120) * 60000
+    const feelCooldownMs = clamp(cfg.sproutBodyFeelCooldownMinutes, 30, 720) * 60000
     const dayKey = new Date(now).toISOString().slice(0, 10)
     const minLevel = clamp(cfg.sproutBodyMinLevel, 0.1, 1)
     const dailyCap = clamp(cfg.sproutBodyDailyCap, 1, 20)
+    const totalCap = clamp(cfg.sproutBodyDailyTotalCap, 3, 50)
+    // 日切上提（定案 C-amend）：全局日帽的检查要在翻转之后才准
+    if (sproutAgg.day !== dayKey) {
+      sproutAgg.day = dayKey
+      sproutAgg.today = 0
+    }
     const dominant = emoState.dominant ?? 'calm'
     const level = Number(emoState.level) || 0
     for (const n of list) {
@@ -3512,6 +3524,10 @@ export function apply(ctx, baseConfig = {}) {
       const feel = moodGate ? n.moodAt : emoState
       const feelDominant = feel.dominant ?? dominant
       const feelLevel = Number(feel.level) || level
+      // 全局日帽（定案 C-amend ②）：所有种子合计一天最多几声——过了就全门静默
+      if (sproutAgg.today >= totalCap) continue
+      // 感觉冷却（定案 C-amend ①）：同一种感觉不重复播报——这声刚才说过了就闭嘴
+      if (feelTracker.dominant === feelDominant && now - feelTracker.at < feelCooldownMs) continue
       // 写
       const text = SPROUT_TEXT[feelDominant] ?? '心头一动'
       const row = {
@@ -3528,12 +3544,10 @@ export function apply(ctx, baseConfig = {}) {
         continue
       }
       sproutTracker.set(n.id, { lastAt: now, day: dayKey, count: todayCount + 1 })
-      if (sproutAgg.day !== dayKey) {
-        sproutAgg.day = dayKey
-        sproutAgg.today = 0
-      }
       sproutAgg.today += 1
       sproutAgg.total += 1
+      feelTracker.dominant = feelDominant
+      feelTracker.at = now
       log(`执受：${n.id} → 身体（${text} · ${feelDominant} ${feelLevel}）`)
     }
   }

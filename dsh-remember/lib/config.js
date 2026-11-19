@@ -79,6 +79,10 @@ export const EDITABLE = {
   sproutBodyMinLevel: 'number',
   sproutBodyCooldownMinutes: 'number',
   sproutBodyDailyCap: 'number',
+  /** 同一种感觉两次播报的最小间隔（定案 C-amend：报「这件事的颜色」，不报「我此刻的天气」） */
+  sproutBodyFeelCooldownMinutes: 'number',
+  /** 所有种子合计的全局日帽（定案 C-amend） */
+  sproutBodyDailyTotalCap: 'number',
   /** 情绪流：要不要从真事里认情绪 */
   emotionEnabled: 'boolean',
   /** 情绪流多久接一次真事（分钟） */
@@ -148,6 +152,8 @@ function inRange(key, value) {
     sproutBodyMinLevel: [0.1, 1],
     sproutBodyCooldownMinutes: [1, 120],
     sproutBodyDailyCap: [1, 20],
+    sproutBodyFeelCooldownMinutes: [30, 720],
+    sproutBodyDailyTotalCap: [3, 50],
     selfSectionOrder: [1000, 9999],
     selfMaxChars: [80, 2000],
     unsettledSectionOrder: [1000, 9999],

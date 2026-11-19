@@ -253,6 +253,9 @@ ok(form.streamEnabled === true && form.streamSectionOrder === '8715' && form.str
 const streamPatch = mod.formToPatch({ ...form, streamEnabled: false, streamSectionOrder: '8700', streamSectionMaxChars: '500' })
 ok(streamPatch.streamEnabled === false && streamPatch.streamSectionOrder === '8700' && streamPatch.streamSectionMaxChars === '500', 'formToPatch: 瀑流能关、顺序字数能改')
 ok(form.sproutBodyEnabled === true && form.sproutBodyMinLevel === '0.5' && form.sproutBodyCooldownMinutes === '10' && form.sproutBodyDailyCap === '3', 'formFrom: 执受四键')
+ok(form.sproutBodyFeelCooldownMinutes === '30' && form.sproutBodyDailyTotalCap === '12', 'formFrom: 同感冷却/全局日帽（C-amend）')
+const sproutAmendPatch = mod.formToPatch({ ...form, sproutBodyFeelCooldownMinutes: '60', sproutBodyDailyTotalCap: '20' })
+ok(sproutAmendPatch.sproutBodyFeelCooldownMinutes === '60' && sproutAmendPatch.sproutBodyDailyTotalCap === '20', 'formToPatch: 同感冷却/全局日帽能改')
 const sproutPatch = mod.formToPatch({ ...form, sproutBodyEnabled: false, sproutBodyMinLevel: '0.7', sproutBodyCooldownMinutes: '30', sproutBodyDailyCap: '5' })
 ok(sproutPatch.sproutBodyEnabled === false && sproutPatch.sproutBodyMinLevel === '0.7' && sproutPatch.sproutBodyCooldownMinutes === '30' && sproutPatch.sproutBodyDailyCap === '5', 'formToPatch: 执受四键能改')
 ok(form.narrationEnabled === true && form.narrationIntervalDays === '7' && form.narrationSectionOrder === '8662' && form.narrationSectionMaxChars === '320', 'formFrom: 思量四键')
@@ -334,6 +337,8 @@ ok(text2.includes('谁在听、谁能进——信任的边界。'), '组五组�
 // 新键 hint 抽样（四套）
 ok(text2.includes('执受反射弧——带情绪的现行通知身体（心头一动）'), '组一：执受 toggle hint')
 ok(text2.includes('染色门浓度线'), '组一：染色门浓度线 hint')
+ok(text2.includes('同一种感觉两次播报的最小间隔——「心头一暖」说一次就够了'), '组一：同感冷却 hint（C-amend）')
+ok(text2.includes('所有种子合计的全局日帽'), '组一：全局日帽 hint（C-amend）')
 ok(text2.includes('挂「思量」段（恒审思量是我的动作，系统只给时机）'), '组四：思量 toggle hint')
 ok(text2.includes('挂「昨日之流」段（读侧聚合，同 UTC 日缓存）'), '组三：瀑流 toggle hint')
 ok(text2.includes('recall 行尾带缘起链（x 前因「…」想起 + 机读 origins）'), '组三：缘起链 hint')

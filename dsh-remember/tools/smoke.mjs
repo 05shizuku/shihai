@@ -165,6 +165,9 @@ function fakeReq(method, body) {
 }
 
 const dir = mkdtempSync(join(tmpdir(), 'dsh-remember-smoke-'))
+// 定案 C-amend 顺手拆雷：sproutMoodFile 走 resolveDshHome()——不设 DSH_HOME 的话，
+// 冒烟的执受行会写进真家的 .dsh-body。整个冒烟统一把家指到临时目录（更密封）。
+process.env.DSH_HOME = dir
 const targetRoot = join(dir, 'house')
 const dataDir = join(dir, 'book')
 
@@ -1028,6 +1031,74 @@ try {
   await statusRoute.handler(fakeReq('GET'), resWis)
   const stWis = JSON.parse(resWis.body)
   ok(stWis.wisdom?.count >= 2 && stWis.wisdom?.latest?.id === t2.id, `status.wisdom 计数与链头（${JSON.stringify(stWis.wisdom?.latest ?? {})}）`)
+
+  // ---------------------------------------- 执受 C-amend（2026-11-19）：报「这件事的颜色」，不报「我此刻的天气」
+  // 专用小环境：六颗染色种子 + config 覆盖（同感冷却 30 分 / 全局日帽 3 / 每种子冷却压到 1 分）
+  const spDir = join(dir, 'sp-book')
+  mkdirSync(spDir, { recursive: true })
+  writeFileSync(join(spDir, 'config.json'), JSON.stringify({
+    sproutBodyCooldownMinutes: 1,
+    sproutBodyFeelCooldownMinutes: 30,
+    sproutBodyDailyTotalCap: 3,
+  }))
+  const dyedSeed = (id, text, dominant) => ({
+    id, at: Date.now() - 60000, lastAt: Date.now() - 60000, text, kind: 'fact', weight: 0.5,
+    changes: 'x', tags: [], refs: [], touches: [], audience: 'any', happenedAt: 0, prev: '', prevSelf: '',
+    anchor: false, anchorWhy: '', restoredAt: 0, replaces: [], contexts: [], hits: 0, answered: false,
+    moodAt: null, sealed: false, sealUntil: 0, sealCond: '', faded: false, superseded: false,
+    supersededBy: '', supersededAt: 0, transformed: false, transformedBy: '', transformedAt: 0,
+    moodAt: { dominant, level: 0.9 },
+  })
+  const spSeeds = [
+    dyedSeed('r_spw1', '春风拂面', 'warm'),
+    dyedSeed('r_spw2', '暖流过境', 'warm'),
+    dyedSeed('r_spt1', '秋风萧瑟', 'tense'),
+    dyedSeed('r_spd1', '冬雪皑皑', 'down'),
+    dyedSeed('r_spl1', '夜色深沉', 'lonely'),
+    dyedSeed('r_spw3', '晨光微亮', 'warm'),
+  ]
+  writeFileSync(join(spDir, 'memory.json'), JSON.stringify({ version: 1, updatedAt: Date.now(), nodes: spSeeds }))
+  const hS = (() => {
+    // sproutMoodFile 在 apply 时求值——把家临时指到 spDir，这个小环境的执受行就独占一份
+    process.env.DSH_HOME = spDir
+    const h = makeHarness(spDir, targetRoot, {})
+    process.env.DSH_HOME = dir
+    return h
+  })()
+  hS.created.forEach((fn) => fn(hS.agent))
+  const spExec = { agent: hS.agent }
+  const spMoodFile = join(spDir, '.dsh-body', 'mood-events.jsonl')
+  const sproutRows = () => (existsSync(spMoodFile)
+    ? readFileSync(spMoodFile, 'utf8').split('\n').filter((l) => l.trim()).map((l) => JSON.parse(l)).filter((r) => r.kind === 'sprout')
+    : [])
+  // ① 暖一过染色门 → 发（warm）
+  await hS.tools.get('recall').execute({ query: '春风拂面' }, spExec)
+  ok(sproutRows().length === 1 && sproutRows()[0].detail.dominant === 'warm', `染色门报种子的颜色（warm，${sproutRows().length} 声）`)
+  // ② 暖流过境同色 30 分内 → 感觉冷却压住（不重复播报）
+  await hS.tools.get('recall').execute({ query: '暖流过境' }, spExec)
+  ok(sproutRows().length === 1, '同一种感觉 30 分内不重复播报（C-amend ①）')
+  // ③ 紧一换色 → 立即发
+  await hS.tools.get('recall').execute({ query: '秋风萧瑟' }, spExec)
+  ok(sproutRows().length === 2 && sproutRows()[1].detail.dominant === 'tense', '换感觉立即发（颜色变了不算重复）')
+  ok(sproutRows()[1].text === '心头一紧', '正文取情绪措辞表（心头一紧，无数字）')
+  // ④ 沉一 → 第三声（到全局日帽）
+  await hS.tools.get('recall').execute({ query: '冬雪皑皑' }, spExec)
+  ok(sproutRows().length === 3 && sproutRows()[2].detail.dominant === 'down', '第三声（down）')
+  // ⑤ 空一 → 全局日帽静默
+  await hS.tools.get('recall').execute({ query: '夜色深沉' }, spExec)
+  ok(sproutRows().length === 3, '全局日帽：所有种子合计到 3 声后全门静默（C-amend ②）')
+  // ⑥ 99-warm 复现：再来 10 声 warm 也压在日帽内
+  for (let i = 0; i < 10; i++) {
+    await hS.tools.get('recall').execute({ query: '春风拂面' }, spExec)
+  }
+  ok(sproutRows().length <= 3, `99-warm 复现压住：行数 ${sproutRows().length} ≤ 全局日帽 3`)
+  const statusSprout = await (async () => {
+    const resS = fakeRes()
+    const spRoute = hS.routes.find((r) => r.path === '/dsh-remember/status')
+    await spRoute.handler(fakeReq('GET'), resS)
+    return JSON.parse(resS.body)
+  })()
+  ok(statusSprout.sprout?.today === 3 && statusSprout.sprout?.total === 3, `status.sprout 跟账走（today=3, total=3，实际 ${JSON.stringify(statusSprout.sprout ?? {})})`)
 
   // ------------------------------------------------------------------ 情绪流
   // 意图层/快层里的真事，机器认成情绪（七类枚举，认不出不给 —— mood 没 detail 就不该记）
