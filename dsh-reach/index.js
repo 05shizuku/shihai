@@ -85,6 +85,10 @@ const TICK_MS = 30000
 const WAKE_QUIET_MS = 2 * 60 * 60 * 1000
 /** 并轨冷却：reach 递送在别的声音响过这段时间内顺延到下一拍（条不丢，只是晚点） */
 const DELIVER_COOLDOWN_MS = 30 * 60 * 1000
+/** 空手回合的失败退避：一次尝试之后多久才许再试（不然他一直在线时每拍重试刷屏）。
+ *  2026-11-19 体检补：这刀在 v1.1.7 的编辑重试里丢了，常量未定义让心跳每 30 秒报错——
+ *  教训：冒烟要钉「tick 零错」，runTick 的 catch 不该替代码错误瞒灾。 */
+const CHECKIN_RETRY_MS = 10 * 60 * 1000
 
 export const DEFAULTS = {
   /** 状态目录；留空 = <DSH_HOME>/.dsh-reach */
@@ -1161,7 +1165,7 @@ export function apply(ctx, baseConfig = {}) {
 
   registerRoutes()
 
-  return () => {
+  const teardown = () => {
     for (const off of [offCreated, offDisposed, offActivity]) {
       try {
         off?.()
@@ -1171,6 +1175,8 @@ export function apply(ctx, baseConfig = {}) {
     }
     saveState(true)
   }
+  teardown.runTick = runTick // 体检钉（2026-11-20）：冒烟直接驱动一次心跳——宿主不看返回值，无影响
+  return teardown
 }
 
 // 2026-11-19 体检注：v1.1.7 的 HMR 吃到过编辑序列中间态（CHECKIN_RETRY_MS 未定义就引了它），此处一行真改动作 = 重载开关。

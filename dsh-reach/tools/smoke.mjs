@@ -362,6 +362,20 @@ ok(failRow?.status === STATUS.pending, '送不出去还留在待发里，不丢'
 ok(Number(failRow?.attempts) >= 1, '记了失败次数', String(failRow?.attempts))
 ok(String(failRow?.lastError ?? '').includes('网络断了'), '记了失败原因', failRow?.lastError)
 
+// ---------------------------------------------------------------- 体检钉（2026-11-20）：tick 零错
+// v1.1.7 的常量丢失就是被 runTick 的 catch 瞒掉的——checkInEnabled 关着时冒烟永远走不到那行。
+// 现在热写配置打开空手回合（窗口放开到全天），直接驱动一次心跳，钉死「心跳零出错」。
+const reachApi = apply(ctx, { dataDir: dir, tickMs: 200, checkInEnabled: false })
+const cfgRes2 = makeRes()
+await routes.get('/dsh-reach/config').handler(
+  makeReq({ method: 'POST', body: JSON.stringify({ checkInEnabled: true, checkInWindowStart: '00:00', checkInWindowEnd: '23:59' }) }),
+  cfgRes2,
+)
+ok(readJson(cfgRes2).ok === true, '体检钉前置：配置热写成功（空手回合开、窗口全天）')
+await reachApi.runTick()
+const tickLog = readFileSync(join(dir, 'dsh-reach.log'), 'utf8')
+ok(!tickLog.includes('心跳出错'), 'tick 零错：runTick 的 catch 不许替代码错误瞒灾')
+
 // ---------------------------------------------------------------- 收尾
 
 rmSync(dir, { recursive: true, force: true })
