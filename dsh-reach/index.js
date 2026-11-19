@@ -1172,3 +1172,5 @@ export function apply(ctx, baseConfig = {}) {
     saveState(true)
   }
 }
+
+// 2026-11-19 体检注：v1.1.7 的 HMR 吃到过编辑序列中间态（CHECKIN_RETRY_MS 未定义就引了它），此处一行真改动作 = 重载开关。
