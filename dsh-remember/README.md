@@ -485,13 +485,36 @@ arrate | 思量（定案 A，2026-11-18）：以第一人称写一段「我怎�
 ## 设置页
 
 导出 Config schema 不可行（link 安装解析不到 `@deepseek-ai/schemastery`），所以走
-dsh-body / dsh-reach 同款：宿主挂两条 HTTP 路由，浏览器半边 `client.js`
-在设置页注册一节「记得」（`settings.section`，id `dsh-remember`，order 9.6，排在 bili 的 9 和 reach 的 9.5 之间）。
+dsh-body / dsh-reach 同款：宿主挂两条 HTTP 路由，浏览器半边 `client.js` 在设置页注册一节。
 
-- `GET /dsh-remember/status` —— 账本概况、最重的几条、被按住的、当前的段文本、日志末尾
+**2026-11-19 定案 E：按识的结构，不按考古层**——设置页只有一个入口「识海」
+（`settings.section`，id `dsh-shihai-hub`，order 9.0）。旧的「记得」槽（id
+`dsh-remember`，order 9.6）已退役。一页从上到下：
+
+1. **三盏灯**——识海记忆 / QQ 桥 / 身体，各说一句话现状，5 秒自刷（4 秒超时，三分支：error / ok:false / diag）。
+2. **桥 / 身的总控块**——各一个总开关（bridge 的 `enabled`、body 的 `topUpEnabled`），细配置去各自页签。
+3. **总览（组〇，不折叠）**——健康行 + 版本/账本行（`账本 N 条（活着 N · 按住 N）· 原话 N 行`）+ 四机制活性行（`思量 N 条 · 智 N 条 · 执受今日 N 次 · 瀑流段 挂/关`）+ **总开关**（全页唯一显著旋钮）+ 测一下。
+4. **五组**（开合持久化）：
+   - 组一 身心之间（默认开）：fast×3 + sproutBody×6（含同感冷却、全局日帽）+ wake×3；
+   - 组二 感（默认收）：emotion×5 + intent×3 + 状态行（当前主导：feel 词，永不报小数）；
+   - 组三 记（默认开）：注入/翻账字数闸 + stream×3 + recallOrigin + debug；
+   - 组四 我与思（默认收）：self×3 + unsettled×3 + habit×4 + curiosity×4 + narration×4；
+   - 组五 界（默认收）：recallAudience（off/soft/hard 三选一）+ targetRoot/allowRoots/denyRoots。
+
+   合计 **55 键**，与 `lib/config.js` 的 EDITABLE 白名单 1:1（smoke-client 自动对表，无丢失无重复）。
+5. **观测台 fold**——账本概览（含**思量链 / 智 / 执受**三行）、最重的几条、按住的、原样段、日志。
+
+改哪存哪：保存只提交改过的键（`applyConfigPatch` 白名单校验），并广播
+`dsh-shihai:config-changed` 让同页各块自刷。轮询纪律：灯 5s + `AbortSignal.timeout(4000)` +
+error/ok:false/diag 三分支；密钥不回显（`HUB_SENSITIVE`）；情绪系数/节点分量**永不进口**——
+系数只有 `emotion_tune` 一条路，分量只有 `forget` 一条路。
+
+- `GET /dsh-remember/status` —— 账本概况、最重的几条、被按住的、当前的段文本、narration/wisdom/sprout、日志末尾
 - `GET｜POST /dsh-remember/config` —— 白名单改配置，坏值 400 并说明原因
 
-`status` 里跟好奇有关的两处：`injection.curiosityEnabled`（这一段开没开）、
+`status` 里跟机制有关的新字段：顶层 `narration` = `{ count, lastAt, due, latest }`（思量链）、
+顶层 `wisdom` = `{ count, latest: { id, at, seedId } }`（智）、顶层 `sprout` = `{ today, total }`
+（执受，内存求和零文件读）。好奇那两处照旧：`injection.curiosityEnabled`（这一段开没开）、
 `injection.curiositySection`（【好奇】那段正文，空就是空串），以及顶层
 `curiosity` = `{ active, thinking, answered, total, limit, list }` ——
 `active` 是活跃总数（可以超过上限），`list` 才是真正会挂进开头的那几条（不超过 `limit`）。
@@ -500,15 +523,6 @@ dsh-body / dsh-reach 同款：宿主挂两条 HTTP 路由，浏览器半边 `cli
 栅栏是 **fail-closed**：连接服务不在或守卫抛错时回 503 拒绝 —— 宁可这会儿面板打不开，
 不能没有栅栏（2026-11-15 审查改的）。账本读不出能认的账时（`memory.json` 损坏/形状不对），
 status 顶层的 `ledger.broken` 会亮红灯、`ledger.backupOk` 说明原文有没有滚进 `.bak`。
-
-可改的键：`enabled`、`targetRoot`、`allowRoots`、`denyRoots`、`injectLimit`、`openLimit`、
-`maxChars`、`sectionOrder`、`maxTextLength`、`selfEnabled`、`selfSectionOrder`、
-`selfMaxChars`、`curiosityEnabled`、`curiositySectionOrder`、`curiosityMaxChars`、
-`curiosityLimit`、`habitEnabled`、`habitSectionOrder`、`habitMaxChars`、`habitLimit`、
-`fastEnabled`、`fastSource`、`fastMaxEvents`、`intentEnabled`、`intentSource`、
-`intentMaxEvents`、`wakeEnabled`、`wakeSessionId`、
-`wakeCooldownMinutes`、`emotionEnabled`、`emotionTickMinutes`、`emotionSectionEnabled`、
-`emotionSectionOrder`、`emotionMaxChars`、`debug`。
 
 好奇表那四个键：`curiosityEnabled`（开不开，默认开）、`curiositySectionOrder`（1000–9999，
 默认 8670）、`curiosityMaxChars`（80–2000，默认 320）、`curiosityLimit`（0–10，默认 3）。

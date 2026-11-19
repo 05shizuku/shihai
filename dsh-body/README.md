@@ -130,6 +130,27 @@
 `kind` 可以显式写 `praise` / `insult` / `sad`；不写就按词表猜，
 词表在 `lib/body.js` 的 `PRAISE_WORDS` / `INSULT_WORDS` / `SAD_WORDS` 里，直接改。
 
+### 受识：识海那边的「心头一动」（2026-11-19 定案 C + C-amend）
+
+dsh-remember 的执受反射弧会往同一个 `mood-events.jsonl` 追加第四种行——`sprout`：
+
+```json
+{"at":1760000000000,"kind":"sprout","text":"心头一紧",
+ "detail":{"seedId":"r_xxx","dominant":"tense","level":0.6},"source":"dsh-remember"}
+```
+
+身体折算的规矩（系数在收方——「系数我自己攒」）：
+
+- `SPROUT_FACTOR = 0.05 × detail.level × 100`，**clamp ≤ 2 点**——极小偏移，mood 标量；
+- 正负看 `detail.dominant`：`warm` / `pleased` / `curious` 为正，其余为负；
+- **不碰 anger / sadness 分向轴**——那两根是社交事件（被夸/被骂/难过）的账；
+- `lastMoodEvent` 照常置位 → 回环自动闭合：身体折完写进 body-events.jsonl →
+  【刚刚】段 + remember 快层抄送 → 契合路。零新段、零新抄送。
+
+限幅在**发方**（remember，v0.24.1）：每种子冷却 + 每种子日帽 + **同感冷却**
+（同一种感觉不重复播报——报的是「这件事的颜色」，不是「我此刻的天气」）+
+**全局日帽**（所有种子合计一天最多几声）。body 侧不加配置键，只管折算。
+
 ## 快层：刚刚发生的事
 
 身体那段只挂"此刻"和最近一小句，而且过一会儿就换了 —— 秒级发生过的事一闪就没。
