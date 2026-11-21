@@ -1709,6 +1709,8 @@ export function createBridge({ cfg, log = () => {}, sessionController, livenessB
             // 群没点名（v0.8.7 定案）：能走到这里的都是带 echo 的转（没 echo 的
             // 早就被发送闸拦下放回了）。带 echo 却没点名的正文 = 我自己没把
             // @ 写在回话上（纪律问题）—— 作废，话由我用侧门补（r_1olwjlv）。
+            // 2026-11-21 诊断：攒的正文里 @ 疑似被上游吃掉——把首段原文打进日志看真相。
+            texts.forEach((seg, i) => log(`诊断·攒正文[${i}]=${JSON.stringify(String(seg).slice(0, 80))}`))
             log(`这轮没有点名（@ 开头）的正文，群里一个字不发（攒了 ${texts.length} 段）→ 挂起作废（群答复我用侧门补）`)
             return
           }
