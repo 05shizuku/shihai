@@ -43,6 +43,11 @@ export function extractText(message) {
       case 'at':
         parts.push(data.qq ? `@${data.qq}` : '@某人')
         break
+      case 'reply':
+        // 引用段（v0.10.1）：只带被引用消息的 id，原文要拿 id 去消息流册子翻。
+        // 留占位是引用链路的第一环——没有 id，引用就等于被吞掉（2026-11-21 实测）。
+        parts.push(data.id ? `[引用:${data.id}]` : '[引用]')
+        break
       default:
         break
     }

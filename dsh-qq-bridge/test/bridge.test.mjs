@@ -775,3 +775,8 @@ test('isSelfTalkBubble：整条被括号包住的是干活的笔记（v0.9.2 不
   assert.ok(!isSelfTalkBubble(''), '空串不算')
   assert.ok(!isSelfTalkBubble(null), '空值不算')
 })
+test('extractText：reply 段给 [引用:id] 占位（2026-11-21 引用链路修复）', () => {
+  const segs = [{ type: 'reply', data: { id: '12345' } }, { type: 'text', data: { text: '看看这条' } }]
+  assert.equal(extractText(segs), '[引用:12345]看看这条')
+  assert.equal(extractText([{ type: 'reply', data: {} }]), '[引用]')
+})

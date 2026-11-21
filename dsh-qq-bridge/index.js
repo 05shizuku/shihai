@@ -389,6 +389,8 @@ export function apply(ctx, baseConfig = {}) {
         // 存档两种形状：数组（早期）/ {savedAt, items}（现在）
         const list = Array.isArray(arr) ? arr : Array.isArray(arr?.items) ? arr.items : []
 writeHeartbeat(heartbeatFile, heartbeatInfo({ version: VERSION, startedAt, pending: list.length, ws: livenessBox.current?.isWsAlive() ? 1 : 0, silentMs: livenessBox.current?.wsSilentMs(), lastEventAt: livenessBox.current?.lastIncomingAt ?? null }))
+        // 群参与 v1：心跳兜底结算过期话题窗（安静群里缓存不滞留）
+        try { bridge?.flushExpiredFlows?.() } catch { /* 结算失败不影响心跳 */ }
       } catch (err) {
         log(`心跳写不进去：${err?.message ?? err}`)
       }
@@ -851,6 +853,81 @@ export function createBridge({ cfg, log = () => {}, sessionController, livenessB
     stickerManifestMtime = m
     stickerIndex = loadStickers(stickerDir, { log })
     log(`表情库重读（mtime 变了）：${stickerIndex.list.length} 张`)
+  }
+  // 群参与 v1（2026-11-21，规格：amikar\docs\group-participation.md）：
+  // @ 开话题窗——窗内非 @ 消息攒进缓存、不唤醒；窗关闭打包一轮递入
+  //（若窗群里恰有活跃群挂起，那轮回话照常走，群流下一窗再并——不叠加唤醒）。
+  // 刹车（规格硬编码）：窗长 8 分钟写死、窗内不逐条唤醒、缓存上限 20 条、
+  // 总开关 cfg.groupFlow 默认关。
+  const groupFlowEnabled = cfg.groupFlow === true
+  const GROUP_WINDOW_MS = 8 * 60 * 1000
+  const GROUP_FLOW_CACHE_MAX = 20
+  const topicWindows = new Map()   // groupId -> { expiresAt }
+  const topicFlowCache = new Map() // groupId -> [ {nickname, userId, text, media, at} ]
+  if (groupFlowEnabled) log(`群参与 v1：已启用（窗 ${GROUP_WINDOW_MS / 1000} 秒，缓存上限 ${GROUP_FLOW_CACHE_MAX} 条）`)
+  function openTopicWindow(groupId) {
+    if (!groupFlowEnabled) return
+    topicWindows.set(String(groupId), { expiresAt: Date.now() + GROUP_WINDOW_MS })
+    log(`话题窗开启：群 ${groupId}（${GROUP_WINDOW_MS / 60000} 分钟）`)
+  }
+  function noteGroupFlow(ev, nickname, text, mediaText) {
+    if (!groupFlowEnabled) return
+    const gid = String(ev.group_id ?? '')
+    if (!gid) return
+    const now = Date.now()
+    const win = topicWindows.get(gid)
+    if (!win) return
+    if (now > win.expiresAt) {
+      // 窗过期：先结算上一窗，本条消息等下一窗（不追溯）
+      void flushTopicFlow(gid, now)
+      topicWindows.delete(gid)
+      return
+    }
+    const cache = topicFlowCache.get(gid) ?? []
+    cache.push({
+      nickname: String(nickname ?? ''),
+      userId: String(ev.user_id ?? ''),
+      text: String(text ?? '').slice(0, 300),
+      media: String(mediaText ?? ''),
+      at: now,
+    })
+    topicFlowCache.set(gid, cache.slice(-GROUP_FLOW_CACHE_MAX))
+    log(`群流缓存：群 ${gid} 现 ${cache.length} 条`)
+  }
+  async function flushTopicFlow(groupId, now = Date.now()) {
+    const cache = topicFlowCache.get(String(groupId))
+    topicFlowCache.delete(String(groupId))
+    topicWindows.delete(String(groupId))
+    if (!cache || cache.length === 0) return
+    const sid = await targetSessionId()
+    if (!sid) {
+      log(`群流递送跳过：无目标会话（群 ${groupId}，${cache.length} 条缓存丢弃）`)
+      return
+    }
+    const lines = cache.map((c) => `- ${c.nickname}: ${c.text}${c.media}`)
+    const last = cache[cache.length - 1]
+    const line = `[群流·仅供知悉|群 ${groupId}] 窗内 ${cache.length} 条（非 @，合并递入；看见不等于要回应）：\n` + lines.join('\n')
+    const requestId = `qqgf-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+    const key = pending.mark(last.userId, line, now, { chatType: 'group', groupId: String(groupId), groupFlow: true, requestId })
+    try {
+      await sessionController.prompt({
+        requestId,
+        sessionId: sid,
+        mode: 'queue',
+        content: [{ type: 'text', text: line }],
+        clientTimeZone: 'Asia/Shanghai'
+      }, AbortSignal.timeout(30000))
+      log(`群流递入 ${sid}（群 ${groupId}，${cache.length} 条合并为一轮）`)
+    } catch (err) {
+      pending.fail(key)
+      log(`群流递送失败（群 ${groupId}）：${err?.message ?? err}`)
+    }
+  }
+  function flushExpiredFlows(now = Date.now()) {
+    if (!groupFlowEnabled) return
+    for (const [gid, win] of [...topicWindows]) {
+      if (now > win.expiresAt) void flushTopicFlow(gid, now)
+    }
   }
   // 挂起的回话记在盘上：热重载/重启不让「等着回的话」跟着实例一起没掉
   //（上次就是热重载把他等的那条回话洗掉了，我只能走侧门补发）
@@ -1360,7 +1437,11 @@ export function createBridge({ cfg, log = () => {}, sessionController, livenessB
       }
       // 群里 @ 我：递进会话，我看到就能自己决定回不回（m07835 他说的话不用全转他，我自己判断）。
       // 不 @ 的只记日志 —— 群里的日常 chatter 不往会话里灌。
-      if (!atMe(ev, cfg.selfUin)) return
+      // 群参与 v1 例外：话题窗开着时，窗内非 @ 消息攒缓存（不唤醒，窗关闭合并递入）。
+      if (!atMe(ev, cfg.selfUin)) {
+        if (groupFlowEnabled) noteGroupFlow(ev, ev.sender?.nickname, text, mediaLines(mediaG))
+        return
+      }
       // 照片三件套（v0.7.0）：群里 @ 我这条消息里的图存下来（没 @ 我的图只留直链在消息流）
       const savedG = photosOk
         ? await downloadPhotos(mediaG.images, {
@@ -1389,6 +1470,8 @@ export function createBridge({ cfg, log = () => {}, sessionController, livenessB
         }, AbortSignal.timeout(30000))
         targetSid = sid
         log(`群 @ 递进会话 ${sid}：${line}`)
+        // 群参与 v1：群 @ 递话成功 = 话题开始，开窗（窗内非 @ 消息开始攒）
+        openTopicWindow(ev.group_id)
       } catch (err) {
         pending.fail(key)
         log(`群 @ 递话失败（${sid}）：${err?.message ?? err}`)
@@ -1660,6 +1743,8 @@ export function createBridge({ cfg, log = () => {}, sessionController, livenessB
         }
         if (!text.trim()) return
         deliver(toGroup, r.meta?.groupId ?? '', r.userId, text)
+        // 群参与 v1：群回话发出 = 话题还在继续，重开窗（回话后的讨论窗内继续攒）
+        if (toGroup && r.meta?.groupId) openTopicWindow(r.meta.groupId)
       }
     } catch (err) {
       log(`处理会话事件出错：${err?.message ?? err}`)
@@ -1688,6 +1773,13 @@ export function createBridge({ cfg, log = () => {}, sessionController, livenessB
     },
     get pendingSize() {
       return pending.size
+    },
+    /** 群参与 v1：窗过期结算（心跳每分钟兜底调用；测试可传未来时刻强制过期） */
+    flushExpiredFlows(now) {
+      flushExpiredFlows(Number.isFinite(now) ? now : Date.now())
+    },
+    get groupFlowEnabled() {
+      return groupFlowEnabled
     },
     dispose() {
       disposed = true
