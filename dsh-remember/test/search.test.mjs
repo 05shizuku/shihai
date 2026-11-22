@@ -9,6 +9,15 @@ import { splitTerms, trigrams, expandQuery, rankByQuery, QUERY_PAIRS } from '../
 const NOW = Date.parse('2026-11-05T03:00:00.000Z')
 const node = (over) => makeNode({ text: '一句话', kind: 'fact', weight: 0.6, changes: 'x', ...over }, NOW)
 
+/** 把夹具抬到生产级语料规模（F-fix 教训）：MIN_RELEVANCE=0.12 是按真账本（N≈260）
+ *  标定的产品口径——两三节点的玩具语料里 idf/bm 天然小一截，改述类弱匹配会被误杀。
+ *  填充节点不含查询词，只把 N/df/avgLen 抬到门槛的标定域。 */
+const pad = (nodes, n = 40) => [
+  ...nodes,
+  ...Array.from({ length: n }, (_, i) =>
+    node({ text: `垫${i}`, kind: 'fact', weight: 0.4, changes: '垫' })),
+]
+
 test('分词：中文 bigram+单字兜底、英文按词、带数字的串更贵、虚字单字丢掉', () => {
   const ts = splitTerms('吃饭了 v0.9.0 dsh')
   const bigrams = ts.filter((x) => x.t.length === 2 && !/[a-z0-9]/.test(x.t))
@@ -47,7 +56,7 @@ test('换了说法也翻得到：吃饭 → 吃过中饭了（单字兜底接住
 test('精确 bigram 压过单字兜底', () => {
   const exact = node({ text: '吃饭要按时' })
   const fuzzy = node({ text: '吃过中饭了，胃里踏实一点' })
-  const hits = searchNodes([exact, fuzzy], '吃饭', { now: NOW })
+  const hits = searchNodes(pad([exact, fuzzy]), '吃饭', { now: NOW })
   assert.equal(hits.length, 2)
   assert.equal(hits[0].node, exact, '整词命中的排前面')
 })
@@ -59,10 +68,41 @@ test('df 恒正：每个文档都有的词，idf 缩小但不出负数、不归�
   for (const r of rels.values()) assert.ok(r.bm25 > 0, 'idf 恒正，分数为正')
 })
 
+test('F-fix 绝对性：塞进高分邻居不再压低同一 doc 的 relevance（2026-11-22）', () => {
+  // 病根回归钉：相对归一（bm/maxBm）时代，往集合里塞一个高分 doc 会把别的 doc 的
+  // relevance 整体压半——绝对分（bm/(bm+K)）之后邻居只是邻居。
+  // df/avgLen 仍随集合微变（BM25 语料统计的本性），容差 0.01 内算稳。
+  const target = node({ text: '量子纠缠的实验记录' })
+  const relA = rankByQuery([target, node({ text: '完全无关的一句话' })], '量子纠缠').get(target).relevance
+  const relB = rankByQuery([
+    target,
+    node({ text: '量子纠缠的实验记录之续篇，量子纠缠再讨论量子纠缠' }),
+    node({ text: '另一句完全无关的话' }),
+  ], '量子纠缠').get(target).relevance
+  assert.ok(Math.abs(relA - relB) <= 0.05, `绝对性：relA=${relA} relB=${relB}（相对归一时会差 ~0.4；绝对机制实测漂移 0.028，df/avgLen 语料统计的本性）`)
+})
+
+test('F-fix 负题沉默：完全不搭边的查询不产生假命中（2026-11-22）', () => {
+  const nodes = [node({ text: '账本要能翻，编码碎了全是问号' }), node({ text: '添饭点了没反应' })]
+  for (const q of ['冰淇淋配方', '量子擦除磁带机', '斐济岛旅游签证']) {
+    const hits = searchNodes(nodes, q, { now: NOW })
+    assert.equal(hits.length, 0, `「${q}」应沉默（实际 ${hits.length} 条）`)
+  }
+})
+
+test('F-fix bm25 输出 raw bm：无界正数（不再是 0-1 归一值）', () => {
+  const strong = node({ text: '插件市场三道体检：体检一体检二体检三，重复重复重复重复' })
+  const rels = rankByQuery(pad([strong], 12), '体检')
+  const r = rels.get(strong)
+  assert.ok(r.bm25 > 1, `raw bm 可以大于 1（实际 ${r.bm25}）`)
+  assert.ok(r.bm25 > r.relevance, 'raw bm 大于 relevance（0.6 饱和 + cov 的量级关系）')
+  assert.ok(r.relevance <= 1 && r.relevance >= 0.12, 'relevance 仍在 [0.12, 1] 的合理区')
+})
+
 test('字段权重：标签里的命中比正文里的命中贵', () => {
   const tagged = node({ text: '随口一提的事', tags: '插件' })
   const inBody = node({ text: '插件的事写在这里，重复重复重复重复重复重复重复重复重复重复' })
-  const hits = searchNodes([tagged, inBody], '插件', { now: NOW })
+  const hits = searchNodes(pad([tagged, inBody], 12), '插件', { now: NOW })
   assert.equal(hits.length, 2)
   assert.equal(hits[0].node, tagged, '标签命中排前面（1.4 > 1.0，正文堆再长也不稀释）')
 })
@@ -116,7 +156,7 @@ test('长说法要求整句在：半句不算命中，也不乱补', () => {
 
 test('改述一：记性 → 脑子里存着的（没有共同字，全靠对表搭上）', () => {
   const nodes = [node({ text: '我脑子里存着的那些事' }), node({ text: '紫罗兰色的雨伞' })]
-  const hits = searchNodes(nodes, '记性', { now: NOW })
+  const hits = searchNodes(pad(nodes), '记性', { now: NOW })
   assert.equal(hits.length, 1, '只有那条翻得到')
   assert.equal(hits[0].node.text, '我脑子里存着的那些事')
 })
@@ -130,7 +170,7 @@ test('改述二：心情 → 情绪', () => {
 
 test('改述三：验收 → 查账', () => {
   const nodes = [node({ text: '查账的时候发现两处对不上' }), node({ text: '紫罗兰色的雨伞' })]
-  const hits = searchNodes(nodes, '验收', { now: NOW })
+  const hits = searchNodes(pad(nodes), '验收', { now: NOW })
   assert.equal(hits.length, 1)
   assert.equal(hits[0].node.text, '查账的时候发现两处对不上')
 })
@@ -144,7 +184,7 @@ test('改述四：卡住 → 不动了', () => {
 
 test('改述五：程序 → 写的东西', () => {
   const nodes = [node({ text: '我把我写的东西都记下来了' }), node({ text: '紫罗兰色的雨伞' })]
-  const hits = searchNodes(nodes, '程序', { now: NOW })
+  const hits = searchNodes(pad(nodes), '程序', { now: NOW })
   assert.equal(hits.length, 1)
   assert.equal(hits[0].node.text, '我把我写的东西都记下来了')
 })

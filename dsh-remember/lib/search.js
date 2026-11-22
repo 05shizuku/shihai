@@ -253,7 +253,8 @@ export const MIN_RELEVANCE = 0.12
 
 /**
  * 对一批节点按 query 打相关度，返回 Map<node, {relevance, bm25, trigram}>。
- * relevance ∈ [0,1]：0.6×BM25F(按结果集最大值归一) + 0.25×trigram覆盖率。
+ * relevance ∈ [0,1]：0.6×BM25F 饱和变换（bm/(bm+K)，绝对分）+ 0.25×trigram覆盖率。
+ * bm25 字段是 raw BM25F 分数（无界正数，供诊断；F-fix 前它曾按结果集归一到 0-1）。
  * 完全没有词条命中的节点不在 Map 里 —— 「翻不到」仍然是翻不到，不是排后面。
  */
 export function rankByQuery(nodes, query, { k1 = 1.2, b = 0.75, expand = true } = {}) {
@@ -266,41 +267,60 @@ export function rankByQuery(nodes, query, { k1 = 1.2, b = 0.75, expand = true } 
   const N = docs.length
 
   // df 按文档计数：一个词在一份文档的几个字段出现都只记 1（教训②）
+  // avgLen 按字段非空文档平均（F-fix 2026-11-22 体检补）：稀疏字段（tags 多数文档为空）
+  // 若按全文档平均，avgLen 被砸到近零 → 有 tags 的命中 norm 爆炸被稀释数倍——
+  // 字段权重的设计（tags 1.4 > 正文 1.0）就这样被空字段吃掉了。
   const df = new Map()
   const avgLen = {}
   for (const [field] of FIELDS) avgLen[field] = 0
   docs.forEach((doc, i) => {
     const seen = new Set()
     for (const [field] of FIELDS) {
-      avgLen[field] += doc.lens[field]
       for (const t of doc.tfs[field].keys()) seen.add(t)
     }
     for (const t of seen) df.set(t, (df.get(t) ?? 0) + 1)
   })
-  for (const [field] of FIELDS) avgLen[field] = Math.max(1e-9, avgLen[field] / N)
+  for (const [field] of FIELDS) {
+    const nonEmpty = docs.filter((d) => d.lens[field] > 0)
+    avgLen[field] = Math.max(1e-9, nonEmpty.reduce((a, d) => a + d.lens[field], 0) / Math.max(1, nonEmpty.length))
+  }
 
   const idf = (t) => {
     const d = df.get(t) ?? 0
     return Math.log(1 + (N - d + 0.5) / (d + 0.5)) // 恒正（教训①）
   }
 
-  // 每份文档：BM25F 分数 + trigram 覆盖率
+  // 每份文档：BM25F 分数 + trigram 覆盖率 + topIdf + qCover（F-fix 的第二把尺）
   const bm = new Array(N).fill(0)
   const cov = new Array(N).fill(0)
+  const topIdf = new Array(N).fill(0)
+  const qCover = new Array(N).fill(0)
   const qg = trigrams(query)
+  // 实词总重（w=1.0 的 bigram/英文词——单字兜底 0.4 不算实词，不然长 query 的虚字稀释覆盖）
+  const realQw = qTerms.reduce((a, t) => a + (t.w >= 1 ? t.w : 0), 0)
   docs.forEach((doc, i) => {
     let s = 0
+    let best = 0
+    let matchedReal = 0
     for (const { t, w: qw } of qTerms) {
       const w_idf = idf(t) * qw
       if (w_idf <= 0) continue
+      let termHit = false
       for (const [field, wField] of FIELDS) {
         const tf = doc.tfs[field].get(t) ?? 0
         if (tf <= 0) continue
+        termHit = true
         const norm = 1 - b + b * (doc.lens[field] / avgLen[field])
         s += wField * w_idf * ((tf * (k1 + 1)) / (tf + k1 * norm))
       }
+      if (termHit) {
+        best = Math.max(best, idf(t))
+        if (qw >= 1) matchedReal += qw
+      }
     }
     bm[i] = s
+    topIdf[i] = best
+    qCover[i] = realQw > 0 ? matchedReal / realQw : 0
     if (qg.size) {
       let hit = 0
       for (const g of qg) if (doc.grams.has(g)) hit += 1
@@ -308,13 +328,31 @@ export function rankByQuery(nodes, query, { k1 = 1.2, b = 0.75, expand = true } 
     }
   })
 
-  const maxBm = Math.max(...bm, 0)
+  // 绝对化（F-fix，2026-11-22）：删 maxBm 相对归一，改饱和变换——绝对、有界、单调。
+  // 病根（考卷 Day 1 抓的）：bmNorm = bm / maxBm 让第一名恒为 1.0，任何沾到一个
+  // 查询字的节点都凑出 relevance ≥ 0.6（> MIN_RELEVANCE 0.12）——负题 5/5 假命中，
+  // 公理 4「不编造」的检索面破了；也是汐的报告 2.2.4「730 篇共用天花板」的同族病。
+  // K=2 的口径：单实字弱匹配 bm≈0.4-1 → 分量 0.09-0.25（低于门槛，负题自然沉默）；
+  // 强单词匹配 bm≈4-8 → 0.57-0.71。附带收益：同一 doc 的 relevance 不随别的节点变化
+  // ——「重放同结果」的不变量第一次在检索层也成立，绝对分让跨查询可比。
+  // 实测修正（同日）：负题的长 query 会靠常见 bigram（「时间」之类）把 bm 堆到 2-8.5，
+  // 与最弱正题的 bm 重叠——单靠 K 分不开，需要第二把尺 topIdf（命中的最大 idf）：
+  // 真命中都由稀有实词扛起（idf 高），假命中全是常见字堆叠（idf 低）。门槛 IDF_FLOOR
+  // 在消费方（searchNodes / 考卷跑卷器）按生产口径执行。
+  const K = 2
   docs.forEach((doc, i) => {
     if (bm[i] <= 0) return
-    const bmNorm = maxBm > 0 ? bm[i] / maxBm : 0
-    const relevance = clamp01(0.6 * bmNorm + 0.25 * cov[i])
+    const bmSig = bm[i] / (bm[i] + K)
+    const relevance = clamp01(0.6 * bmSig + 0.25 * cov[i])
     if (relevance <= 0) return
-    result.set(nodes[i], { relevance: Number(relevance.toFixed(4)), bm25: Number(bmNorm.toFixed(4)), trigram: Number(cov[i].toFixed(4)) })
+    // bm25 字段输出 raw bm（供诊断：绝对分后它是无界正数，不再是 0-1 归一值）
+    result.set(nodes[i], {
+      relevance: Number(relevance.toFixed(4)),
+      bm25: Number(bm[i].toFixed(4)),
+      trigram: Number(cov[i].toFixed(4)),
+      topIdf: Number(topIdf[i].toFixed(4)),
+      qCover: Number(qCover[i].toFixed(4)),
+    })
   })
   return result
 }
