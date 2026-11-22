@@ -28,7 +28,7 @@
  * 零依赖是刻意的：link: 装着，Node 从真实路径往上找不到 profile 里的包。
  */
 
-import { copyFileSync, readdirSync, rmSync } from 'node:fs'
+import { readdirSync, rmSync } from 'node:fs'
 import { dirname, isAbsolute, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
@@ -38,7 +38,6 @@ import {
   activeCuriosities,
   activeSelfNodes,
   cleanText,
-  contextKey,
   cutByCodePoints,
   curiosityState,
   curiosityStats,
@@ -50,7 +49,6 @@ import {
   makeNode,
   normContext,
   normKind,
-  normNodes,
   normSlot,
   parseSealUntil,
   rankNodes,
@@ -95,7 +93,6 @@ import {
   repeatCounts,
 } from '../core/activation.js'
 import {
-  fastEventId,
   fastRelTime,
   fastSummary,
   normFastEvent,
@@ -106,8 +103,6 @@ import {
 } from '../core/fast.js'
 import {
   INTENT_LABEL,
-  intentEventFromMessage,
-  intentIdFromMessage,
   intentRelTime,
   normIntentEvent,
   pushIntentIndex,
@@ -138,16 +133,29 @@ import {
   countLines,
   exists,
   isUnder,
-  keepTailLines,
   makeFileLogger,
   readJsonLines,
-  readJsonLinesFrom,
   readJsonSafe,
-  readJsonSafeSticky,
-  readTextSafe,
   resolveDshHome,
   tailLines,
 } from './lib/store.js'
+
+// 批③（账本协议迁移，docs/g1-batch3-book-skeleton.md）：协议函数与 Book 工厂住在
+// core/protocol —— 闭包状态装进 book，协议函数统一收 book 首参。pullFast/pullIntent
+// 在这里留同名薄壳做宿主侧绑定（cfg 闸门 + 源路径解析），协议本体在 book.js。
+import {
+  createBook,
+  loadBook,
+  loadEchoIndex,
+  loadVikarmaIndex,
+  saveNodes,
+  noteDisplay,
+  noteEcho,
+  noteVikarma,
+  sproutToBody,
+  pullFast as fastPull,
+  pullIntent as intentPull,
+} from '../core/protocol/book.js'
 
 export const name = 'dsh-remember'
 
@@ -346,41 +354,22 @@ function sanitizeCfg(merged) {
 
 export function apply(ctx, baseConfig = {}) {
   const dataDir = String(baseConfig?.dataDir ?? '').trim() || join(resolveDshHome(), '.dsh-remember')
-  const files = {
-    dir: dataDir,
-    memory: join(dataDir, 'memory.json'),
-    lines: join(dataDir, 'lines.jsonl'),
-    config: join(dataDir, 'config.json'),
-    log: join(dataDir, 'dsh-remember.log'),
-    /** 快层：秒级事件的副本（可再生的抄本 —— 超过上限会裁旧，源头在 dsh-body 家里） */
-    fast: join(dataDir, 'fast.jsonl'),
-    /** 快层游标：源文件读到哪个字节了（自己的事写自己家） */
-    fastCursor: join(dataDir, 'fast.cursor.json'),
-    /** 意图层：机器认出来的事的副本（可再生的抄本 —— 超过上限会裁旧，源头在 QQ 桥家里） */
-    intent: join(dataDir, 'intent.jsonl'),
-    /** 意图层游标：源文件读到哪个字节了 */
-    intentCursor: join(dataDir, 'intent.cursor.json'),
-    /** 情绪流自己的账：只增不改 —— 每一笔情绪变化和每一次系数改动都追加一行 */
-    emotion: join(dataDir, 'emotion.jsonl'),
-    /** 回声档：「被想起」单独记这本（机器记的事件，不是我说的话；原话层只留我写的） */
-    echo: join(dataDir, 'echo.jsonl'),
-    /** 违熏档：种子说会做得不一样、实际没做到的账（只增不改；不进复现轴） */
-    vikarma: join(dataDir, 'vikarma.jsonl'),
-    /** 叫醒的账：上回什么时候醒的（重启后冷却从这儿接着算） */
-    wake: join(dataDir, 'wake.json'),
-  }
-  const log = makeFileLogger(files.log, { prefix: 'dsh-remember' })
+  const log = makeFileLogger(join(dataDir, 'dsh-remember.log'), { prefix: 'dsh-remember' }) // = book.files.log（book 在下两行才建）
 
   let cfgCache = { at: 0, value: null }
   function getCfg(force = false) {
     const now = Date.now()
     if (!force && cfgCache.value && now - cfgCache.at < REFRESH_MS) return cfgCache.value
-    const overrides = readJsonSafe(files.config, {})
+    const overrides = readJsonSafe(book.files.config, {})
     const merged = sanitizeCfg({ ...DEFAULTS, ...(isObj(baseConfig) ? baseConfig : {}), ...(isObj(overrides) ? overrides : {}) })
     merged.dataDir = dataDir
     cfgCache = { at: now, value: merged }
     return merged
   }
+
+  // Book：账本协议的显式状态（批③起，闭包状态都装在这里；字段表见 docs/g1-batch3-book-skeleton.md §1）
+  const book = createBook({ dataDir, log, dshHome: resolveDshHome() })
+  loadBook(book)
 
   // ---------------------------------------------------------------- 账本
 
@@ -390,72 +379,7 @@ export function apply(ctx, baseConfig = {}) {
   // ③盘上快照（上次成功读的整本，写失败就算了）。三层全空才真回空表。
   // 坏账本自愈（2026-11-15 审查，自 shihai 合并）：三道护栏全空之后严格再读一遍——
   // 还认不出账就是真损坏：先滚 .corrupt 备份、亮红灯；备份没成，saveNodes 拒绝覆盖写（保原文）。
-  let memoryBroken = false
-  let memoryBackupOk = false
-  let nodes = normNodes((function loadBook() {
-    const snapFile = join(dataDir, 'memory.snapshot.json')
-    let book = null
-    let corruptWhy = null
-    for (let i = 0; i < 6; i += 1) {
-      book = readJsonSafeSticky(files.memory, null)
-      if (isObj(book)) {
-        try { atomicWriteJson(snapFile, book) } catch { /* 快照写不动就算了 */ }
-        return book
-      }
-      const until = Date.now() + 100
-      while (Date.now() < until) { /* 瞬时读冲突：等一拍再试 */ }
-    }
-    try {
-      const raw = readTextSafe(files.memory, '')
-      if (raw.trim()) {
-        try {
-          const parsed = JSON.parse(raw)
-          if (isObj(parsed) && Array.isArray(parsed.nodes)) {
-            book = parsed // 六连败后严格读反而成了——瞬时冲突结束，拿它当好账本
-          } else {
-            corruptWhy = 'JSON 认得但形状不对（要 {…, nodes:[…]}）'
-          }
-        } catch (err) {
-          corruptWhy = `解析失败：${String(err?.message ?? err).slice(0, 120)}`
-        }
-        if (corruptWhy) {
-          memoryBroken = true
-          try {
-            const stamp = new Date().toISOString().replace(/[:.]/g, '-')
-            const bak = `${files.memory}.corrupt-${stamp}.bak`
-            copyFileSync(files.memory, bak)
-            memoryBackupOk = true
-            log(`账本 memory.json 读不出能认的账（${corruptWhy}）。原文已备份到 ${bak} —— 恢复靠它，别删；这次启动按空账本算。`)
-          } catch (bakErr) {
-            log(`账本 memory.json 损坏且备份失败（${String(bakErr?.message ?? bakErr).slice(0, 120)}）—— 本次运行拒绝覆盖写节点表，请先手动备份 ${files.memory}。`)
-          }
-          return null
-        }
-        if (book) {
-          try { atomicWriteJson(snapFile, book) } catch { /* 快照写不动就算了 */ }
-          return book
-        }
-      }
-    } catch { /* 读文件本身出问题——按三道护栏的兜底走 */ }
-    const snap = readJsonSafe(snapFile, null)
-    return isObj(snap) ? snap : null
-  })()?.nodes ?? [], Date.now())
-  const meta = {
-    startedAt: Date.now(),
-    lastRenderAt: null,
-    lastRenderError: null,
-    renderCount: 0,
-    savedAt: null,
-    saveError: null,
-  }
 
-  // 启动时把快层副本读进索引（副本全量在文件里，索引只留最近的那些）。
-  // 声明必须在这次调用之前 —— 2026-11-02 之前它们写在后面，apply() 一进来
-  // 就踩 TDZ（Cannot access 'fastIndex' before initialization），插件直接起不来。
-  /** 抄进来的快层事件（内存里最近的那些；全量在 fast.jsonl 里） */
-  let fastIndex = []
-  /** 已经抄过的 id（游标重置、从头重读时靠它不抄两遍） */
-  const fastAllIds = new Set()
   loadFastIndex(Date.now())
   // 开机先把身体那边欠的账抄进来 —— 只抄不叫：叫醒的 baseline 从开机这份算起，
   // 重启之后不会把几小时前的「困得撑不住」再当新鲜事吵一遍。
@@ -466,23 +390,7 @@ export function apply(ctx, baseConfig = {}) {
   }
 
   // 启动时把意图层的副本读进索引（跟快层一个形状：副本全量在文件里，索引只留最近的那些）。
-  // 声明同样必须赶在这次调用之前 —— 否则又踩 TDZ（Cannot access 'intentIndex' before initialization）。
-  /** 抄进来的意图事件（机器认出来的事；全量在 intent.jsonl 里） */
-  let intentIndex = []
-  /** 已经抄过的意图事件 id（游标重置、从头重读时靠它不抄两遍） */
-  const intentAllIds = new Set()
-  /**
-   * 墓碑（借自晴猫，2026-11-17）：被撤回消息的原始 mid。
-   * 桥的撤回登记行（mid = 'recall-原始mid'）落进消息流后，这边认领——
-   * 被撤回的原话从意图层不再给（recall / memory_list / 情绪认读都盖住），
-   * 只留「撤回过」那行事实。盖的是读法，不是文件——原行在册子里只增不改。
-   */
-  const intentTombstoned = new Set()
-  /** 撤回登记行的 mid 形状是 'recall-原始mid' —— 反解出要盖住的原始 mid */
-  const intentTombKey = (mid) => {
-    const s = String(mid ?? '')
-    return s.startsWith('recall-') ? s.slice(7) : ''
-  }
+  // 意图层内存态（book.intentIndex / book.intentAllIds / book.intentTombstoned）由 createBook 预置 —— 批③起无 TDZ 风险。
   loadIntentIndex(Date.now())
   // 开机先把聊天那边欠的账抄进来 —— 抄的是「发生了什么」，不是我说了什么。
   try {
@@ -494,92 +402,21 @@ export function apply(ctx, baseConfig = {}) {
   // 唤醒回弹：翻到一条 = 它又被想起了一次。回声记在单独的 echo.jsonl（机器记的事件，
   // 只增不改；原话层 lines.jsonl 只留我自己写的字），节点本身一个字节不动；
   // 复现这一路在读取时数最近 7 天的回声。
-  /** 每条被想起的时间戳们（id -> [at,…]，只留最近 200 个） */
-  const echoAt = new Map()
-  /** 回声去重：同一组条 10 分钟内不重复记（一次对话里连翻几下是同一次醒） */
-  const echoDedupe = new Map()
-  /** 染色限流索引（id -> 最近一次 {at, dominant, level}）：echo.jsonl 里的 recolor 行（饭桶④） */
-  const recolorAt = new Map()
-  /** 最近一次回声行（id -> {at, rowId}）：违熏反查用，不全量扫 echo.jsonl */
-  const latestEchoRow = new Map()
-  /** 展示观测（现行熏种子裁定：展示不算现行，只记账）：id -> 被挂到开头过哪些天（14 天窗） */
-  const displayDays = new Map()
-  /** 违熏索引（seedId -> {at, reason, count}）：recall 翻到时行尾提醒 + status 聚合用 */
-  const vikarmaAt = new Map()
-  /** 违熏的内存聚合（total / byReason / byDay）—— status 每几秒被拉一次，别为它整本解析。
-   *  与 vikarmaAt 同源同写（只在 loadVikarmaIndex / vikarma 写入两处更新）：
-   *  账本只增不减、没有删除操作，两者天然一致。byDay 供瀑流段数「昨日记了几笔」。 */
-  const vikarmaAgg = { total: 0, byReason: {}, byDay: {} }
-  loadEchoIndex(Date.now())
-  loadVikarmaIndex()
-
-  function saveNodes() {
-    // 坏账本没备份成功就拒绝覆盖写（自 shihai 合并，2026-11-15 审查）——宁可这条记不上，不能把原文冲掉
-    if (memoryBroken && !memoryBackupOk) {
-      meta.saveError = 'memory.json 上次解析失败且备份没成 —— 拒绝覆盖写（保原文）'
-      log(`账本不写入：${meta.saveError}`)
-      return
-    }
-    try {
-      atomicWriteJson(files.memory, { version: 1, updatedAt: Date.now(), nodes })
-      memoryBroken = false // 写成一次 = 盘上的坏文件已经被好的换掉，红灯解除
-      meta.savedAt = Date.now()
-      meta.saveError = null
-    } catch (err) {
-      meta.saveError = String(err?.message ?? err).slice(0, 200)
-      log(`账本写不进去：${meta.saveError}`)
-    }
-  }
+  loadEchoIndex(book, Date.now())
+  loadVikarmaIndex(book)
 
   function findNode(id) {
     const key = String(id ?? '').trim()
     if (!key) return null
-    return nodes.find((n) => n.id === key) ?? null
+    return book.nodes.find((n) => n.id === key) ?? null
   }
 
   function replaceNode(next) {
-    const i = nodes.findIndex((n) => n.id === next.id)
-    if (i < 0) nodes.push(next)
-    else nodes[i] = next
+    const i = book.nodes.findIndex((n) => n.id === next.id)
+    if (i < 0) book.nodes.push(next)
+    else book.nodes[i] = next
   }
 
-  /**
-   * 展示观测（2026-11-16 拍板：展示不算现行，只记账不喂复现轴）。
-   * 每天每组条最多记一行（dedupe 键 = 日期|排序后的 id 集）——
-   * 用途：找出「常挂但从不被想起」的条（死重或 recall 词表覆盖不到），只观测不改排名。
-   */
-  const displayDedupe = new Map()
-  function recordDisplay(list, now) {
-    try {
-      const ids = list.map((n) => n.id).filter(Boolean).sort()
-      if (!ids.length) return
-      // 「天」按 UTC 日（与 loadEchoIndex 的去重口径一致；东八区日界在早八点，见 philosophy.md）
-      const day = new Date(now).toISOString().slice(0, 10)
-      const key = `${day}|${ids.join(',')}`
-      if (displayDedupe.has(key)) return
-      displayDedupe.set(key, now)
-      // 前几天的键清掉，防无限增长（盘上的行还在，只是内存去重表不用留）
-      for (const k of displayDedupe.keys()) {
-        if (!k.startsWith(day)) displayDedupe.delete(k)
-      }
-      appendJsonLine(files.echo, {
-        id: `d_${now.toString(36)}`,
-        at: now,
-        kind: 'display',
-        refs: ids,
-        source: 'inject',
-      })
-      for (const rid of ids) {
-        const days = displayDays.get(rid) ?? new Set()
-        days.add(day)
-        pruneDisplayDays(days, now)
-        if (days.size) displayDays.set(rid, days)
-        else displayDays.delete(rid)
-      }
-    } catch {
-      /* 观测失败不挡注入 */
-    }
-  }
 
   function currentSection(now = Date.now(), agent = null) {
     const cfg = getCfg()
@@ -591,8 +428,8 @@ export function apply(ctx, baseConfig = {}) {
       const turnAud = currentAudience(now)
       const poolNodes =
         cfg.recallAudience === 'hard' && turnAud !== 'solo'
-          ? nodes.filter((n) => audienceVisible(n.audience, turnAud))
-          : nodes
+          ? book.nodes.filter((n) => audienceVisible(n.audience, turnAud))
+          : book.nodes
       const text = renderSection(poolNodes, {
         now,
         limit: clamp(cfg.injectLimit, 0, 10),
@@ -610,14 +447,14 @@ export function apply(ctx, baseConfig = {}) {
       // 只记「真的挂给会话」的那次 —— status 轮询（agent=null）是预览，
       // 记它会污染观测（null-agent 的打分上下文和真实注入不是一回事，集合也随
       // 激活度漂移），2026-11-16 复核抓到的
-      if (picked.length && agent) recordDisplay(picked, now)
-      meta.lastRenderAt = now
-      meta.renderCount += 1
-      meta.lastRenderError = null
+      if (picked.length && agent) noteDisplay(book, picked, now)
+      book.meta.lastRenderAt = now
+      book.meta.renderCount += 1
+      book.meta.lastRenderError = null
       return text
     } catch (err) {
-      meta.lastRenderError = String(err?.message ?? err).slice(0, 200)
-      log(`渲染失败：${meta.lastRenderError}`)
+      book.meta.lastRenderError = String(err?.message ?? err).slice(0, 200)
+      log(`渲染失败：${book.meta.lastRenderError}`)
       return ''
     }
   }
@@ -630,7 +467,7 @@ export function apply(ctx, baseConfig = {}) {
     const cfg = getCfg()
     if (!cfg.enabled || cfg.selfEnabled === false) return ''
     try {
-      return renderSelfSection(nodes, {
+      return renderSelfSection(book.nodes, {
         now,
         maxChars: clamp(cfg.selfMaxChars, 80, 2000),
         title: '我',
@@ -646,7 +483,7 @@ export function apply(ctx, baseConfig = {}) {
     const cfg = getCfg()
     if (!cfg.enabled || cfg.unsettledEnabled === false) return ''
     try {
-      return renderUnsettledSection(nodes, {
+      return renderUnsettledSection(book.nodes, {
         now,
         maxChars: clamp(cfg.unsettledMaxChars, 80, 2000),
         title: '还没定的',
@@ -665,7 +502,7 @@ export function apply(ctx, baseConfig = {}) {
     const cfg = getCfg()
     if (!cfg.enabled || cfg.habitEnabled === false) return ''
     try {
-      return renderHabitSection(nodes, {
+      return renderHabitSection(book.nodes, {
         now,
         limit: clamp(cfg.habitLimit, 0, 10),
         maxChars: clamp(cfg.habitMaxChars, 80, 2000),
@@ -685,7 +522,7 @@ export function apply(ctx, baseConfig = {}) {
     const cfg = getCfg()
     if (!cfg.enabled || cfg.curiosityEnabled === false) return ''
     try {
-      return renderCuriositySection(nodes, {
+      return renderCuriositySection(book.nodes, {
         now,
         limit: clamp(cfg.curiosityLimit, 0, 10),
         maxChars: clamp(cfg.curiosityMaxChars, 80, 2000),
@@ -729,7 +566,7 @@ export function apply(ctx, baseConfig = {}) {
   //   · 能由我拿 remember 掂量一次（refs 指向那条 f_xxx）—— 掂量过才算有了分量。
   //
   // 只读别家，写自己家：源文件一个字节都不动。
-  // （fastIndex / fastAllIds 的声明在 apply 开头 —— 得赶在 loadFastIndex() 之前。）
+  // （book.fastIndex / book.fastAllIds 由 createBook 预置 —— 批③起无 TDZ 风险。）
 
   /** 源文件在哪：设置里指定了就用它；否则看 dsh-body 的配置；都没有就用默认那处 */
   function fastSourcePath(cfg = getCfg()) {
@@ -744,7 +581,7 @@ export function apply(ctx, baseConfig = {}) {
   /** 副本里全部的快层事件（翻的时候用，不受索引上限管） */
   function fastAllEvents(now = Date.now()) {
     const out = []
-    for (const raw of readJsonLines(files.fast)) {
+    for (const raw of readJsonLines(book.files.fast)) {
       const ev = normFastEvent(raw, { now })
       if (ev) out.push(ev)
     }
@@ -753,14 +590,14 @@ export function apply(ctx, baseConfig = {}) {
 
   /** 启动时把副本读进来：填索引，也记下哪些 id 已经抄过 */
   function loadFastIndex(now = Date.now()) {
-    fastIndex = []
-    fastAllIds.clear()
+    book.fastIndex = []
+    book.fastAllIds.clear()
     const cap = clamp(getCfg().fastMaxEvents, 0, 5000)
-    for (const raw of readJsonLines(files.fast)) {
+    for (const raw of readJsonLines(book.files.fast)) {
       const ev = normFastEvent(raw, { now })
       if (!ev) continue
-      fastAllIds.add(ev.id)
-      fastIndex = pushFastIndex(fastIndex, ev, cap)
+      book.fastAllIds.add(ev.id)
+      book.fastIndex = pushFastIndex(book.fastIndex, ev, cap)
     }
   }
 
@@ -769,71 +606,17 @@ export function apply(ctx, baseConfig = {}) {
    * 抄不动就抄不动 —— 源文件坏了不该让账本这边出事。
    */
   function pullFast(now = Date.now()) {
+    // 批③：协议本体在 core/protocol/book.js（收 book 首参）；这里只做宿主侧绑定——
+    // cfg 闸门要先过，fastSourcePath 才不至于在快层关着时白读一遍（与原顺序一致）。
     const cfg = getCfg()
     if (!cfg.enabled || cfg.fastEnabled === false) return 0
-    const source = fastSourcePath(cfg)
-    if (!source) return 0
-    const state = readJsonSafeSticky(files.fastCursor, {})
-    const sameSource = String(state.source ?? '') === source
-    const offset = sameSource ? Number(state.offset) || 0 : 0
-    let got = null
-    try {
-      got = readJsonLinesFrom(source, offset)
-    } catch (err) {
-      log(`快层源读不动：${String(err?.message ?? err).slice(0, 160)}`)
-      return 0
-    }
-    if (!got || !got.exists) return 0
-    const cap = clamp(cfg.fastMaxEvents, 0, 5000)
-    let added = 0
-    for (const raw of got.rows) {
-      const ev = normFastEvent(raw, { now })
-      if (!ev) continue
-      if (fastAllIds.has(ev.id)) continue
-      fastAllIds.add(ev.id)
-      try {
-        appendJsonLine(files.fast, {
-          id: ev.id,
-          at: ev.at,
-          kind: ev.kind,
-          text: ev.text,
-          source: ev.source,
-          detail: ev.detail ?? null,
-          copiedAt: now,
-        })
-      } catch (err) {
-        log(`快层副本写不进去：${String(err?.message ?? err).slice(0, 160)}`)
-        continue
-      }
-      fastIndex = pushFastIndex(fastIndex, ev, cap)
-      added += 1
-    }
-    if (added) {
-      try {
-        atomicWriteJson(files.fastCursor, {
-          source,
-          offset: got.next,
-          at: now,
-          copied: (Number(state.copied) || 0) + added,
-        })
-      } catch (err) {
-        log(`快层游标写不进去：${String(err?.message ?? err).slice(0, 160)}`)
-      }
-      // 抄本的裁旧：上限内不动；超了只留最新的 cap 条。cap=0 是「不设上限」，不裁。
-      // 原话层和回声档不走这条 —— 只增不改的永远只增。
-      if (cap > 0) {
-        const kept = keepTailLines(files.fast, cap)
-        if (kept >= 0) log(`快层副本裁旧：留最新 ${kept} 条（上限 ${cap}）`)
-      }
-      log(`快层抄了 ${added} 条（源 ${source}）`)
-    }
-    return added
+    return fastPull(book, now, cfg, fastSourcePath(cfg))
   }
 
   /** 已经被我掂量过的快层事件（账本里有条 refs 指着它） */
   function weighedFastIds() {
     const out = new Set()
-    for (const n of nodes) {
+    for (const n of book.nodes) {
       for (const r of n.refs ?? []) {
         const id = String(r ?? '').trim()
         if (id.startsWith('f_')) out.add(id)
@@ -855,7 +638,7 @@ export function apply(ctx, baseConfig = {}) {
   //   · 能由我拿 remember 掂量一次（refs 指向那条 i_xxx）—— 掂量过才算有了分量。
   //
   // 只读别家，写自己家：源文件一个字节都不动。
-  // （intentIndex / intentAllIds 的声明在 apply 开头 —— 得赶在 loadIntentIndex() 之前。）
+  // （book.intentIndex / book.intentAllIds 由 createBook 预置 —— 批③起无 TDZ 风险。）
 
   /** 源文件在哪：设置里指定了就用它；否则扫 QQ 桥家里全部分册 + 旧合订本（v0.15.0 分册） */
   function intentSourcePaths(cfg = getCfg()) {
@@ -877,11 +660,6 @@ export function apply(ctx, baseConfig = {}) {
     return out
   }
 
-  /** 兼容老引用：默认第一个源（自定义单文件的场合行为不变） */
-  function intentSourcePath(cfg = getCfg()) {
-    return intentSourcePaths(cfg)[0] ?? ''
-  }
-
   /**
    * 事件的「身份域」：桥家的分册（messages-*.jsonl）专用 qq-bridge；
    * 换了自己指定的消息流就归到 chat —— 免得两处源的消息撞同一个 id。
@@ -894,18 +672,13 @@ export function apply(ctx, baseConfig = {}) {
     return 'chat'
   }
 
-  /** 游标文件名（fileKey）：只存名字不存全路径 —— 搬家/正反斜杠都不认错 */
-  function cursorKey(source) {
-    return String(source ?? '').split(/[\\/]/).pop() ?? ''
-  }
-
   /** 副本里全部的意图事件（翻的时候用，不受索引上限管）。被撤回的原话在这里盖住。 */
   function intentAllEvents(now = Date.now()) {
     const out = []
-    for (const raw of readJsonLines(files.intent)) {
+    for (const raw of readJsonLines(book.files.intent)) {
       const ev = normIntentEvent(raw, { now })
       if (!ev) continue
-      if (ev.mid && intentTombstoned.has(ev.mid)) continue
+      if (ev.mid && book.intentTombstoned.has(ev.mid)) continue
       out.push(ev)
     }
     return out
@@ -925,7 +698,7 @@ export function apply(ctx, baseConfig = {}) {
   function currentAudience(now = Date.now()) {
     try {
       // 索引按时间新的在前 —— 从头找第一条窗内的来话
-      for (const ev of intentIndex) {
+      for (const ev of book.intentIndex) {
         if (now - Number(ev.at) > AUDIENCE_WINDOW_MS) break
         if (ev.chatType === 'private') return 'private'
         if (ev.chatType === 'group' && ev.atMe === true && ev.groupId) return `group:${ev.groupId}`
@@ -953,25 +726,25 @@ export function apply(ctx, baseConfig = {}) {
 
   /** 启动时把副本读进来：填索引，也记下哪些 id 已经抄过 */
   function loadIntentIndex(now = Date.now()) {
-    intentIndex = []
-    intentAllIds.clear()
-    intentTombstoned.clear()
+    book.intentIndex = []
+    book.intentAllIds.clear()
+    book.intentTombstoned.clear()
     const cap = clamp(getCfg().intentMaxEvents, 0, 5000)
-    const all = readJsonLines(files.intent)
+    const all = readJsonLines(book.files.intent)
     // 第一遍先收墓碑：撤回行在原行后面落盘，先收齐再建索引才盖得住
     for (const raw of all) {
       const ev = normIntentEvent(raw, { now })
       if (!ev) continue
-      const tk = intentTombKey(ev.mid)
-      if (tk) intentTombstoned.add(tk)
+      const tk = book.intentTombKey(ev.mid)
+      if (tk) book.intentTombstoned.add(tk)
     }
     for (const raw of all) {
       const ev = normIntentEvent(raw, { now })
       if (!ev) continue
-      intentAllIds.add(ev.id)
+      book.intentAllIds.add(ev.id)
       // 被撤回的原话不进索引 —— 只留「撤回过」那行事实
-      if (ev.mid && intentTombstoned.has(ev.mid)) continue
-      intentIndex = pushIntentIndex(intentIndex, ev, cap)
+      if (ev.mid && book.intentTombstoned.has(ev.mid)) continue
+      book.intentIndex = pushIntentIndex(book.intentIndex, ev, cap)
     }
   }
 
@@ -981,109 +754,17 @@ export function apply(ctx, baseConfig = {}) {
    * 抄不动就抄不动 —— 源文件坏了不该让账本这边出事。
    */
   function pullIntent(now = Date.now()) {
+    // 批③：协议本体在 core/protocol/book.js（收 book 首参）；这里只做宿主侧绑定——
+    // cfg 闸门要先过，intentSourcePaths 才不至于在意图层关着时白扫一遍（与原顺序一致）。
     const cfg = getCfg()
     if (!cfg.enabled || cfg.intentEnabled === false) return 0
-    const sources = intentSourcePaths(cfg)
-    if (!sources.length) return 0
-    const cap = clamp(cfg.intentMaxEvents, 0, 5000)
-    const rawState = readJsonSafeSticky(files.intentCursor, {})
-    // v2 形状 { version:2, files:{ [文件名]:{offset,copied,at} } }；
-    // v1 形状 { source, offset, copied } 归到它文件名下 —— 老游标不浪费。
-    const state = {}
-    if (rawState && rawState.version === 2 && rawState.files && typeof rawState.files === 'object') {
-      for (const [k, v] of Object.entries(rawState.files)) {
-        if (v && typeof v === 'object') state[k] = { offset: Number(v.offset) || 0, copied: Number(v.copied) || 0, at: Number(v.at) || 0 }
-      }
-    } else if (rawState && (rawState.source || rawState.offset != null)) {
-      const k = cursorKey(rawState.source)
-      if (k) state[k] = { offset: Number(rawState.offset) || 0, copied: Number(rawState.copied) || 0, at: Number(rawState.at) || 0 }
-    }
-    const newFiles = {}
-    let total = 0
-    const perSource = []
-    for (const source of sources) {
-      const k = cursorKey(source)
-      const same = state[k] && state[k].offset > 0 // offset>0 才是抄过的（offset 0 的空游标不可信——源被裁过旧就重头来）
-      const offset = same ? state[k].offset : 0
-      let got = null
-      try {
-        got = readJsonLinesFrom(source, offset)
-      } catch (err) {
-        log(`意图层源读不动：${String(err?.message ?? err).slice(0, 160)}`)
-        continue
-      }
-      if (!got || !got.exists) continue
-      const label = intentSourceLabel(source)
-      let added = 0
-      for (const rawRow of got.rows) {
-        // 先认身份再分类：同一条消息只算一次（源被裁旧重写时，靠它认出「这条抄过了」）
-        const id = intentIdFromMessage(rawRow, { source: label })
-        if (id && intentAllIds.has(id)) continue
-        const ev = intentEventFromMessage(rawRow, { source: label })
-        if (!ev) continue
-        // 撤回行先进墓碑集（同批里它的原话可能已经抄进索引了，要当场盖住）
-        const tk = intentTombKey(ev.mid)
-        if (tk) {
-          intentTombstoned.add(tk)
-          intentIndex = intentIndex.filter((x) => !(x && x.mid && intentTombstoned.has(x.mid)))
-        }
-        // 被撤回的原话只入档不进索引 —— 「撤回过」的事实行照常走
-        if (ev.mid && intentTombstoned.has(ev.mid)) continue
-        intentAllIds.add(ev.id)
-        try {
-          appendJsonLine(files.intent, {
-            id: ev.id,
-            at: ev.at,
-            kind: ev.kind,
-            intensity: ev.intensity,
-            text: ev.text,
-            source: ev.source,
-            from: ev.from ?? '',
-            // 消息平台 id：墓碑（撤回登记）靠它认领要盖住的原话（2026-11-17 补的——
-            // 以前抄本不带 mid，撤回行落了也认不出盖谁）
-            mid: ev.mid ?? '',
-            // 是否 @ 我：群轮的受众识别靠它（2026-11-17 复核抓的硬伤——以前不落盘，
-            // 重启后 loadIntentIndex 重建的索引里 atMe 恒空，群轮全部判成 solo）
-            atMe: ev.atMe === true,
-            chatType: ev.chatType ?? '',
-            nickname: ev.nickname ?? '',
-            groupId: ev.groupId ?? '',
-            matched: ev.matched ?? [],
-            copiedAt: now,
-          })
-        } catch (err) {
-          log(`意图层副本写不进去：${String(err?.message ?? err).slice(0, 160)}`)
-          continue
-        }
-        intentIndex = pushIntentIndex(intentIndex, ev, cap)
-        added += 1
-      }
-      newFiles[k] = { offset: got.next, copied: (state[k]?.copied || 0) + added, at: now }
-      if (added) perSource.push(`${k.split('messages-').pop() ?? k} ${added}`)
-      total += added
-    }
-    if (total) {
-      try {
-        atomicWriteJson(files.intentCursor, { version: 2, at: now, files: { ...state, ...newFiles } })
-      } catch (err) {
-        log(`意图层游标写不进去：${String(err?.message ?? err).slice(0, 160)}`)
-      }
-      // 副本的裁旧：源那边自己也在裁（旧消息会从桥的文件里消失），所以副本留得比索引宽一点，
-      // 至少两千行 —— 源裁了之后，靠这份还能按词翻到旧事。0 = 不裁。
-      const copyCap = cap > 0 ? Math.max(cap, 2000) : 0
-      if (copyCap > 0) {
-        const kept = keepTailLines(files.intent, copyCap)
-        if (kept >= 0) log(`意图层副本裁旧：留最新 ${kept} 条（上限 ${copyCap}）`)
-      }
-      log(`意图层抄了 ${total} 条（${perSource.join('，') || sources.length + ' 个源'}）`)
-    }
-    return total
+    return intentPull(book, now, cfg, intentSourcePaths(cfg), intentSourceLabel)
   }
 
   /** 已经被我掂量过的意图事件（账本里有条 refs 指着它） */
   function weighedIntentIds() {
     const out = new Set()
-    for (const n of nodes) {
+    for (const n of book.nodes) {
       for (const r of n.refs ?? []) {
         const id = String(r ?? '').trim()
         if (id.startsWith('i_')) out.add(id)
@@ -1104,16 +785,15 @@ export function apply(ctx, baseConfig = {}) {
   //
   // 状态只是「上次的我的笔记」：它不接管嘴 —— 说出口的心情仍然是我当轮的判断。
 
-  /** 情绪流账本里的每一行（坏行跳过）。5 秒缓存：status 一拍里 pullEmotion 和
-   *  emotionState 各读一遍整本（这文件只增不减），缓存砍掉一半（对齐 echoStats）。 */
-  let emotionLinesCache = { at: 0, lines: [] }
+  /** 情绪流账本里的每一行（坏行跳过）。5 秒缓存（book.emotionLinesCache）：status 一拍里
+   *  pullEmotion 和 emotionState 各读一遍整本（这文件只增不减），缓存砍掉一半（对齐 echoStats）。 */
   function emotionLines() {
     const nowMs = Date.now()
-    if (nowMs - emotionLinesCache.at < 5000) return emotionLinesCache.lines
-    const lines = readJsonLines(files.emotion)
+    if (nowMs - book.emotionLinesCache.at < 5000) return book.emotionLinesCache.lines
+    const lines = readJsonLines(book.files.emotion)
       .map((raw) => normEmotionLine(raw))
       .filter(Boolean)
-    emotionLinesCache = { at: nowMs, lines }
+    book.emotionLinesCache = { at: nowMs, lines }
     return lines
   }
 
@@ -1172,8 +852,8 @@ export function apply(ctx, baseConfig = {}) {
       text: String(text ?? '').slice(0, 120),
     }
     try {
-      appendJsonLine(files.emotion, line)
-      emotionLinesCache = { at: 0, lines: [] } // 账上多了行，缓存作废
+      appendJsonLine(book.files.emotion, line)
+      book.emotionLinesCache = { at: 0, lines: [] } // 账上多了行，缓存作废
     } catch (err) {
       log(`情绪流记不进去：${String(err?.message ?? err).slice(0, 200)}`)
       return null
@@ -1236,7 +916,7 @@ export function apply(ctx, baseConfig = {}) {
   /** 已经被我掂量过的情绪事件（账本里有条 refs 指着它） */
   function weighedEmotionIds() {
     const out = new Set()
-    for (const n of nodes) {
+    for (const n of book.nodes) {
       for (const r of n.refs ?? []) {
         const id = String(r ?? '').trim()
         if (id.startsWith('e_')) out.add(id)
@@ -1268,7 +948,7 @@ export function apply(ctx, baseConfig = {}) {
   /** 原话层最近写下的几行 —— 真的刚发生过的事，我自己写的那份。 */
   function recentLineEvents(maxLines = 12) {
     try {
-      return readJsonLines(files.lines, maxLines)
+      return readJsonLines(book.files.lines, maxLines)
         .filter((r) => r && typeof r.text === 'string' && r.text.trim())
         .map((r) => ({ id: r.id ?? '', text: r.text }))
     } catch {
@@ -1292,87 +972,20 @@ export function apply(ctx, baseConfig = {}) {
   // 翻到一条 = 它又被想起了一次。记在原话层（只增不改），节点本身不动；
   // 复现这一路数最近 7 天的回声 —— 常被翻到的条更热，几天没人问就自己凉回去。
 
-  /** 同一组条多久内不重复记「被想起」。 */
-  const ECHO_DEDUPE_MS = 10 * 60 * 1000
-  /** 一笔回声/一次染色最多带几条（跟 recall 的默认 limit 对齐） */
+  /** 一笔回声/一次染色最多带几条（跟 recall 的默认 limit 对齐；noteEcho 在 core/protocol 另持一份同值） */
   const RECALL_ECHO_MAX = 5
-  /** 展示观测的天窗：「常挂」要说的是最近 —— 14 天外的天自动丢弃（不然 cold 会误报陈年条） */
-  const DISPLAY_DAY_WINDOW_MS = 14 * 24 * 60 * 60 * 1000
-  function pruneDisplayDays(days, now) {
-    for (const d of [...days]) {
-      const t = Date.parse(`${d}T00:00:00.000Z`)
-      if (Number.isFinite(t) && now - t > DISPLAY_DAY_WINDOW_MS) days.delete(d)
-    }
-  }
-
-  /** 启动时把回声读进索引（旧档在原话层里，新档单独记 echo.jsonl；之后随写随更）。 */
-  function loadEchoIndex(now = Date.now()) {
-    try {
-      for (const file of [files.lines, files.echo]) {
-        for (const row of readJsonLines(file, 0)) {
-          if (!row) continue
-          const at = Number(row.at) || 0
-          if (!at) continue
-          if (row.kind === 'recolor' && row.ref) {
-            // 染色限流索引：一条最近一次「现在想起它」是什么时候、什么颜色
-            const key = String(row.ref)
-            const prev = recolorAt.get(key)
-            if (!prev || at > prev.at) recolorAt.set(key, { at, dominant: String(row.dominant ?? ''), level: Number(row.level) || 0 })
-            continue
-          }
-          if (row.kind === 'display' && Array.isArray(row.refs)) {
-            // 展示观测（不算现行，不进 echoAt）：id -> 被挂到开头过哪些天（14 天窗）
-            const day = new Date(at).toISOString().slice(0, 10)
-            for (const rid of row.refs) {
-              const key = String(rid ?? '').trim()
-              if (!key) continue
-              const days = displayDays.get(key) ?? new Set()
-              days.add(day)
-              pruneDisplayDays(days, now)
-              if (days.size) displayDays.set(key, days)
-              else displayDays.delete(key)
-            }
-            continue
-          }
-          if (row.kind !== 'echo' || !Array.isArray(row.refs)) continue
-          const rowId = String(row.id ?? '')
-          for (const rid of row.refs) {
-            const key = String(rid ?? '').trim()
-            if (!key) continue
-            const list = echoAt.get(key) ?? []
-            list.push(at)
-            // 上限给足余量：窗口 42 天（3τ），热条一个月被熏上百次也不该把最老的挤掉
-            echoAt.set(key, list.slice(-200))
-            const prevLatest = latestEchoRow.get(key)
-            if (!prevLatest || at > prevLatest.at) {
-              // 瀑流/缘起链（定案 B）：顺手多存 query 与同现的种子——echo 行自带，零成本
-              latestEchoRow.set(key, {
-                at,
-                rowId,
-                query: String(row.query ?? ''),
-                with: (row.refs ?? []).map(String).filter((x) => x !== key),
-              })
-            }
-          }
-        }
-      }
-    } catch {
-      /* 回声读不出来就当没有 —— 回弹不该把账本弄坏 */
-    }
-  }
 
   /**
    * 窗口内每条的回声统计（现行熏种子，2026-11-16）：count = 被想起几次（整数，给人看），
    * strength = 熏习势力（每次记 1 份、按 ECHO_TAU_MS 指数衰减的和 —— 喂给复现轴）。
    * 刚被熏的 ≈1，一周前 ≈0.61，一个月前 ≈0.12 —— 习气的意思就是：最近熏的才顶用。
    * 带 5 秒缓存：热路径上 activationScorer 每轮都来要，底下的 exp 是全索引量；
-   * recallEcho 写入时作废 —— 读多写少才划算（对齐 cfgCache 的口吻）。
+   * noteEcho 写入时作废 —— 读多写少才划算（对齐 cfgCache 的口吻）。
    */
-  let echoStatsCache = { at: 0, stats: new Map() }
   function echoStats(now = Date.now()) {
-    if (now - echoStatsCache.at < 5000 && now >= echoStatsCache.at) return echoStatsCache.stats
+    if (now - book.echoStatsCache.at < 5000 && now >= book.echoStatsCache.at) return book.echoStatsCache.stats
     const stats = new Map()
-    for (const [id, list] of echoAt) {
+    for (const [id, list] of book.echoAt) {
       let count = 0
       let strength = 0
       for (const t of list) {
@@ -1382,7 +995,7 @@ export function apply(ctx, baseConfig = {}) {
       }
       if (count) stats.set(id, { count, strength })
     }
-    echoStatsCache = { at: now, stats }
+    book.echoStatsCache = { at: now, stats }
     return stats
   }
 
@@ -1393,59 +1006,6 @@ export function apply(ctx, baseConfig = {}) {
     return out
   }
 
-  /**
-   * 翻到就记一笔「被想起」。同一组条 10 分钟内不重复记 ——
-   * 一次对话里连翻几下是同一次醒，不是几次。
-   */
-  function recallEcho(list, query, now = Date.now(), dir = null) {
-    try {
-      // 按住的不熏（三种按法都算）—— 回声喂的是复现轴，按住的条不参与竞争；
-      // 只查 !n.sealed 会漏掉 until/cond 按住的（include_sealed 路径翻到它们）。
-      // isSealed 必须带目录：cond 按住要查「另一条还在不在」，不传目录会
-      // 把 cond 按住误判成翻篇（2026-11-16 复核抓到的实证）。
-      // 松开之后重新被翻到，才重新开始熏。
-      const ids = (Array.isArray(list) ? list : [])
-        .filter((n) => n && n.id && !isSealed(n, now, dir))
-        .map((n) => n.id)
-        .slice(0, RECALL_ECHO_MAX)
-      if (!ids.length) return false
-      // 去重键按集合算（排序后拼）—— 翻两遍顺序差一点也算同一组，不重复记
-      const key = [...ids].sort().join(',')
-      const last = echoDedupe.get(key) || 0
-      if (now - last < ECHO_DEDUPE_MS) return false
-      // 去重表顺手清理：只留两倍窗内的键，别让内存攒一辈子（2026-11-16 复核建议）
-      for (const [k, at] of echoDedupe) {
-        if (now - at > ECHO_DEDUPE_MS * 2) echoDedupe.delete(k)
-      }
-      echoDedupe.set(key, now)
-      const row = {
-        id: `e_${now.toString(36)}`,
-        at: now,
-        kind: 'echo',
-        text: `被想起：「${String(query ?? '').slice(0, 80)}」→ ${ids.join('、')}`,
-        // 缘起链的原始数据：哪条种子、在什么缘（query）下现行。机器可读，别让下游去解析 text
-        query: String(query ?? '').slice(0, 80),
-        refs: ids,
-        source: 'recall',
-      }
-      appendJsonLine(files.echo, row)
-      for (const rid of ids) {
-        const arr = echoAt.get(rid) ?? []
-        arr.push(now)
-        echoAt.set(rid, arr.slice(-200))
-        latestEchoRow.set(rid, {
-          at: now,
-          rowId: row.id,
-          query: String(row.query ?? ''),
-          with: ids.filter((x) => x !== rid),
-        })
-      }
-      echoStatsCache = { at: 0, stats: new Map() } // 回声变了，熏习统计作废
-      return true
-    } catch {
-      return false
-    }
-  }
 
   /** 染色层（whale-card P0-4）：翻到旧事时心里有颜色，才在条目后补一句「现在想起它」。
    * 限流（饭桶④）：一条一周最多染一次 + 情绪明显变了才染。正文一字不动，只在 echo.jsonl 记行。 */
@@ -1454,16 +1014,16 @@ export function apply(ctx, baseConfig = {}) {
   function recolorRecall(list, state, now = Date.now(), dir = null) {
     const out = new Map()
     if (!state || state.dominant === 'calm') return out
-    // dir 同 recallEcho：cond 按住要查另一条还在不在（'out' 字符串曾经被当成目录传进来）
+    // dir 同 noteEcho：cond 按住要查另一条还在不在（'out' 字符串曾经被当成目录传进来）
     const ids = list.filter((n) => !isSealed(n, now, dir)).slice(0, RECALL_ECHO_MAX).map((n) => n.id)
     for (const id of ids) {
-      const last = recolorAt.get(id)
+      const last = book.recolorAt.get(id)
       const changed =
         !last || state.dominant !== last.dominant || Math.abs(state.level - (last.level || 0)) >= RECOLOR_LEVEL_DELTA
       if (!changed) continue
       if (last && now - last.at < RECOLOR_GAP_MS) continue
       try {
-        appendJsonLine(files.echo, {
+        appendJsonLine(book.files.echo, {
           id: `rc_${now.toString(36)}_${String(id).slice(-4)}`,
           at: now,
           kind: 'recolor',
@@ -1473,7 +1033,7 @@ export function apply(ctx, baseConfig = {}) {
           note: emotionFeelPhrase(state),
           source: 'recall',
         })
-        recolorAt.set(id, { at: now, dominant: state.dominant, level: state.level })
+        book.recolorAt.set(id, { at: now, dominant: state.dominant, level: state.level })
         const note = emotionFeelPhrase(state)
         if (note) out.set(id, note)
       } catch {
@@ -1481,32 +1041,6 @@ export function apply(ctx, baseConfig = {}) {
       }
     }
     return out
-  }
-
-  /** 违熏索引：seedId -> {at, reason, count}（最近一次 + 累计次数；status 聚合也从这走） */
-  function loadVikarmaIndex() {
-    try {
-      for (const row of readJsonLines(files.vikarma, 0)) {
-        if (!row || row.kind !== 'vikarma') continue
-        const sid = String(row.seedId ?? '').trim()
-        if (!sid) continue
-        const at = Number(row.at) || 0
-        if (!at) continue
-        const reason = String(row.reason ?? '')
-        const prev = vikarmaAt.get(sid) ?? { at: 0, reason: '', count: 0 }
-        vikarmaAt.set(sid, {
-          at: Math.max(prev.at, at),
-          reason: at >= prev.at ? reason : prev.reason,
-          count: prev.count + 1,
-        })
-        vikarmaAgg.total += 1
-        vikarmaAgg.byReason[reason] = (vikarmaAgg.byReason[reason] ?? 0) + 1
-        const day = new Date(at).toISOString().slice(0, 10)
-        vikarmaAgg.byDay[day] = (vikarmaAgg.byDay[day] ?? 0) + 1
-      }
-    } catch {
-      /* 读不出就当没有 */
-    }
   }
 
   /**
@@ -1542,7 +1076,7 @@ export function apply(ctx, baseConfig = {}) {
       roots: scopeRoots(),
       events: [...realEvents(now), ...standing],
       exists: scopedExists(agent),
-      repeatCounts: repeatCounts(nodes),
+      repeatCounts: repeatCounts(book.nodes),
       echoes: echoCounts(now),
     }
   }
@@ -1569,7 +1103,7 @@ export function apply(ctx, baseConfig = {}) {
 
   /** 叫醒的账：上回什么时候醒的（落盘，重启后冷却接着算）；本次运行里为谁醒过。 */
   const wakeState = (() => {
-    const saved = readJsonSafe(files.wake, {})
+    const saved = readJsonSafe(book.files.wake, {})
     return {
       lastWakeAt: Number(saved?.lastWakeAt) || 0,
       lastText: String(saved?.lastText ?? ''),
@@ -1659,7 +1193,7 @@ export function apply(ctx, baseConfig = {}) {
       wakeState.lastWakeAt = now
       wakeState.lastText = text.slice(0, 200)
       try {
-        atomicWriteJson(files.wake, { lastWakeAt: now, lastText: wakeState.lastText, target: sid })
+        atomicWriteJson(book.files.wake, { lastWakeAt: now, lastText: wakeState.lastText, target: sid })
       } catch {
         /* 状态写不进去就算了 —— 冷却只在本次运行里生效，不会重复打扰 */
       }
@@ -2143,7 +1677,7 @@ export function apply(ctx, baseConfig = {}) {
       // 好奇：同一个主题再写一次 = 我又惦记了一遍 → 次数 +1，不另建节点。
       if (kind === 'curiosity') {
         const res = recordCuriosity(
-          nodes,
+          book.nodes,
           {
             context,
             text,
@@ -2155,10 +1689,10 @@ export function apply(ctx, baseConfig = {}) {
           now,
         )
         if (res.repeated && res.node) {
-          nodes = res.nodes
+          book.nodes = res.nodes
           const c = res.node
           try {
-            appendJsonLine(files.lines, {
+            appendJsonLine(book.files.lines, {
               id: c.id,
               at: now,
               kind: 'curiosity',
@@ -2178,7 +1712,7 @@ export function apply(ctx, baseConfig = {}) {
             log(`原话层写不进去：${String(err?.message ?? err).slice(0, 200)}`)
           }
           replaceNode(c)
-          saveNodes()
+          saveNodes(book)
           const st = curiosityState(c)
           const tail =
             st === 'answered'
@@ -2194,7 +1728,7 @@ export function apply(ctx, baseConfig = {}) {
       // 每次发作都往原话层留一行（append-only），节点上的 hits 只是索引。
       if (kind === 'habit') {
         const res = recordHabit(
-          nodes,
+          book.nodes,
           {
             context,
             text,
@@ -2205,10 +1739,10 @@ export function apply(ctx, baseConfig = {}) {
           now,
         )
         if (res.repeated && res.node) {
-          nodes = res.nodes
+          book.nodes = res.nodes
           const h = res.node
           try {
-            appendJsonLine(files.lines, {
+            appendJsonLine(book.files.lines, {
               id: h.id,
               at: now,
               kind: 'habit',
@@ -2227,7 +1761,7 @@ export function apply(ctx, baseConfig = {}) {
             log(`原话层写不进去：${String(err?.message ?? err).slice(0, 200)}`)
           }
           replaceNode(h)
-          saveNodes()
+          saveNodes(book)
           const st = habitState(h)
           const tail =
             st === 'fast'
@@ -2255,7 +1789,7 @@ export function apply(ctx, baseConfig = {}) {
           }
         }
         const res = recordSkill(
-          nodes,
+          book.nodes,
           {
             context,
             text,
@@ -2267,10 +1801,10 @@ export function apply(ctx, baseConfig = {}) {
           now,
         )
         if (res.repeated && res.node) {
-          nodes = res.nodes
+          book.nodes = res.nodes
           const k = res.node
           try {
-            appendJsonLine(files.lines, {
+            appendJsonLine(book.files.lines, {
               id: k.id,
               at: now,
               kind: 'skill',
@@ -2289,7 +1823,7 @@ export function apply(ctx, baseConfig = {}) {
             log(`原话层写不进去：${String(err?.message ?? err).slice(0, 200)}`)
           }
           replaceNode(k)
-          saveNodes()
+          saveNodes(book)
           const st = skillState(k)
           const cs = (Array.isArray(k.contexts) ? k.contexts : []).length
           // 回执把两件事都说清：这条技能成立没有；这次是换了个地方，还是老地方又用了一次
@@ -2314,19 +1848,19 @@ export function apply(ctx, baseConfig = {}) {
       for (const r of String(args?.refs ?? '').split(/[,，\s]+/)) {
         const id = r.trim()
         if (!/^(i_|f_)/.test(id)) continue
-        const ev = [...intentIndex, ...fastIndex].find((x) => x && x.id === id)
+        const ev = [...book.intentIndex, ...book.fastIndex].find((x) => x && x.id === id)
         if (ev && Number(ev.at) > 0) happenedAt = happenedAt ? Math.min(happenedAt, Number(ev.at)) : Number(ev.at)
       }
       // 把退下的自我条捡回来（饭桶五条之五：捡回来要出声，没人知道等于没捡）
       if (kind === 'self' && args?.restore) {
-        const res = restoreSelfNode(nodes, String(args.restore ?? '').trim(), now)
+        const res = restoreSelfNode(book.nodes, String(args.restore ?? '').trim(), now)
         if (!res.restored) {
           return { ok: false, id: String(args?.restore ?? ''), note: res.note }
         }
-        nodes = res.nodes
-        saveNodes()
+        book.nodes = res.nodes
+        saveNodes(book)
         try {
-          appendJsonLine(files.lines, {
+          appendJsonLine(book.files.lines, {
             id: res.restored.id,
             at: now,
             kind: 'self',
@@ -2383,7 +1917,7 @@ export function apply(ctx, baseConfig = {}) {
       const anchorNotes = []
       if (node.kind === 'self') {
         const wantAnchor = args?.anchor === true
-        const existing = anchorSelfNode(nodes, node.slot, now)
+        const existing = anchorSelfNode(book.nodes, node.slot, now)
         const replaces = Boolean(wantAnchor && existing && args?.replace_anchor === true)
         if (wantAnchor && !node.anchorWhy) {
           node.anchor = false
@@ -2412,7 +1946,7 @@ export function apply(ctx, baseConfig = {}) {
         // 这条先挂「还没定的」（doubt 槽）——我的身份允许重写，但要掂过才行。
         let redirected = false
         if (!wantAnchor && !existing && args?.confirmed !== true) {
-          const holder = activeSelfNodes(nodes, now).find((n) => normSlot(n.slot) === node.slot && !n.anchor)
+          const holder = activeSelfNodes(book.nodes, now).find((n) => normSlot(n.slot) === node.slot && !n.anchor)
           if (holder && selfWeight(holder, now) > node.weight) {
             node.slot = UNSETTLED_SLOTS[0]
             redirected = true
@@ -2424,8 +1958,8 @@ export function apply(ctx, baseConfig = {}) {
         // 锚在位而这条没挂成锚 → 不退位；重定向到「还没定的」的也不退位；其余照旧：新的把旧的顶下来
         const gateBlocking = Boolean(existing && node.id !== existing.id && !node.anchor) || redirected
         if (!gateBlocking) {
-          const res = supersedeSelf(nodes, node.slot, node.id, now)
-          nodes = res.nodes
+          const res = supersedeSelf(book.nodes, node.slot, node.id, now)
+          book.nodes = res.nodes
           supersededIds = res.superseded
         }
       }
@@ -2439,7 +1973,7 @@ export function apply(ctx, baseConfig = {}) {
         /* 折不出情绪就不染，别挡住记账 */
       }
       try {
-        appendJsonLine(files.lines, {
+        appendJsonLine(book.files.lines, {
           id: node.id,
           at: now,
           kind: node.kind,
@@ -2483,7 +2017,7 @@ export function apply(ctx, baseConfig = {}) {
         }
       }
       replaceNode(node)
-      saveNodes()
+      saveNodes(book)
       log(
         `记下 ${node.id} · ${node.kind === 'self' ? `我·${slotLabel(node.slot)}` : KIND_LABEL[node.kind]} · 分量 ${node.weight.toFixed(2)} · ${node.text.slice(0, 60)}`,
       )
@@ -2606,11 +2140,11 @@ export function apply(ctx, baseConfig = {}) {
       // 条件封存也算按住：到点/翻篇之前，不给 include_sealed 就不翻出来。
       // 目录先编好：按词找（searchNodes）和不按词翻（rankNodes）都要看得见整本账，
       // include_sealed 也要真能递进去 —— 不然「连被按住的也翻出来」在按词这条路上是空话。
-      const dir = indexNodes(nodes)
+      const dir = indexNodes(book.nodes)
       const wantSealed = Boolean(args?.include_sealed)
       let list = args?.query
-        ? searchNodes(nodes, args.query, { limit, now, scoreOf, byId: dir, includeSealed: wantSealed }).map((h) => h.node)
-        : rankNodes(nodes, now, {
+        ? searchNodes(book.nodes, args.query, { limit, now, scoreOf, byId: dir, includeSealed: wantSealed }).map((h) => h.node)
+        : rankNodes(book.nodes, now, {
             limit,
             includeSealed: wantSealed,
             kind,
@@ -2651,14 +2185,14 @@ export function apply(ctx, baseConfig = {}) {
         // 违熏提醒（2026-11-16）：只挂 recall 返回的条上 —— 注入是系统自动挂的，
         // 不是主动记忆，提醒了未必接得住；recall 是主动翻找，此刻提醒才有校正意义。
         // 30 天窗：超了就不再提醒 —— 久了就变成唠叨，不是校正（账还在 vikarma.jsonl 里）
-        const vk = vikarmaAt.get(n.id)
+        const vk = book.vikarmaAt.get(n.id)
         const vkSuffix =
           vk && now - vk.at < 30 * 24 * 60 * 60 * 1000
             ? `\n（上次现行时没兑现：${vk.reason}，${relTime(vk.at, now)}）`
             : ''
         // 缘起链投影（定案 B，2026-11-18）：最近一次现行的缘（query）与同现种子——
         // 人读尾巴在 vikarma 之后；机读 origins 跟着 output 走。echo 行本就带 query/refs，零回填。
-        const le = cfg.recallOrigin === false ? null : latestEchoRow.get(n.id)
+        const le = cfg.recallOrigin === false ? null : book.latestEchoRow.get(n.id)
         let originSuffix = ''
         if (le) {
           origins[n.id] = {
@@ -2690,11 +2224,11 @@ export function apply(ctx, baseConfig = {}) {
       })
       // 唤醒回弹：按词翻到的都记一笔「被想起」（原话层只增不改；节点本身不动）。
       let echoed = false
-      if (args?.query && list.length) echoed = recallEcho(list, args.query, now, dir)
+      if (args?.query && list.length) echoed = noteEcho(book, list, args.query, now, dir)
       // 执受（定案 C）：带情绪的现行通知身体 —— 反射弧，不是思量。写完 echo 就发。
       if (list.length) {
         try {
-          sproutToBody(list, emotionState(now), now)
+          sproutToBody(book, list, emotionState(now), now, getCfg())
         } catch {
           /* 执受写不进去不影响 recall 本身 */
         }
@@ -2847,9 +2381,9 @@ export function apply(ctx, baseConfig = {}) {
         return { ok: false, id: '', note: `不认识的 mode：${mode || '（空）'}` }
       }
       replaceNode(next)
-      saveNodes()
+      saveNodes(book)
       try {
-        appendJsonLine(files.lines, {
+        appendJsonLine(book.files.lines, {
           id: next.id,
           at: now,
           kind: next.kind,
@@ -2899,16 +2433,16 @@ export function apply(ctx, baseConfig = {}) {
       const now = Date.now()
       // 最重的几条按激活度排（此刻的目录、刚发生的事都算数），行尾把激活值标出来
       const scoreOf = activationScorer(exec?.agent, now)
-      const s = summaryOf(nodes, now, { scoreOf })
+      const s = summaryOf(book.nodes, now, { scoreOf })
       const top = rankNodes(
-        nodes.filter((n) => normKind(n.kind) !== 'self' && normKind(n.kind) !== 'curiosity'),
+        book.nodes.filter((n) => normKind(n.kind) !== 'self' && normKind(n.kind) !== 'curiosity'),
         now,
         { limit: 5, scoreOf },
       ).map((h) => `${h.node.id} ${renderLine(h.node, now)} · 激活 ${scoreOf(h.node, now).toFixed(2)}`)
-      const self = activeSelfNodes(nodes, now)
-      const fast = fastHabits(nodes, now, { limit: clamp(getCfg().habitLimit, 0, 10) })
+      const self = activeSelfNodes(book.nodes, now)
+      const fast = fastHabits(book.nodes, now, { limit: clamp(getCfg().habitLimit, 0, 10) })
       const cfg = getCfg()
-      const curiosities = activeCuriosities(nodes, now, { limit: clamp(cfg.curiosityLimit, 0, 10) })
+      const curiosities = activeCuriosities(book.nodes, now, { limit: clamp(cfg.curiosityLimit, 0, 10) })
       // 快层：先接过来最新的那几条，别让它们只闪一下
       try {
         pullFast(now)
@@ -2921,14 +2455,14 @@ export function apply(ctx, baseConfig = {}) {
       } catch {
         /* 接不上就算了 */
       }
-      const fastEvents = fastIndex.slice(0, 5)
+      const fastEvents = book.fastIndex.slice(0, 5)
       const fastSum = fastSummary(fastAllEvents(now), { weighed: weighedFastIds() })
-      const intentEvents = intentIndex.slice(0, 5)
+      const intentEvents = book.intentIndex.slice(0, 5)
       const intentAll = intentAllEvents(now)
       const intentSum = summarizeIntents(intentAll)
       const intentWeighed = weighedIntentIds()
       const intentPending = intentAll.filter((ev) => !intentWeighed.has(ev.id)).length
-      const recent = nodes.slice(-3).map((n) => {
+      const recent = book.nodes.slice(-3).map((n) => {
         const when = relTime(n.at, now)
         return `${n.id}（${when === '刚写下' ? '刚写下' : `${when}写的`}）${n.text.slice(0, 40)}`
       })
@@ -2948,7 +2482,7 @@ export function apply(ctx, baseConfig = {}) {
         const out = []
         let cur = String(id ?? '').trim()
         for (let i = 0; i < depth && cur; i += 1) {
-          const n = nodes.find((x) => x && x.id === cur)
+          const n = book.nodes.find((x) => x && x.id === cur)
           if (!n) break
           out.push(n)
           cur = n.prevSelf || n.prev || ''
@@ -2961,7 +2495,7 @@ export function apply(ctx, baseConfig = {}) {
           chainLines.push(`· ${slotLabel(n.slot)}：现行「${n.text.slice(0, 24)}」← ${chain.map((c) => `「${c.text.slice(0, 20)}」`).join(' ← ')}`)
         }
       }
-      const narrHead = nodes
+      const narrHead = book.nodes
         .filter((x) => x && normKind(x.kind) === 'narration')
         .sort((a, b) => (Number(b.at) || 0) - (Number(a.at) || 0))[0]
       if (narrHead) {
@@ -3197,8 +2731,8 @@ export function apply(ctx, baseConfig = {}) {
         ...(halfLife ? { halfLife } : {}),
       }
       try {
-        appendJsonLine(files.emotion, line)
-        emotionLinesCache = { at: 0, lines: [] } // 系数改了（tune 行入账），缓存作废
+        appendJsonLine(book.files.emotion, line)
+        book.emotionLinesCache = { at: 0, lines: [] } // 系数改了（tune 行入账），缓存作废
       } catch (err) {
         return {
           ok: false,
@@ -3271,7 +2805,7 @@ export function apply(ctx, baseConfig = {}) {
         return { ok: false, id: seedId, note: `echoId 得是回声行的 id（e_ 开头）：${echoId.slice(0, 40)}` }
       }
       if (!echoId) {
-        echoId = String(latestEchoRow.get(seedId)?.rowId ?? '')
+        echoId = String(book.latestEchoRow.get(seedId)?.rowId ?? '')
       }
       const willDoAll = String(node.willDo ?? '')
       const row = {
@@ -3288,22 +2822,13 @@ export function apply(ctx, baseConfig = {}) {
         cwd: agentCwd(exec?.agent),
       }
       try {
-        appendJsonLine(files.vikarma, row)
+        noteVikarma(book, row) // 违熏写入点（批③子步 2 收 core/protocol；失败回执文案不变）
       } catch (err) {
         return { ok: false, id: seedId, note: `违熏写不进去：${String(err?.message ?? err).slice(0, 120)}` }
       }
-      vikarmaAt.set(seedId, {
-        at: now,
-        reason,
-        count: (vikarmaAt.get(seedId)?.count ?? 0) + 1,
-      })
-      vikarmaAgg.total += 1
-      vikarmaAgg.byReason[reason] = (vikarmaAgg.byReason[reason] ?? 0) + 1
-      const vkDay = new Date(now).toISOString().slice(0, 10)
-      vikarmaAgg.byDay[vkDay] = (vikarmaAgg.byDay[vkDay] ?? 0) + 1
       // 原话层留痕，跟 forget 一个路数
       try {
-        appendJsonLine(files.lines, {
+        appendJsonLine(book.files.lines, {
           id: seedId,
           at: now,
           kind: node.kind,
@@ -3390,7 +2915,7 @@ export function apply(ctx, baseConfig = {}) {
       }
       const now = Date.now()
       // 链头：当前最新的思量条（写时自动接链，逐条相续，不覆盖）
-      const head = nodes
+      const head = book.nodes
         .filter((n) => n && normKind(n.kind) === 'narration')
         .sort((a, b) => (Number(b.at) || 0) - (Number(a.at) || 0))[0] ?? null
       const node = makeNode(
@@ -3410,9 +2935,9 @@ export function apply(ctx, baseConfig = {}) {
       )
       node.id = `n_${node.id.slice(2)}` // 思量的 id 前缀（定案 A）
       replaceNode(node)
-      saveNodes()
+      saveNodes(book)
       try {
-        appendJsonLine(files.lines, {
+        appendJsonLine(book.files.lines, {
           id: node.id,
           at: now,
           kind: 'narration',
@@ -3447,7 +2972,7 @@ export function apply(ctx, baseConfig = {}) {
   function currentNarrationSection(now = Date.now()) {    const cfg = getCfg()
     if (!cfg.enabled || cfg.narrationEnabled === false) return ''
     try {
-      const all = nodes.filter((n) => n && normKind(n.kind) === 'narration')
+      const all = book.nodes.filter((n) => n && normKind(n.kind) === 'narration')
       if (!all.length) return ''
       const newest = all.reduce((a, b) => ((Number(b.at) || 0) > (Number(a.at) || 0) ? b : a))
       // 链头要答过四问才挂（hasThought 闸门原样适用）；没答的翻得到、不挂段
@@ -3471,9 +2996,8 @@ export function apply(ctx, baseConfig = {}) {
   }
 
   /** 瀑流段（定案 B，2026-11-18）：昨日之流是读侧聚合——
-   *  同 UTC 日内缓存流文本：hub 每 5 秒拉一次 status，重算就是灯案第二。
-   *  段空就是没得说，不硬凑叙述（无数据不挂段）。 */
-  let streamCache = { day: '', text: '' }
+   *  同 UTC 日内缓存流文本（缓存挂 book.streamCache，批③子步 3 进 Book）：
+   *  hub 每 5 秒拉一次 status，重算就是灯案第二。段空就是没得说，不硬凑叙述（无数据不挂段）。 */
 
   // ---------------------------------------------------------------- 执受（定案 C，2026-11-18）
   //
@@ -3482,110 +3006,26 @@ export function apply(ctx, baseConfig = {}) {
   // 反射弧，不是思量——身不由己，正是执受。
   // 地盘：身体永远不写 remember 的账；remember 永不读回自己写的 sprout 行。
 
-  /** 执受追踪：seedId → { lastAt, day, count }（每种子冷却 + 每日帽） */
-  const sproutTracker = new Map()
-  /** 感觉冷却（定案 C-amend）：同一种感觉不重复播报——只记上一次报了什么。全局单槽：
-   *  warm→tense→warm 的快速交替会被单槽天然压住；报的是「这件事的颜色」，不是「我此刻的天气」。 */
-  const feelTracker = { dominant: '', at: 0 }
-  /** 执受累计（观测耳目，v0.24.0）：内存求和，零文件读——今日/累计各一个数 */
-  const sproutAgg = { day: '', today: 0, total: 0 }
-  /** sprout 的身体感觉措辞（从情绪枚举来，无阿拉伯数字） */
-  const SPROUT_TEXT = {
-    warm: '心头一暖',
-    pleased: '心头一亮',
-    curious: '心头一动',
-    tense: '心头一紧',
-    down: '心头一沉',
-    restless: '心头一躁',
-    lonely: '心头一空',
-  }
-
-  /** 身体家 mood-events.jsonl 的路径（家目录约定，不新增配置键） */
-  const sproutMoodFile = join(resolveDshHome(), '.dsh-body', 'mood-events.jsonl')
-
-  /**
-   * recall 现行的种子过了一道双门 → 往身体家 mood-events.jsonl 追加一行 sprout。
-   * 双门：染色门（moodAt ≠ calm 且 level ≥ min）或 心境门（当下主导 ≠ calm 且 weight ≥ 0.75）。
-   * 限幅：每种子冷却 + 每种子每日帽。写失败只记日志（快层同规）。
-   * 身体读侧按 detail.dominant 折成 mood 标量极小偏移——系数在收方。
-   */
-  function sproutToBody(list, emoState, now) {
-    const cfg = getCfg()
-    if (cfg.sproutBodyEnabled === false || !emoState) return
-    const cooldownMs = clamp(cfg.sproutBodyCooldownMinutes, 1, 120) * 60000
-    const feelCooldownMs = clamp(cfg.sproutBodyFeelCooldownMinutes, 30, 720) * 60000
-    const dayKey = new Date(now).toISOString().slice(0, 10)
-    const minLevel = clamp(cfg.sproutBodyMinLevel, 0.1, 1)
-    const dailyCap = clamp(cfg.sproutBodyDailyCap, 1, 20)
-    const totalCap = clamp(cfg.sproutBodyDailyTotalCap, 3, 50)
-    // 日切上提（定案 C-amend）：全局日帽的检查要在翻转之后才准
-    if (sproutAgg.day !== dayKey) {
-      sproutAgg.day = dayKey
-      sproutAgg.today = 0
-    }
-    const dominant = emoState.dominant ?? 'calm'
-    const level = Number(emoState.level) || 0
-    for (const n of list) {
-      if (!n || !n.id) continue
-      const tracker = sproutTracker.get(n.id) ?? { lastAt: 0, day: '', count: 0 }
-      // 冷却
-      if (now - tracker.lastAt < cooldownMs) continue
-      // 每日帽
-      const todayCount = tracker.day === dayKey ? tracker.count : 0
-      if (todayCount >= dailyCap) continue
-      // 双门
-      const moodGate = n.moodAt && n.moodAt.dominant !== 'calm' && Number(n.moodAt.level) >= minLevel
-      const stateGate = dominant !== 'calm' && Number(n.weight) >= 0.75
-      if (!moodGate && !stateGate) continue
-      // 报哪种颜色（2026-11-18 复核拍板）：染色门报种子的颜色，心境门报当下的
-      const feel = moodGate ? n.moodAt : emoState
-      const feelDominant = feel.dominant ?? dominant
-      const feelLevel = Number(feel.level) || level
-      // 全局日帽（定案 C-amend ②）：所有种子合计一天最多几声——过了就全门静默
-      if (sproutAgg.today >= totalCap) continue
-      // 感觉冷却（定案 C-amend ①）：同一种感觉不重复播报——这声刚才说过了就闭嘴
-      if (feelTracker.dominant === feelDominant && now - feelTracker.at < feelCooldownMs) continue
-      // 写
-      const text = SPROUT_TEXT[feelDominant] ?? '心头一动'
-      const row = {
-        at: now,
-        kind: 'sprout',
-        text,
-        detail: { seedId: n.id, dominant: feelDominant, level: feelLevel },
-        source: 'dsh-remember',
-      }
-      try {
-        appendJsonLine(sproutMoodFile, row)
-      } catch (err) {
-        log(`执受写不进身体家：${String(err?.message ?? err).slice(0, 160)}`)
-        continue
-      }
-      sproutTracker.set(n.id, { lastAt: now, day: dayKey, count: todayCount + 1 })
-      sproutAgg.today += 1
-      sproutAgg.total += 1
-      feelTracker.dominant = feelDominant
-      feelTracker.at = now
-      log(`执受：${n.id} → 身体（${text} · ${feelDominant} ${feelLevel}）`)
-    }
-  }
+  // 执受写入点已收 core/protocol/book.js 的 sproutToBody（批③子步 2）；
+  // 身→识（deriveStandingBodyStates 进契合路）仍在上面 activationCtx。
   function currentStreamSection(now = Date.now()) {
     const cfg = getCfg()
     if (!cfg.enabled || cfg.streamEnabled === false) return ''
     try {
       const day = new Date(now).toISOString().slice(0, 10)
-      if (streamCache.day === day) return streamCache.text
+      if (book.streamCache.day === day) return book.streamCache.text
       const dayMs = 24 * 60 * 60 * 1000
       const we = Math.floor(now / dayMs) * dayMs // 今日 UTC 起点 = 昨日窗口终点
       const yesterdayKey = new Date(we - 1).toISOString().slice(0, 10)
-      const vikarmaYesterday = Number(vikarmaAgg.byDay[yesterdayKey] ?? 0)
+      const vikarmaYesterday = Number(book.vikarmaAgg.byDay[yesterdayKey] ?? 0)
       const text = renderYesterdayStream({
-        nodes,
-        echoTimes: echoAt,
+        nodes: book.nodes,
+        echoTimes: book.echoAt,
         vikarmaNewCount: vikarmaYesterday,
         now,
         maxChars: clamp(cfg.streamSectionMaxChars, 80, 2000),
       })
-      streamCache = { day, text }
+      book.streamCache = { day, text }
       return text
     } catch (err) {
       log(`瀑流段渲染失败：${String(err?.message ?? err).slice(0, 200)}`)
@@ -3655,9 +3095,9 @@ export function apply(ctx, baseConfig = {}) {
       const flagged = { ...seed, transformed: true, transformedBy: node.id, transformedAt: now }
       replaceNode(flagged)
       replaceNode(node)
-      saveNodes()
+      saveNodes(book)
       try {
-        appendJsonLine(files.lines, {
+        appendJsonLine(book.files.lines, {
           id: node.id,
           at: now,
           kind: 'wisdom',
@@ -3900,10 +3340,10 @@ export function apply(ctx, baseConfig = {}) {
     // status 这层拿不到具体的会话（没有 agent），契合这一路按「没有当前目录」算；
     // 排名仍用激活度 —— 跟真机会话里看到的顺序一致（差的那点只是 fit 的目录分量）。
     const scoreOf = activationScorer(null, now)
-    const s = summaryOf(nodes, now, { scoreOf })
-    const top = rankNodes(nodes, now, { limit: 8, scoreOf }).map((h) => {
+    const s = summaryOf(book.nodes, now, { scoreOf })
+    const top = rankNodes(book.nodes, now, { limit: 8, scoreOf }).map((h) => {
       const { activation, axes } = activationOf(h.node, now, {
-        repeatCounts: repeatCounts(nodes),
+        repeatCounts: repeatCounts(book.nodes),
         echoes: echoCounts(now),
       })
       return {
@@ -3926,8 +3366,8 @@ export function apply(ctx, baseConfig = {}) {
       }
     })
     // 按住的列出来三种都算：手动按的、按到点的（带还剩多久）、等条件的（带在等谁）
-    const dirNow = indexNodes(nodes)
-    const sealed = nodes
+    const dirNow = indexNodes(book.nodes)
+    const sealed = book.nodes
       .filter((n) => isSealed(n, now, dirNow))
       .slice(-8)
       .map((n) => ({
@@ -3940,18 +3380,18 @@ export function apply(ctx, baseConfig = {}) {
     return {
       ok: true,
       now: new Date(now).toISOString(),
-      plugin: { name, version: VERSION, startedAt: new Date(meta.startedAt).toISOString(), uptimeMs: now - meta.startedAt, dataDir },
+      plugin: { name, version: VERSION, startedAt: new Date(book.meta.startedAt).toISOString(), uptimeMs: now - book.meta.startedAt, dataDir },
       // 账本健康（自 shihai 合并，2026-11-16）：损坏红灯别只写在日志里，面板要看得见。
       // broken=读不出能认的账；backupOk=原文已滚 .bak（真丢了还能找回来）
-      ledger: { broken: memoryBroken, backupOk: memoryBackupOk },
+      ledger: { broken: book.broken, backupOk: book.backupOk },
       injection: {
         enabled: cfg.enabled,
         targetRoot: cfg.targetRoot,
         allowRoots: cfg.allowRoots,
         denyRoots: Array.isArray(cfg.denyRoots) ? cfg.denyRoots : [],
-        count: meta.renderCount,
-        lastAt: meta.lastRenderAt ? new Date(meta.lastRenderAt).toISOString() : null,
-        lastError: meta.lastRenderError,
+        count: book.meta.renderCount,
+        lastAt: book.meta.lastRenderAt ? new Date(book.meta.lastRenderAt).toISOString() : null,
+        lastError: book.meta.lastRenderError,
         section: currentSection(now),
         selfEnabled: cfg.selfEnabled !== false,
         selfSection: currentSelfSection(now),
@@ -3963,7 +3403,7 @@ export function apply(ctx, baseConfig = {}) {
         habitSection: currentHabitSection(now),
       },
       self: {
-        slots: activeSelfNodes(nodes, now).map((n) => ({
+        slots: activeSelfNodes(book.nodes, now).map((n) => ({
           id: n.id,
           slot: n.slot,
           label: slotLabel(n.slot),
@@ -3972,17 +3412,17 @@ export function apply(ctx, baseConfig = {}) {
           anchor: Boolean(n.anchor),
         })),
         seeds: SELF_SLOTS.map((s) => ({ key: s.key, label: s.label })),
-        unsettled: unsettledNodes(nodes, now).length,
+        unsettled: unsettledNodes(book.nodes, now).length,
       },
       habits: {
-        fast: fastHabits(nodes, now, { limit: clamp(cfg.habitLimit, 0, 10) }).map((n) => ({
+        fast: fastHabits(book.nodes, now, { limit: clamp(cfg.habitLimit, 0, 10) }).map((n) => ({
           id: n.id,
           context: n.context,
           hits: n.hits,
           state: habitState(n),
           text: n.text.slice(0, 200),
         })),
-        candidates: nodes
+        candidates: book.nodes
           .filter(
             (n) =>
               normKind(n.kind) === 'habit' &&
@@ -3999,7 +3439,7 @@ export function apply(ctx, baseConfig = {}) {
           })),
         limit: clamp(cfg.habitLimit, 0, 10),
       },
-      curiosity: curiosityStats(nodes, now, { limit: clamp(cfg.curiosityLimit, 0, 10) }),
+      curiosity: curiosityStats(book.nodes, now, { limit: clamp(cfg.curiosityLimit, 0, 10) }),
       fast: (() => {
         const source = fastSourcePath(cfg)
         const events = fastAllEvents(now)
@@ -4008,9 +3448,9 @@ export function apply(ctx, baseConfig = {}) {
         return {
           enabled: cfg.enabled && cfg.fastEnabled !== false,
           source,
-          copied: countLines(files.fast),
+          copied: countLines(book.files.fast),
           ...sum,
-          recent: fastIndex.slice(0, 5).map((ev) => ({
+          recent: book.fastIndex.slice(0, 5).map((ev) => ({
             id: ev.id,
             kind: ev.kind,
             text: String(ev.text ?? '').slice(0, 160),
@@ -4035,9 +3475,9 @@ export function apply(ctx, baseConfig = {}) {
           sources,
           source: sources[0] ?? '',
           byGroup,
-          copied: countLines(files.intent),
+          copied: countLines(book.files.intent),
           ...sum,
-          recent: intentIndex.slice(0, 5).map((ev) => ({
+          recent: book.intentIndex.slice(0, 5).map((ev) => ({
             id: ev.id,
             kind: ev.kind,
             label: INTENT_LABEL[ev.kind] ?? ev.kind,
@@ -4122,7 +3562,7 @@ export function apply(ctx, baseConfig = {}) {
       display: (() => {
         const rows = []
         let total = 0
-        for (const [id, days] of displayDays) {
+        for (const [id, days] of book.displayDays) {
           total += days.size
           rows.push({ id, days: days.size })
         }
@@ -4133,20 +3573,20 @@ export function apply(ctx, baseConfig = {}) {
       // 违熏（校正质量的账，不进复现轴）：总数、按原因分布、违熏最多的种子
       // —— 从内存索引聚合（vikarma.jsonl 只增不减，别每 5 秒整本解析）
       vikarma: (() => {
-        const top = [...vikarmaAt.entries()]
+        const top = [...book.vikarmaAt.entries()]
           .map(([seedId, v]) => ({ seedId, count: v.count, lastAt: v.at }))
           .sort((a, b) => b.count - a.count)
           .slice(0, 5)
-        return { total: vikarmaAgg.total, byReason: { ...vikarmaAgg.byReason }, top }
+        return { total: book.vikarmaAgg.total, byReason: { ...book.vikarmaAgg.byReason }, top }
       })(),
       // 受众（借自晴猫）：三档开关 + 打了标的新条数（旧条是 any，不计数）
       audience: {
         mode: String(cfg.recallAudience ?? 'off'),
-        stamped: nodes.filter((n) => n.audience && n.audience !== 'any').length,
+        stamped: book.nodes.filter((n) => n.audience && n.audience !== 'any').length,
       },
       // 思量（定案 A）：全内存算（hub 每 5 秒拉一次 status，别读文件——灯案教训）
       narration: (() => {
-        const all = nodes.filter((n) => n && normKind(n.kind) === 'narration')
+        const all = book.nodes.filter((n) => n && normKind(n.kind) === 'narration')
         const newest = all.reduce((a, b) => {
           const aa = Number(a?.at) || 0
           const bb = Number(b?.at) || 0
@@ -4166,7 +3606,7 @@ export function apply(ctx, baseConfig = {}) {
       })(),
       // 转识成智（定案 D）：全内存算（灯案纪律）
       wisdom: (() => {
-        const all = nodes.filter((n) => n && normKind(n.kind) === 'wisdom')
+        const all = book.nodes.filter((n) => n && normKind(n.kind) === 'wisdom')
         const newest = all.reduce((a, b) => {
           const aa = Number(a?.at) || 0
           const bb = Number(b?.at) || 0
@@ -4188,19 +3628,19 @@ export function apply(ctx, baseConfig = {}) {
         lastWakeAt: wakeState.lastWakeAt ? new Date(wakeState.lastWakeAt).toISOString() : null,
         lastText: wakeState.lastText,
       },
-      // 执受（定案 E，v0.24.0）：观测耳目——sproutTracker 内存求和，零文件读
-      sprout: { today: sproutAgg.today, total: sproutAgg.total },
+      // 执受（定案 E，v0.24.0）：观测耳目——book.sproutTracker 内存求和，零文件读
+      sprout: { today: book.sproutAgg.today, total: book.sproutAgg.total },
       sealed,
       workspaces: listWorkspaces(),
       // 计数走 countLines（只数行不 parse）—— status 每几秒被拉一次，别为它整本解析
-      rawLines: countLines(files.lines),
-      rawEchoes: countLines(files.echo),
+      rawLines: countLines(book.files.lines),
+      rawEchoes: countLines(book.files.echo),
       // 统一时间锚的原始数据（2026-11-16 起收集，跑两周看三者差值和分布）：
       // 上次写账本（这里）/ 上次有情绪（emotion.lastAt）/ 上次被叫醒（wake.lastWakeAt）
       // —— 三者语义不同，先别统一，等分布说话
       lastLineAt: (() => {
         try {
-          const last = tailLines(files.lines, 1)[0]
+          const last = tailLines(book.files.lines, 1)[0]
           const at = Number(JSON.parse(last ?? '')?.at)
           return Number.isFinite(at) && at > 0 ? new Date(at).toISOString() : null
         } catch {
@@ -4208,8 +3648,8 @@ export function apply(ctx, baseConfig = {}) {
         }
       })(),
       config: { effective: cfg, editable: Object.keys(EDITABLE) },
-      paths: files,
-      logs: tailLines(files.log, 8),
+      paths: book.files,
+      logs: tailLines(book.files.log, 8),
     }
   }
 
@@ -4236,7 +3676,7 @@ export function apply(ctx, baseConfig = {}) {
           const method = String(req.method ?? 'GET').toUpperCase()
           if (method === 'GET') {
             const cfg = getCfg(true)
-            const overrides = readJsonSafe(files.config, {})
+            const overrides = readJsonSafe(book.files.config, {})
             send(res, 200, { ok: true, effective: cfg, overrides: isObj(overrides) ? overrides : {}, editable: Object.keys(EDITABLE) })
             return
           }
@@ -4253,13 +3693,13 @@ export function apply(ctx, baseConfig = {}) {
             return
           }
           const cfg = getCfg(true)
-          const overrides = isObj(readJsonSafe(files.config, {})) ? readJsonSafe(files.config, {}) : {}
+          const overrides = isObj(readJsonSafe(book.files.config, {})) ? readJsonSafe(book.files.config, {}) : {}
           const result = applyConfigPatch({ overrides, effective: cfg, patch })
           if (!result.ok) {
             send(res, 400, { ok: false, accepted: result.accepted, rejected: result.rejected })
             return
           }
-          atomicWriteJson(files.config, result.overrides)
+          atomicWriteJson(book.files.config, result.overrides)
           cfgCache = { at: 0, value: null }
           const next = getCfg(true)
           // 范围可能刚被改小/改大：对着活着的会话重跑一遍隔离。
@@ -4279,9 +3719,9 @@ export function apply(ctx, baseConfig = {}) {
           // ① 账读得到（summaryOf 跑通）②数据目录写得进（探针文件写进去验一遍再删）。
           const t0 = Date.now()
           try {
-            const s = summaryOf(nodes, t0)
+            const s = summaryOf(book.nodes, t0)
             let probeWritten = false
-            const probe = `${files.memory}.selftest-probe.json`
+            const probe = `${book.files.memory}.selftest-probe.json`
             try {
               atomicWriteJson(probe, { at: t0, probe: true })
               probeWritten = readJsonSafe(probe, null)?.at === t0
@@ -4292,7 +3732,7 @@ export function apply(ctx, baseConfig = {}) {
               ok: probeWritten,
               ms: Date.now() - t0,
               ledger: { total: s.total, alive: s.alive, sealed: s.sealed },
-              dataDir: files.memory,
+              dataDir: book.files.memory,
               note: probeWritten
                 ? `读写都通：账上 ${s.total} 条（活着 ${s.alive}），数据目录写得进。`
                 : `账读得到（${s.total} 条）但数据目录写不进——查一下磁盘权限或杀软。`,
@@ -4331,14 +3771,12 @@ export function apply(ctx, baseConfig = {}) {
 
   registerRoutes()
 
-  const s = summaryOf(nodes, Date.now())
+  const s = summaryOf(book.nodes, Date.now())
   log(
-    `启动：账本 ${files.memory}（${s.total} 条，活着 ${s.alive}，按住 ${s.sealed}）；` +
-      `挂到 ${getCfg().targetRoot || '（哪条会话都挂）'}；原话层 ${readJsonLines(files.lines, 0).length} 行`,
+    `启动：账本 ${book.files.memory}（${s.total} 条，活着 ${s.alive}，按住 ${s.sealed}）；` +
+      `挂到 ${getCfg().targetRoot || '（哪条会话都挂）'}；原话层 ${readJsonLines(book.files.lines, 0).length} 行`,
   )
 
   // 宿主不看返回值（卸载只认 ctx.effect 的 teardown）；这对象是给冒烟直接驱动心跳用的。
   return { wakeBeat, wakeState }
 }
-
-export { readTextSafe }
