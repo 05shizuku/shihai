@@ -3773,7 +3773,7 @@ export function apply(ctx, baseConfig = {}) {
 
   const s = summaryOf(book.nodes, Date.now())
   log(
-    `启动：账本 ${book.files.memory}（${s.total} 条，活着 ${s.alive}，按住 ${s.sealed}）；` +
+    `启动 v${VERSION}：账本 ${book.files.memory}（${s.total} 条，活着 ${s.alive}，按住 ${s.sealed}）；` +
       `挂到 ${getCfg().targetRoot || '（哪条会话都挂）'}；原话层 ${readJsonLines(book.files.lines, 0).length} 行`,
   )
 
