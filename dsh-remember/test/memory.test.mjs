@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { performance } from 'node:perf_hooks'
-import { deriveStandingBodyStates } from '../lib/fast.js'
+import { deriveStandingBodyStates } from '../../core/fast.js'
 
 import {
   SELF_MIN_WEIGHT,
@@ -55,7 +55,7 @@ import {
   titleOf,
   touchNode,
   unsettledNodes,
-} from '../lib/memory.js'
+} from '../../core/memory.js'
 
 const DAY = 24 * 60 * 60 * 1000
 const NOW = Date.parse('2026-11-01T02:00:00.000Z')

@@ -21,7 +21,7 @@ import {
   pushFastIndex,
   renderFastLine,
   searchFastEvents,
-} from '../lib/fast.js'
+} from '../../core/fast.js'
 import { readJsonLinesFrom } from '../lib/store.js'
 
 const NOW = Date.parse('2026-11-03T02:00:00.000Z')

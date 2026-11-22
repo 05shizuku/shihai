@@ -15,9 +15,9 @@ import {
   repeatCounts,
   themeKey,
   weightAxis,
-} from '../lib/activation.js'
-import { rankNodes, renderSection, searchNodes, summaryOf } from '../lib/memory.js'
-import { fitAxis } from '../lib/activation.js'
+} from '../../core/activation.js'
+import { rankNodes, renderSection, searchNodes, summaryOf } from '../../core/memory.js'
+import { fitAxis } from '../../core/activation.js'
 
 const MIN = 60 * 1000
 const HOUR = 60 * MIN

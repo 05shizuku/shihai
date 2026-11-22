@@ -10,7 +10,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 import { DEFAULTS, apply } from '../index.js'
-import { renderYesterdayStream } from '../lib/memory.js'
+import { renderYesterdayStream } from '../../core/memory.js'
 
 let pass = 0
 let fail = 0

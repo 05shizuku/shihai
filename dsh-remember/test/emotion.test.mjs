@@ -16,7 +16,7 @@ import {
   recognizeEmotion,
   renderEmotionLine,
   renderEmotionNote,
-} from '../lib/emotion.js'
+} from '../../core/emotion.js'
 
 const NOW = 1_700_000_000_000
 const MIN = 60 * 1000

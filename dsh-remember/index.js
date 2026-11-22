@@ -82,7 +82,7 @@ import {
   touchNode,
   UNSETTLED_SLOTS,
   unsettledNodes,
-} from './lib/memory.js'
+} from '../core/memory.js'
 import { EDITABLE, applyConfigPatch, describePatch } from './lib/config.js'
 import {
   ACTIVATION_AXES,
@@ -93,7 +93,7 @@ import {
   REPEAT_FULL,
   activationOf,
   repeatCounts,
-} from './lib/activation.js'
+} from '../core/activation.js'
 import {
   fastEventId,
   fastRelTime,
@@ -103,7 +103,7 @@ import {
   renderFastLine,
   searchFastEvents,
   deriveStandingBodyStates,
-} from './lib/fast.js'
+} from '../core/fast.js'
 import {
   INTENT_LABEL,
   intentEventFromMessage,
@@ -114,7 +114,7 @@ import {
   renderIntentLine,
   searchIntentEvents,
   summarizeIntents,
-} from './lib/intent.js'
+} from '../core/intent.js'
 import {
   EMOTION_KINDS,
   EMOTION_LABEL,
@@ -129,7 +129,7 @@ import {
   recognizeEmotion,
   renderEmotionLine,
   renderEmotionNote,
-} from './lib/emotion.js'
+} from '../core/emotion.js'
 import {
   agentCwd,
   agentSessionId,

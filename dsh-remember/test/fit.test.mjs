@@ -14,7 +14,7 @@ import {
   pathFit,
   scopeFit,
   topicFit,
-} from '../lib/fit.js'
+} from '../../core/fit.js'
 
 test('extractPaths：挑出像路径的词，丢掉普通词和尾标点', () => {
   const text = '改了 dsh-body/lib/fast.js 和 E:\\shihai-fixtures\\Plugin\\README.md，没有路径，别的 E:\\a\\b.js。'

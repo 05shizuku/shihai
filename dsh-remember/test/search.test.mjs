@@ -2,9 +2,9 @@
 // 口语词对扩展、trigram 覆盖率、零命中排除、确定性。
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { makeNode } from '../lib/memory.js'
-import { searchNodes } from '../lib/memory.js'
-import { splitTerms, trigrams, expandQuery, rankByQuery, QUERY_PAIRS } from '../lib/search.js'
+import { makeNode } from '../../core/memory.js'
+import { searchNodes } from '../../core/memory.js'
+import { splitTerms, trigrams, expandQuery, rankByQuery, QUERY_PAIRS } from '../../core/search.js'
 
 const NOW = Date.parse('2026-11-05T03:00:00.000Z')
 const node = (over) => makeNode({ text: '一句话', kind: 'fact', weight: 0.6, changes: 'x', ...over }, NOW)

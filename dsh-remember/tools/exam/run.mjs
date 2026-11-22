@@ -15,11 +15,11 @@ import { homedir } from 'node:os'
 import { readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { rankByQuery, MIN_RELEVANCE } from '../../lib/search.js'
+import { rankByQuery, MIN_RELEVANCE } from '../../../core/search.js'
 
 /** 负题假命中线（2026-11-22 标定，见头注）：修后负题 top 全落 0.30–0.49，修前全 ≥0.6。 */
 const NEG_FLOOR = 0.5
-import { isSealed } from '../../lib/memory.js'
+import { isSealed } from '../../../core/memory.js'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const dshHome = process.env.SHIHAI_HOME || process.env.DSH_HOME || join(process.env.USERPROFILE || homedir(), '.dsh')

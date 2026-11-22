@@ -14,7 +14,7 @@
 import { readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 
-import * as memory from '../lib/memory.js'
+import * as memory from '../../core/memory.js'
 import { resolveDshHome } from '../lib/store.js'
 
 const {

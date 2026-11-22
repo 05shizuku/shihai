@@ -4,8 +4,8 @@
 import { homedir } from 'node:os'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { rankByQuery } from '../lib/search.js'
-import { isSealed } from '../lib/memory.js'
+import { rankByQuery } from '../../core/search.js'
+import { isSealed } from '../../core/memory.js'
 
 const dshHome = process.env.DSH_HOME || join(process.env.USERPROFILE || homedir(), '.dsh')
 const file = process.argv.includes('--file')

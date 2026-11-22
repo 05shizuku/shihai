@@ -17,7 +17,7 @@ import {
   renderIntentLine,
   searchIntentEvents,
   summarizeIntents,
-} from '../lib/intent.js'
+} from '../../core/intent.js'
 
 test('意图类型是固定枚举，每一类都有中文标签', () => {
   assert.equal(INTENT_KINDS.length, 11)
