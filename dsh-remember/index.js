@@ -2135,6 +2135,11 @@ export function apply(ctx, baseConfig = {}) {
       if (kind === 'skill' && !context) {
         return { ok: false, id: '', note: '技能得带名字（context）：这门手艺叫什么。名字就是它的身份，不然两次成功对不上是同一件事。' }
       }
+      // 思量的侧门关上（2026-11-22 定案 F5）：kind:narration 走 remember 接不上链——
+      // 链（prev）只在 narrate 里自动接。已有侧门思量（历史上从 remember 进来的）保留不撤。
+      if (kind === 'narration') {
+        return { ok: false, id: '', note: '思量走 narrate，链才接得上；已有侧门思量保留。' }
+      }
       // 好奇：同一个主题再写一次 = 我又惦记了一遍 → 次数 +1，不另建节点。
       if (kind === 'curiosity') {
         const res = recordCuriosity(
@@ -2515,6 +2520,11 @@ export function apply(ctx, baseConfig = {}) {
         notes.push(`第 1 次惦记「${node.context}」；同一个主题再写一次就是又惦记了一遍（次数 +1）`)
         if (node.answered) notes.push('这个已经解答了：不挂活跃表（还在账本里，翻得到；同主题再写就回来）')
         else if (!hasThought(node)) notes.push('还没答四问：先不进开头（答一问我才挂它）')
+      }
+      // 智的分界（2026-11-22 定案 F5）：新明白 ≠ 转化——转化走 transform（有原种子、盖旗），
+      // 无根的新明白才走 remember。后门保留，但回执要把分界说清。
+      if (node.kind === 'wisdom') {
+        notes.push('分界：新明白 ≠ 转化——要转化有原种子的，走 transform（原种子会盖「已转化」旗）；无根的新明白走这里就对了')
       }
       return {
         ok: true,
@@ -3326,8 +3336,10 @@ export function apply(ctx, baseConfig = {}) {
       refs: {
         type: 'array',
         items: { type: 'string' },
-        required: true,
-        description: '引用的种子 id（r_ 开头，至少一条）——这段思量从哪几条账上长出来的。',
+        required: false,
+        description:
+          '引用的种子 id（r_ 开头）——这段思量从哪几条账上长出来的。' +
+          '可不填（无根之思：思量不必都从种子长出来），但长出来的要留 refs；给了就只认账上真存在的 r_。',
       },
       changes: { type: 'string', required: false, description: '第一问：这件事改变了我什么。' },
       conflicts: { type: 'string', required: false, description: '第二问：跟旧的对上了，还是撞上了。' },
@@ -3351,8 +3363,11 @@ export function apply(ctx, baseConfig = {}) {
       if (!scopeOk(exec?.agent)) return { ok: false, id: '', note: '这条会话不在允许记账的目录里。' }
       const narrative = cleanText(args?.narrative, clamp(cfg.maxTextLength, 40, 8000))
       if (!narrative) return { ok: false, id: '', note: '思量是空的。' }
-      // refs 只收账上真存在的种子（r_）——事件（f_/i_）与 ghost 剔除并在回执说明（A5-1）
+      // refs 只收账上真存在的种子（r_）——事件（f_/i_）与 ghost 剔除并在回执说明（A5-1）。
+      // 定案 F5：refs 空/缺 → 照收（无根之思：思量不必都从种子长出来，但长出来的要留 refs）；
+      // 给了 refs 但全被剔空 → 照旧拒（给了引用说明想留根，根不对要退回去）。
       const rawRefs = Array.isArray(args?.refs) ? args.refs : String(args?.refs ?? '').split(/[,，\s]+/)
+      const hadRefs = rawRefs.some((r) => cleanText(r, 40))
       const kept = []
       const dropped = []
       for (const r of rawRefs) {
@@ -3364,13 +3379,13 @@ export function apply(ctx, baseConfig = {}) {
           dropped.push(id)
         }
       }
-      if (!kept.length) {
+      if (!kept.length && hadRefs) {
         return {
           ok: false,
           id: '',
           note: dropped.length
             ? `refs 里没有账上的种子（${dropped.slice(0, 3).join('、')}${dropped.length > 3 ? '…' : ''} 是事件或不存在）——事件不是种子，要引用先 remember 成种子。`
-            : 'refs 是空的：思量要从账上的种子长出来。',
+            : 'refs 里没有有效引用。',
         }
       }
       const now = Date.now()
@@ -3419,9 +3434,11 @@ export function apply(ctx, baseConfig = {}) {
       const droppedNote = dropped.length
         ? `（剔除了 ${dropped.length} 条事件/未知引用：${dropped.slice(0, 3).join('、')}${dropped.length > 3 ? '…' : ''}）`
         : ''
+      // 无根之思（定案 F5）：refs 没给的思量在回执上标出来——链照接，根留白
+      const rootNote = kept.length ? `引 ${kept.length} 条种子` : '无根之思（思量不必都从种子长出来，但长出来的要留 refs）'
       const prevNote = node.prev ? ` · 上一条 ${node.prev}（${relTime(head.at, now)}）` : ' · 链的第一环'
-      log(`思量 ${node.id} · 引 ${kept.length} 条种子${node.prev ? ` · 接 ${node.prev}` : ''}`)
-      return { ok: true, id: node.id, note: `引 ${kept.length} 条种子${prevNote}${droppedNote}` }
+      log(`思量 ${node.id} · ${rootNote}${node.prev ? ` · 接 ${node.prev}` : ''}`)
+      return { ok: true, id: node.id, note: `${rootNote}${prevNote}${droppedNote}` }
     },
   })
 

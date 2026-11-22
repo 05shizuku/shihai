@@ -950,6 +950,19 @@ try {
   ok(!sec('dsh-remember:narration').text().includes('思量三'), '没答四问的思量不挂段')
   const narBack = await h.tools.get('recall').execute({ query: '思量三' }, exec)
   ok(narBack.items.some((x) => x.includes('思量三')), '没答四问的思量 recall 翻得到')
+  // F5（2026-11-22）：无根之思——refs 缺也收，回执标注；链照接
+  const narRootless = await h.tools.get('narrate').execute({ narrative: '无根之思：今天的天气心里有点静，不为什么。' }, exec)
+  ok(narRootless.ok && String(narRootless.note).includes('无根之思'), `无根之思收下（${String(narRootless.note).slice(0, 50)}）`)
+  const rootlessList = await h.tools.get('memory_list').execute({}, exec)
+  ok(rootlessList.items.some((x) => x.includes('无根之思')), '无根之思进思量链（链照接）')
+  // F5：remember 的 narration 后门关上（指路 narrate）；wisdom 后门保留
+  const sideNarr = await h.tools.get('remember').execute({ text: '侧门思量试试', kind: 'narration', changes: 'x' }, exec)
+  ok(!sideNarr.ok && String(sideNarr.note).includes('narrate'), 'remember 的 narration 后门关上（回执指路 narrate）')
+  const wisBack = await h.tools.get('remember').execute(
+    { text: '无根的新明白：结构比意志可靠', kind: 'wisdom', changes: '明白了', weight: 0.8 },
+    exec,
+  )
+  ok(wisBack.ok && String(wisBack.note).includes('transform'), 'wisdom 后门保留且回执写明分界（transform/remember）')
   // 不进【我记得的】竞争池：思量条不出现在那个段里
   ok(!sec('dsh-remember').text().includes('思量二'), '思量条不进【我记得的】竞争池')
   // memory_list 的我执演化史
@@ -959,7 +972,7 @@ try {
   const resNar = fakeRes()
   await statusRoute.handler(fakeReq('GET'), resNar)
   const stNar = JSON.parse(resNar.body)
-  ok(stNar.narration?.count >= 3 && stNar.narration?.latest?.id === nar3.id, `status.narration 带计数与链头（${JSON.stringify(stNar.narration?.latest ?? {})}）`)
+  ok(stNar.narration?.count >= 4 && stNar.narration?.latest?.id === narRootless.id, `status.narration 带计数与链头（链头=无根之思，refsCount=0；${JSON.stringify(stNar.narration?.latest ?? {})}）`)
 
   // 瀑流（定案 B，2026-11-18）：昨日之流，读侧聚合——同 UTC 日缓存，零文件读
   // 今天的账不进昨日窗：主流烟里账全是今天写的，段应为空（不硬凑叙述）
