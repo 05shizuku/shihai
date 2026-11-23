@@ -21,3 +21,6 @@ _smoke_stack.txt
 .DS_Store
 Thumbs.db
 desktop.ini
+
+# 考卷冻结集是配置不是数据——豁免 *.jsonl 全局忽略（2026-11-22 它被这条规则静默吞过一次）
+!dsh-remember/tools/exam/*.jsonl

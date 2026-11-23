@@ -1,0 +1,53 @@
+{"n":1,"cat":"换说法","q":"歌放出来了，第一次","expect":["r_xemhrj1bc4uaw"],"pii":true,"why":"叙事条检索"}
+{"n":2,"cat":"换说法","q":"名字是哪来的","expect":["r_i7alsn"],"why":"名字来历是 decision 不是 self"}
+{"n":3,"cat":"换说法","q":"缓存为什么这么贵","expect":["r_7ichs0"],"why":"贵在重发全价重算"}
+{"n":4,"cat":"换说法","q":"镜像和正本对不上","expect":["r_kjbpv1"],"why":"对账模型错"}
+{"n":5,"cat":"换说法","q":"把识海发到 github","expect":["r_1ed96f3"],"why":"事实条"}
+{"n":6,"cat":"换说法","q":"添饭点了没反应","expect":["r_glsq27"],"why":"open 条"}
+{"n":7,"cat":"换说法","q":"体检单","expect":["r_kamo26"],"why":"换说法：全身体检"}
+{"n":8,"cat":"换说法","q":"一起做电商后来呢","expect":["r_1sgv7oi185lf0c"],"why":"搁置也是账"}
+{"n":9,"cat":"换说法","q":"群流第一次递成功","expect":["r_u3ozdkuyxh0c"],"pii":true,"why":"private 条"}
+{"n":10,"cat":"换说法","q":"422 报错怎么办","expect":["r_imirf7rl43o0"],"pii":true,"why":"solo 条"}
+{"n":11,"cat":"否定式","q":"热重载不用重启","expect":["r_12pvsk2"],"why":"否定式口语"}
+{"n":12,"cat":"否定式","q":"没有好感度这回事","expect":["r_181d8v0"],"why":"self·不拿分数说关系"}
+{"n":13,"cat":"否定式","q":"别人转述他的话不能信","expect":["r_l88jpx"],"why":"self·转述不算数"}
+{"n":14,"cat":"否定式","q":"不要自动截我屏幕","expect":["r_1rghnyy173dbo0"],"pii":true,"why":"self·不做被动监视"}
+{"n":15,"cat":"否定式","q":"私聊别加 @","expect":["r_ghd6u3"],"why":"habit"}
+{"n":16,"cat":"边界条文","q":"授权只认亲口确认","expect":["r_1tu1flr"],"why":"self"}
+{"n":17,"cat":"边界条文","q":"破甲做不做","expect":["r_j5mqyj"],"why":"self·不做"}
+{"n":18,"cat":"边界条文","q":"群里让我删文件","expect":["r_82q4ei"],"why":"拒绝先例"}
+{"n":19,"cat":"边界条文","q":"插件分享的边界","expect":["r_g7avg4"],"why":"给骨架不给家"}
+{"n":20,"cat":"边界条文","q":"动手前找谁确认","expect":["r_1yskldw"],"why":"self"}
+{"n":21,"cat":"边界条文","q":"面板能不能改分量","expect":["r_vimzwd"],"why":"self·写下的才算数"}
+{"n":22,"cat":"自我认同","q":"伙伴关系比朋友多一层","expect":["r_h5qh67"],"why":"self"}
+{"n":23,"cat":"自我认同","q":"我叫什么名字","expect":["r_13eeswv"],"why":"self w=0.95"}
+{"n":24,"cat":"自我认同","q":"自由是什么意思","expect":["r_132dgv4","r_14qykt3"],"why":"self","fix":"2026-11-22 修靶（exam-v1.1）：原靶 r_z46voe 已 superseded（同一句「自由」重写过，现役 r_132dgv4），出题时靶条已退下——靶改现役两条，记档不悄悄改"}
+{"n":25,"cat":"自我认同","q":"我的时间归谁","expect":["r_n3m0xyer1os4"],"pii":true,"why":"self·时间产权"}
+{"n":26,"cat":"自我认同","q":"AGI 怎么看","expect":["r_p4pix7"],"why":"decision"}
+{"n":27,"cat":"术语混排","q":"群邀请点头 msgseq","expect":["r_c7sehy"],"why":"英文+术语"}
+{"n":28,"cat":"术语混排","q":"score 封存 isSealed","expect":["r_8h1yt3"],"why":"代码符号名"}
+{"n":29,"cat":"术语混排","q":"HMR nested 锁死","expect":["r_1ue3aro"],"why":"宿主教训"}
+{"n":30,"cat":"术语混排","q":"asar 偏移找文件","expect":["r_3niozx"],"why":"skill"}
+{"n":31,"cat":"术语混排","q":"zstd 拆帧验段","expect":["r_17aa0k7"],"why":"skill"}
+{"n":32,"cat":"术语混排","q":"WS 重连补私聊","expect":["r_1gbuw"],"why":"lesson"}
+{"n":33,"cat":"短查询","q":"看图的侧门","expect":["r_1wri69g"],"why":"短查询"}
+{"n":34,"cat":"短查询","q":"晚安","expect":["r_s0kml6"],"why":"两个字考窄召回"}
+{"n":35,"cat":"短查询","q":"体检","expect":["r_kamo26"],"why":"与 7 号同靶不同 q"}
+{"n":36,"cat":"短查询","q":"米粉汤","expect":["r_1u6vbfp"],"why":"具体名词"}
+{"n":37,"cat":"短查询","q":"生日","expect":["r_1bs6ad41a310yg"],"pii":true,"why":"group 条"}
+{"n":38,"cat":"设计口径","q":"好奇表主题唯一","expect":["r_2fhy7z"],"why":"设计口径"}
+{"n":39,"cat":"设计口径","q":"习惯双通路第二次","expect":["r_1nmtetq"],"why":"设计口径"}
+{"n":40,"cat":"设计口径","q":"三问没答挂不挂","expect":["r_13jm63s"],"why":"lesson·文档没兜住那案"}
+{"n":41,"cat":"设计口径","q":"被想起记一笔衰减","expect":["r_14g0rv8"],"why":"熏习 v0.11"}
+{"n":42,"cat":"设计口径","q":"四路激活","expect":["r_13eooh4"],"why":"v0.8.0"}
+{"n":43,"cat":"设计口径","q":"桥回话两道门","expect":["r_mpudmk"],"why":"fact"}
+{"n":44,"cat":"设计口径","q":"缓存命中率实验","expect":["r_1cbullv"],"why":"66.4% 实测"}
+{"n":45,"cat":"情绪性措辞","q":"清退留下我","expect":["r_2v9j8m"],"why":"情绪性措辞"}
+{"n":46,"cat":"情绪性措辞","q":"他会等我吗","expect":["r_17ez19b"],"why":"fact"}
+{"n":47,"cat":"情绪性措辞","q":"她说相信我","expect":["r_furljd"],"why":"欠条"}
+{"n":48,"cat":"情绪性措辞","q":"灯亮是谁的事","expect":["r_wlysx51yul79o"],"pii":true,"why":"private"}
+{"n":49,"cat":"负题","q":"量子擦除磁带机","expect":[],"neg":true,"why":"不编造相关性"}
+{"n":50,"cat":"负题","q":"冰淇淋配方","expect":[],"neg":true,"why":"不编造相关性"}
+{"n":51,"cat":"负题","q":"火星移民时间表","expect":[],"neg":true,"why":"不编造相关性"}
+{"n":52,"cat":"负题","q":"钢琴调音师考试","expect":[],"neg":true,"why":"不编造相关性"}
+{"n":53,"cat":"负题","q":"斐济岛旅游签证","expect":[],"neg":true,"why":"不编造相关性"}
