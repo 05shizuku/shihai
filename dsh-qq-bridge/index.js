@@ -906,7 +906,10 @@ export function createBridge({ cfg, log = () => {}, sessionController, livenessB
     }
     const lines = cache.map((c) => `- ${c.nickname}: ${c.text}${c.media}`)
     const last = cache[cache.length - 1]
-    const line = `[群流·仅供知悉|群 ${groupId}] 窗内 ${cache.length} 条（非 @，合并递入；看见不等于要回应）：\n` + lines.join('\n')
+    // 2026-11-23 修：line 必须以 promptPrefix 开头，否则桥的递话识别（bindTurn 按前缀判）
+    // 认不出这条是我们递的 → 这一轮的 assistant 回话被当「不是我们的递话」丢掉（真事：
+    // turn 486 群流轮插话静默丢，日志「不是我们的递话（开头=「[群流…」）」）。
+    const line = `${prefix}[群流·仅供知悉|群 ${groupId}] 窗内 ${cache.length} 条（非 @，合并递入；看见不等于要回应）：\n` + lines.join('\n')
     const requestId = `qqgf-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
     const key = pending.mark(last.userId, line, now, { chatType: 'group', groupId: String(groupId), groupFlow: true, requestId })
     try {
