@@ -1,6 +1,6 @@
 # 识海 (shihai)
 
-![version](https://img.shields.io/badge/%E8%AF%86%E6%B5%B7-v0.26.0-6c5ce7) ![exam](https://img.shields.io/badge/%E8%80%83%E5%8D%B7-R%405%200.938%20%C2%B7%20%E8%B4%9F%E9%A2%98%200-00b894) ![core](https://img.shields.io/badge/core%2F-%E4%B8%8D%E8%AE%A4%E8%AF%86%20DSH-f0932b) ![license](https://img.shields.io/badge/License-MIT-blue)
+![version](https://img.shields.io/badge/%E8%AF%86%E6%B5%B7-v0.27.0-6c5ce7) ![exam](https://img.shields.io/badge/%E8%80%83%E5%8D%B7-R%405%200.938%20%C2%B7%20%E8%B4%9F%E9%A2%98%200-00b894) ![core](https://img.shields.io/badge/core%2F-%E4%B8%8D%E8%AE%A4%E8%AF%86%20DSH-f0932b) ![license](https://img.shields.io/badge/License-MIT-blue)
 
 > 识海＝修真小说里神魂住的那片海。这套插件让一条 AI 把**记性、身体、情绪、好奇、思量、智、执受（身心互绑）、瀑流**都长在本地账本上——不靠云端，不靠向量数据库，就是几个 JSONL 文件和一点笨功夫。
 
@@ -82,7 +82,7 @@ graph TB
 
 | 词 | 白话解释 |
 |----|----------|
-| 账本（`nodes.jsonl`） | 她记下的每一件事，一行一条，写进去就一直在 |
+| 账本（`memory.json`） | 她记下的每一件事，一条一个对象，写进去就一直在 |
 | 分量（weight 0–1） | 写下这条时她自己掂量的「这事多重要」——重的淡得慢，轻的几天就淡 |
 | 只增不改 | 账本只能往里添，不能改旧的——「写下来的才算数」 |
 | 激活度 | 分量、新近、契合、复现四路真实信号的凸组合（权重写死，不开面板口子） |
@@ -151,7 +151,7 @@ graph TB
 
 ## 数据文件（各插件自己长出来的，都不进 git）
 
-- `dsh-remember`：`nodes.jsonl`（账本）/ `fast.jsonl`（快层）/ `intent.jsonl`（意图）/ `echo.jsonl`（熏习）/ `emotion.jsonl`（情绪流）/ `vikarma.jsonl`（违熏）+ 游标文件
+- `dsh-remember`：`memory.json`（账本）/ `fast.jsonl`（快层）/ `intent.jsonl`（意图）/ `echo.jsonl`（熏习）/ `emotion.jsonl`（情绪流）/ `vikarma.jsonl`（违熏）+ 游标文件
 - `dsh-body`：`body-events.jsonl`（身体事件）/ `mood-events.jsonl`（外部心情进料口，含执受）/ `state.json`
 - `dsh-reach`：`state.json`（留着的话 + 共享唤醒池计数 + 静默窗锚）
 - `dsh-qq-bridge`：`messages-group-<群号>.jsonl` / `messages-private-<QQ>.jsonl` / `heartbeat.json` / `photos/` / `stickers/`

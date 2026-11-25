@@ -98,7 +98,7 @@ export function createBook({ dataDir, log, dshHome }) {
     vikarmaAgg: { total: 0, byReason: {}, byDay: {} },
     sproutTracker: new Map(),                // seedId → {lastAt, day, count}
     sproutAgg: { day: '', today: 0, total: 0 },
-    feelTracker: { dominant: '', at: 0 },    // 同感冷却（全局单槽）
+    feelTracker: { dominant: '', at: 0, streak: 0, silentUntil: 0 }, // 同感冷却（全局单槽）+ 连击静默（批 B2）
 
     // 快层 / 意图层（L456-482）
     fastIndex: [],            // 快层副本索引（裁旧受 fastMaxEvents）
@@ -235,21 +235,25 @@ export function loadBook(book) {
  * 节点表落盘（自 index.js 逐行搬来，闭包引用改 book.*）。
  * 坏账本没备份成功就拒绝覆盖写（自 shihai 合并，2026-11-15 审查）——
  * 宁可这条记不上，不能把原文冲掉。写成一次 = 红灯解除（characterization 钉）。
+ * 返回布尔（批 A2，2026-11-25 外部审查 P1-2）：写成了 true；拒写/写失败 false——
+ * 调用方拿它把「假成功」挡在回执外面（不再 log 完就当没发生）。
  */
 export function saveNodes(book) {
   if (book.broken && !book.backupOk) {
     book.meta.saveError = 'memory.json 上次解析失败且备份没成 —— 拒绝覆盖写（保原文）'
     book.log(`账本不写入：${book.meta.saveError}`)
-    return
+    return false
   }
   try {
     atomicWriteJson(book.files.memory, { version: 1, updatedAt: Date.now(), nodes: book.nodes })
     book.broken = false // 写成一次 = 盘上的坏文件已经被好的换掉，红灯解除
     book.meta.savedAt = Date.now()
     book.meta.saveError = null
+    return true
   } catch (err) {
     book.meta.saveError = String(err?.message ?? err).slice(0, 200)
     book.log(`账本写不进去：${book.meta.saveError}`)
+    return false
   }
 }
 
@@ -676,6 +680,8 @@ export function sproutToBody(book, list, emoState, now, cfg) {
     const moodGate = n.moodAt && n.moodAt.dominant !== 'calm' && Number(n.moodAt.level) >= minLevel
     const stateGate = dominant !== 'calm' && Number(n.weight) >= 0.75
     if (!moodGate && !stateGate) continue
+    // 强制静默期（批 B2 刀 a，2026-11-25）：连击触发后的 2 小时里全门闭嘴——反射弧也要有不应期
+    if (now < (book.feelTracker.silentUntil || 0)) continue
     // 报哪种颜色（2026-11-18 复核拍板）：染色门报种子的颜色，心境门报当下的
     const feel = moodGate ? n.moodAt : emoState
     const feelDominant = feel.dominant ?? dominant
@@ -684,6 +690,18 @@ export function sproutToBody(book, list, emoState, now, cfg) {
     if (book.sproutAgg.today >= totalCap) continue
     // 感觉冷却（定案 C-amend ①）：同一种感觉不重复播报——这声刚才说过了就闭嘴
     if (book.feelTracker.dominant === feelDominant && now - book.feelTracker.at < feelCooldownMs) continue
+    // 连击强制静默（批 B2 刀 a，2026-11-25）：60 分钟内第 3 次心头一动——强制静默 2 小时。
+    // 执受是反射弧，不是话痨的资格；连着三次都是身体在抢话，就该闭嘴一会儿。
+    const withinStreak = now - (book.feelTracker.at || 0) < 60 * 60000
+    const streak = withinStreak ? ((book.feelTracker.streak || 0) + 1) : 1
+    if (streak >= 3) {
+      book.feelTracker.silentUntil = now + 2 * 3600 * 1000
+      book.feelTracker.streak = 0
+      book.log('执受阻尼：60 分钟内第 3 次心头一动——强制静默 2 小时')
+      continue
+    }
+    book.feelTracker.streak = streak
+    book.feelTracker.at = now
     // 写
     const text = SPROUT_TEXT[feelDominant] ?? '心头一动'
     const row = {
@@ -703,7 +721,6 @@ export function sproutToBody(book, list, emoState, now, cfg) {
     book.sproutAgg.today += 1
     book.sproutAgg.total += 1
     book.feelTracker.dominant = feelDominant
-    book.feelTracker.at = now
     book.log(`执受：${n.id} → 身体（${text} · ${feelDominant} ${feelLevel}）`)
   }
 }

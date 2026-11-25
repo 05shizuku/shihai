@@ -37,6 +37,7 @@ import {
   SELF_SLOTS,
   activeCuriosities,
   activeSelfNodes,
+  audienceVisible,
   cleanText,
   cutByCodePoints,
   curiosityState,
@@ -51,6 +52,7 @@ import {
   normKind,
   normSlot,
   parseSealUntil,
+  pickResurrect,
   rankNodes,
   recordCuriosity,
   recordHabit,
@@ -640,19 +642,25 @@ export function apply(ctx, baseConfig = {}) {
   // 只读别家，写自己家：源文件一个字节都不动。
   // （book.intentIndex / book.intentAllIds 由 createBook 预置 —— 批③起无 TDZ 风险。）
 
-  /** 源文件在哪：设置里指定了就用它；否则扫 QQ 桥家里全部分册 + 旧合订本（v0.15.0 分册） */
+  /** 源文件在哪：设置里指定了就用它；否则扫 QQ 桥家里全部分册 + 旧合订本（v0.15.0 分册）。
+   *  群流定死（批 B3，2026-11-25）：messages-group-*.jsonl 不再进源清单——群流 = 知悉，
+   *  会话内看完就散；要记住 → 显式 remember 掂量。游标随之冻结（现有群源事件保留在
+   *  intent.jsonl，只增不改，存量在 memory_list 里翻得到）；私聊册与 misc 照旧。 */
   function intentSourcePaths(cfg = getCfg()) {
+    const isGroupBook = (p) => /^messages-group-.*\.jsonl$/.test(String(p).split(/[\\/]/).pop() ?? '')
     const custom = String(cfg.intentSource ?? '').trim()
     if (custom) {
       const p = isAbsolute(custom) ? custom : join(resolveDshHome(), custom)
-      return [p]
+      return isGroupBook(p) ? [] : [p] // 自定义源点名群分册的同样跳过
     }
     const bridgeDir = join(resolveDshHome(), '.dsh-qq-bridge')
     const out = []
     const legacy = join(bridgeDir, 'messages.jsonl')
     if (exists(legacy)) out.push(legacy) // 旧合订本：抄完为止（游标到尾就不再有新行）
     try {
-      const names = readdirSync(bridgeDir).filter((n) => /^messages-(group|private|misc)-.+\.jsonl$/.test(n) || n === 'messages-misc.jsonl').sort()
+      const names = readdirSync(bridgeDir)
+        .filter((n) => (/^messages-(private|misc)-.+\.jsonl$/.test(n) || n === 'messages-misc.jsonl') && !isGroupBook(n))
+        .sort()
       for (const n of names) out.push(join(bridgeDir, n))
     } catch {
       /* 桥家扫不动就算了 */
@@ -709,16 +717,8 @@ export function apply(ctx, baseConfig = {}) {
     return 'solo'
   }
 
-  /** 受众可见性：条目的受众要盖住这一轮的读者才给（晴猫的规矩）。
-   *  any = 写的时候没记受众（旧行、无场信息）→ 两边都给（宽松起步：
-   *  节点是她的理解不是原话；真正的私密在事件层，事件行自带场，不需要回填）。 */
-  function audienceVisible(entryAudience, turn) {
-    const a = String(entryAudience ?? '') || 'any'
-    if (a === 'any' || turn === 'solo') return true
-    if (turn === 'private') return a === 'private'
-    if (turn.startsWith('group:')) return a === turn
-    return true
-  }
+  /** 受众可见性（批 B1 起住进 core/memory.js——recall 与 memory_list 共用同一条判定，
+   *  两套实现迟早走出大肥鱼式的偏差；这里只 import，不再各写一份）。 */
 
   /** 意图事件的受众：事件行自带场（chatType/groupId），零回填 */
   const intentEventAudience = (ev) =>
@@ -956,11 +956,16 @@ export function apply(ctx, baseConfig = {}) {
     }
   }
 
-  /** 契合这一路的事件池：身体那边的秒级事件 + 原话层最近写下的行。 */
+  /** 契合这一路的事件池：身体那边的秒级事件 + 原话层最近写下的行。
+   *  批 B2 刀 b（2026-11-25）：身体源（source 标注 dsh-body，含 mood 情绪源）最多取
+   *  最新 3 条进契合路——情绪对「翻出什么」的影响封顶；超出的不进 ctx.events
+   *  （不是删事件，是不喂检索）。原话层自己的行不在此限（那是我写下的字，不是身体抢话）。 */
   function realEvents(now = Date.now(), max = 12) {
     let fast = []
     try {
-      fast = fastAllEvents(now).slice(-max)
+      fast = fastAllEvents(now)
+        .filter((ev) => String(ev?.source ?? 'dsh-body') === 'dsh-body')
+        .slice(-3)
     } catch {
       fast = []
     }
@@ -1712,7 +1717,7 @@ export function apply(ctx, baseConfig = {}) {
             log(`原话层写不进去：${String(err?.message ?? err).slice(0, 200)}`)
           }
           replaceNode(c)
-          saveNodes(book)
+          if (!saveNodes(book)) return { ok: false, id: c.id, note: `账本没写进去：${book.meta.saveError}` }
           const st = curiosityState(c)
           const tail =
             st === 'answered'
@@ -1761,7 +1766,7 @@ export function apply(ctx, baseConfig = {}) {
             log(`原话层写不进去：${String(err?.message ?? err).slice(0, 200)}`)
           }
           replaceNode(h)
-          saveNodes(book)
+          if (!saveNodes(book)) return { ok: false, id: h.id, note: `账本没写进去：${book.meta.saveError}` }
           const st = habitState(h)
           const tail =
             st === 'fast'
@@ -1823,7 +1828,7 @@ export function apply(ctx, baseConfig = {}) {
             log(`原话层写不进去：${String(err?.message ?? err).slice(0, 200)}`)
           }
           replaceNode(k)
-          saveNodes(book)
+          if (!saveNodes(book)) return { ok: false, id: k.id, note: `账本没写进去：${book.meta.saveError}` }
           const st = skillState(k)
           const cs = (Array.isArray(k.contexts) ? k.contexts : []).length
           // 回执把两件事都说清：这条技能成立没有；这次是换了个地方，还是老地方又用了一次
@@ -1858,7 +1863,7 @@ export function apply(ctx, baseConfig = {}) {
           return { ok: false, id: String(args?.restore ?? ''), note: res.note }
         }
         book.nodes = res.nodes
-        saveNodes(book)
+        if (!saveNodes(book)) return { ok: false, id: res.restored.id, note: `账本没写进去：${book.meta.saveError}` }
         try {
           appendJsonLine(book.files.lines, {
             id: res.restored.id,
@@ -1972,6 +1977,9 @@ export function apply(ctx, baseConfig = {}) {
       } catch {
         /* 折不出情绪就不染，别挡住记账 */
       }
+      // 原话层的失败维持「log 不炸」（批 A2，2026-11-25）——但要出声：节点记上了、
+      // 溯源缺一行，回执的 notes 里要提，不许装没发生。
+      let lineWriteFailed = false
       try {
         appendJsonLine(book.files.lines, {
           id: node.id,
@@ -2001,6 +2009,7 @@ export function apply(ctx, baseConfig = {}) {
           note: 'remember',
         })
       } catch (err) {
+        lineWriteFailed = true
         log(`原话层写不进去：${String(err?.message ?? err).slice(0, 200)}`)
       }
       // 新条引用了哪条旧的，那条就是真的又被想起了一次 —— 给它记一笔。
@@ -2017,11 +2026,12 @@ export function apply(ctx, baseConfig = {}) {
         }
       }
       replaceNode(node)
-      saveNodes(book)
+      if (!saveNodes(book)) return { ok: false, id: node.id, note: `账本没写进去：${book.meta.saveError}` }
       log(
         `记下 ${node.id} · ${node.kind === 'self' ? `我·${slotLabel(node.slot)}` : KIND_LABEL[node.kind]} · 分量 ${node.weight.toFixed(2)} · ${node.text.slice(0, 60)}`,
       )
       const notes = []
+      if (lineWriteFailed) notes.push('原话层这行没写上（节点已记，溯源缺一行）')
       if (!hasThought(node)) notes.push('没写三问，只进了原话层，不会挂到明天开头')
       if (supersededIds.length) notes.push(`${slotLabel(node.slot)}这个槽位上旧的 ${supersededIds.length} 条退下了（还在，翻得到）`)
       notes.push(...anchorNotes)
@@ -2222,6 +2232,17 @@ export function apply(ctx, baseConfig = {}) {
         }
         return `${n.id} ${renderLine(n, now, { byId: dir })}${suffix}`
       })
+      // 翻身位（批 B1，2026-11-25）：从没被现行过的老账，每次检索给一次被想起的机会
+      // —— 被埋是排程问题不是价值问题；真相关会被再想起，不相关的 14 天 τ 内自然衰减回零，自平衡。
+      let resurrectPick = null
+      if (args?.query) {
+        const pick = pickResurrect(book.nodes, book.echoAt, now, { audienceTurn, audienceActive, byId: dir })
+        if (pick && !list.some((x) => x.id === pick.id)) {
+          list.push(pick) // 让下面的 recallEcho 把它记进熏习（第一次现行 = 翻身）
+          resurrectPick = pick
+          items.push(`${pick.id} ${renderLine(pick, now, { byId: dir })}（翻身位：这条从来没被翻出来过）`)
+        }
+      }
       // 唤醒回弹：按词翻到的都记一笔「被想起」（原话层只增不改；节点本身不动）。
       let echoed = false
       if (args?.query && list.length) echoed = noteEcho(book, list, args.query, now, dir)
@@ -2243,10 +2264,13 @@ export function apply(ctx, baseConfig = {}) {
       // args.group：点名只要某个场 —— 群号，或 'private' 只翻私聊（v0.15.0 分册）。
       // hard 档在群/私聊轮也盖意图层 —— 事件行自带场，零回填（soft 档不筛：本来就在尾上）。
       if (args?.query && !kind) {
+        // 群流定死（批 B3，2026-11-25）：recall 的意图段硬关群事件——过了就弃，翻旧账的门关上。
+        // 群流 = 知悉（会话内看完就散）；要记住 → 显式 remember 掂量。args.group 点名群号 → 空。
+        const intentPoolNoGroup = intentAllEvents(now).filter((ev) => ev?.chatType !== 'group')
         const intentPool =
           audienceActive && audienceMode === 'hard'
-            ? intentAllEvents(now).filter((ev) => audienceVisible(intentEventAudience(ev), audienceTurn))
-            : intentAllEvents(now)
+            ? intentPoolNoGroup.filter((ev) => audienceVisible(intentEventAudience(ev), audienceTurn))
+            : intentPoolNoGroup
         const intentHits = searchIntentEvents(intentPool, args.query, { limit, group: args?.group })
         for (const ev of intentHits) items.push(`${ev.id} ${renderIntentLine(ev, now)}`)
       }
@@ -2282,7 +2306,7 @@ export function apply(ctx, baseConfig = {}) {
           })
         }
       }
-      return { ok: true, items, echoed, note, origins }
+      return { ok: true, items, echoed, note, origins, ...(resurrectPick ? { resurrect: resurrectPick.id } : {}) }
     },
   })
 
@@ -2381,7 +2405,7 @@ export function apply(ctx, baseConfig = {}) {
         return { ok: false, id: '', note: `不认识的 mode：${mode || '（空）'}` }
       }
       replaceNode(next)
-      saveNodes(book)
+      if (!saveNodes(book)) return { ok: false, id: next.id, note: `账本没写进去：${book.meta.saveError}` }
       try {
         appendJsonLine(book.files.lines, {
           id: next.id,
@@ -2431,18 +2455,26 @@ export function apply(ctx, baseConfig = {}) {
     },
     async execute(_args, exec) {
       const now = Date.now()
+      const cfg = getCfg()
+      // 受众过滤（批 A3，2026-11-25 外部审查 P1-3）：各源集合在组装行之前套一层过滤——
+      // 判定复用 recall 的同一条函数（currentAudience + audienceVisible，两边一致才不出大肥鱼式偏差）；
+      // 只在 hard 档过滤；off / soft 全显——listing 是全景视图，soft 的降位语义不适用（拍板，不是遗漏）。
+      // 意图事件的受众字段走 intentEventAudience（recall 同款）；快层事件行自带 body 场、没有受众字段，不过滤。
+      const turnAud = currentAudience(now)
+      const hardAud = cfg.recallAudience === 'hard' && turnAud !== 'solo'
+      const nodeVisible = (n) => !hardAud || audienceVisible(n?.audience, turnAud)
+      const eventVisible = (ev) => !hardAud || audienceVisible(intentEventAudience(ev), turnAud)
       // 最重的几条按激活度排（此刻的目录、刚发生的事都算数），行尾把激活值标出来
       const scoreOf = activationScorer(exec?.agent, now)
       const s = summaryOf(book.nodes, now, { scoreOf })
       const top = rankNodes(
-        book.nodes.filter((n) => normKind(n.kind) !== 'self' && normKind(n.kind) !== 'curiosity'),
+        book.nodes.filter((n) => nodeVisible(n) && normKind(n.kind) !== 'self' && normKind(n.kind) !== 'curiosity'),
         now,
         { limit: 5, scoreOf },
       ).map((h) => `${h.node.id} ${renderLine(h.node, now)} · 激活 ${scoreOf(h.node, now).toFixed(2)}`)
-      const self = activeSelfNodes(book.nodes, now)
-      const fast = fastHabits(book.nodes, now, { limit: clamp(getCfg().habitLimit, 0, 10) })
-      const cfg = getCfg()
-      const curiosities = activeCuriosities(book.nodes, now, { limit: clamp(cfg.curiosityLimit, 0, 10) })
+      const self = activeSelfNodes(book.nodes.filter(nodeVisible), now)
+      const fast = fastHabits(book.nodes.filter(nodeVisible), now, { limit: clamp(cfg.habitLimit, 0, 10) })
+      const curiosities = activeCuriosities(book.nodes.filter(nodeVisible), now, { limit: clamp(cfg.curiosityLimit, 0, 10) })
       // 快层：先接过来最新的那几条，别让它们只闪一下
       try {
         pullFast(now)
@@ -2457,12 +2489,12 @@ export function apply(ctx, baseConfig = {}) {
       }
       const fastEvents = book.fastIndex.slice(0, 5)
       const fastSum = fastSummary(fastAllEvents(now), { weighed: weighedFastIds() })
-      const intentEvents = book.intentIndex.slice(0, 5)
+      const intentEvents = book.intentIndex.filter(eventVisible).slice(0, 5)
       const intentAll = intentAllEvents(now)
       const intentSum = summarizeIntents(intentAll)
       const intentWeighed = weighedIntentIds()
       const intentPending = intentAll.filter((ev) => !intentWeighed.has(ev.id)).length
-      const recent = book.nodes.slice(-3).map((n) => {
+      const recent = book.nodes.filter(nodeVisible).slice(-3).map((n) => {
         const when = relTime(n.at, now)
         return `${n.id}（${when === '刚写下' ? '刚写下' : `${when}写的`}）${n.text.slice(0, 40)}`
       })
@@ -2935,7 +2967,7 @@ export function apply(ctx, baseConfig = {}) {
       )
       node.id = `n_${node.id.slice(2)}` // 思量的 id 前缀（定案 A）
       replaceNode(node)
-      saveNodes(book)
+      if (!saveNodes(book)) return { ok: false, id: node.id, note: `账本没写进去：${book.meta.saveError}` }
       try {
         appendJsonLine(book.files.lines, {
           id: node.id,
@@ -3095,7 +3127,7 @@ export function apply(ctx, baseConfig = {}) {
       const flagged = { ...seed, transformed: true, transformedBy: node.id, transformedAt: now }
       replaceNode(flagged)
       replaceNode(node)
-      saveNodes(book)
+      if (!saveNodes(book)) return { ok: false, id: node.id, note: `账本没写进去：${book.meta.saveError}` }
       try {
         appendJsonLine(book.files.lines, {
           id: node.id,

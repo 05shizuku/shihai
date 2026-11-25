@@ -48,6 +48,10 @@ export const VALIDATORS = {
   // 表情包标记（v0.8.0）：回话里的 [表情:名字] 能不能变真图片段发出去
   stickerEnabled: (v) => (typeof v === 'boolean' ? { value: v } : { reason: '要是 true/false' }),
 
+  // 群参与总开关（v0.10.x 起在桥芯里生效；批 A4 补进设置页白名单——
+  // 以前白名单不认这个键，设置页改了也存不住）
+  groupFlow: (v) => (typeof v === 'boolean' ? { value: v } : { reason: '要是 true/false' }),
+
   targetRoot: (v) => ({ value: String(v ?? '').trim() }),
   allowRoots: listVal,
   denyRoots: listVal,

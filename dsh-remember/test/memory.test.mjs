@@ -40,6 +40,8 @@ import {
   renderSelfSection,
   renderUnsettledSection,
   restoreSelfNode,
+  audienceVisible,
+  pickResurrect,
   score,
   searchNodes,
   selfWeight,
@@ -1146,4 +1148,97 @@ test('deriveStandingBodyStates（定案 C）：饿向/饱向时序两侧、mood 
     { id: 'f_4', at: base + 40 * MINUTE, kind: 'threshold', text: '饿到发慌' },
   ], NOW)
   assert.ok(!thr.some((s) => s.text.includes('饿')), 'threshold 不入饿向（v1 先不猜）')
+})
+
+// ------------------------------------------------- 批 B1（2026-11-25）：翻身位
+const resurrectNode = (id, text, kind = 'fact', weight = 0.5, at = NOW - 3 * DAY, extra = {}) => ({
+  id, at, lastAt: at, text, kind, weight, changes: 'x', tags: [], refs: [], touches: [],
+  audience: 'any', happenedAt: 0, prev: '', prevSelf: '', anchor: false, anchorWhy: '',
+  restoredAt: 0, replaces: [], contexts: [], hits: 0, answered: false, moodAt: null,
+  sealed: false, sealUntil: 0, sealCond: '', faded: false, superseded: false,
+  supersededBy: '', supersededAt: 0, transformed: false, transformedBy: '', transformedAt: 0,
+  ...extra,
+})
+
+test('pickResurrect：零现行池——被现行过的不回流，零现行的老账才进池（批 B1）', () => {
+  const fresh = resurrectNode('r_fresh', '零现行的新账', 'fact', 0.9, NOW - 3 * DAY)
+  const echoed = resurrectNode('r_echoed', '被想起过的老账', 'fact', 0.9, NOW - 3 * DAY)
+  const pick = pickResurrect([fresh, echoed], new Map([['r_echoed', [NOW - DAY]]]), NOW)
+  assert.equal(pick?.id, 'r_fresh', 'echoAt 里的那条不回流，零现行的进池')
+  assert.equal(pickResurrect([echoed], new Map([['r_echoed', [NOW - DAY]]]), NOW), null, '只剩已现行的 → null')
+  assert.equal(pickResurrect([fresh], new Map(), NOW)?.id, 'r_fresh', '空 echoAt → 照进池')
+})
+
+test('pickResurrect：48h 边界——写下没过 48 小时的不叫压在底下（批 B1）', () => {
+  const edge = resurrectNode('r_edge', '刚好 48 小时', 'fact', 0.9, NOW - 48 * 60 * 60 * 1000)
+  const older = resurrectNode('r_old', '48 小时零一毫秒', 'fact', 0.9, NOW - 48 * 60 * 60 * 1000 - 1)
+  assert.equal(pickResurrect([edge], new Map(), NOW), null, '恰好 48h → 不进池（严格小于）')
+  assert.equal(pickResurrect([older], new Map(), NOW)?.id, 'r_old', '过了 48h 一毫秒 → 进池')
+  assert.equal(pickResurrect([resurrectNode('r_new', '刚写下的', 'fact', 0.9, NOW - DAY)], new Map(), NOW), null, '24h 的新账不进池')
+})
+
+test('pickResurrect：kind 过滤——只有 fact/decision/lesson/open 占翻身位（批 B1）', () => {
+  const pool = [
+    resurrectNode('r_h', '习惯', 'habit', 0.99, NOW - 3 * DAY),
+    resurrectNode('r_c', '好奇', 'curiosity', 0.99, NOW - 3 * DAY),
+    resurrectNode('r_s', '自我', 'self', 0.99, NOW - 3 * DAY),
+    resurrectNode('r_n', '思量', 'narration', 0.99, NOW - 3 * DAY),
+    resurrectNode('r_w', '智', 'wisdom', 0.99, NOW - 3 * DAY),
+    resurrectNode('r_k', '技能', 'skill', 0.99, NOW - 3 * DAY),
+    resurrectNode('r_d', '该翻身的决定', 'decision', 0.4, NOW - 3 * DAY),
+  ]
+  assert.equal(pickResurrect(pool, new Map(), NOW)?.id, 'r_d', '各通道的 kind 全部出局，decision 胜出')
+})
+
+test('pickResurrect：封存/顶下/已转化的都不回流（批 B1）', () => {
+  const pool = [
+    resurrectNode('r_sealed', '按住的', 'fact', 0.99, NOW - 3 * DAY, { sealed: true }),
+    resurrectNode('r_until', '按到点的', 'fact', 0.99, NOW - 3 * DAY, { sealUntil: NOW + DAY }),
+    resurrectNode('r_sup', '被顶下的', 'fact', 0.99, NOW - 3 * DAY, { superseded: true }),
+    resurrectNode('r_trans', '已转化的', 'fact', 0.99, NOW - 3 * DAY, { transformed: true, transformedBy: 'w_1', transformedAt: NOW - DAY }),
+    resurrectNode('r_ok', '干净的', 'fact', 0.4, NOW - 3 * DAY),
+  ]
+  assert.equal(pickResurrect(pool, new Map(), NOW)?.id, 'r_ok', '三旗与按住的全部出局')
+})
+
+test('pickResurrect：weight 最高胜出，并列取 at 最早（批 B1）', () => {
+  const pool = [
+    resurrectNode('r_low', '轻的', 'fact', 0.3, NOW - 4 * DAY),
+    resurrectNode('r_hi', '重的', 'fact', 0.8, NOW - 3 * DAY),
+    resurrectNode('r_tie1', '并列但晚', 'decision', 0.6, NOW - 3 * DAY - 1000),
+    resurrectNode('r_tie2', '并列且最早', 'lesson', 0.6, NOW - 5 * DAY),
+  ]
+  assert.equal(pickResurrect(pool, new Map(), NOW)?.id, 'r_hi', 'weight 最高被想起（被埋是排程问题不是价值问题）')
+  assert.equal(
+    pickResurrect(pool.filter((n) => n.id !== 'r_hi'), new Map(), NOW)?.id,
+    'r_tie2',
+    '并列取 at 最早（先来后到）',
+  )
+})
+
+test('pickResurrect：受众过滤——hard 轮不翻别的场的账（批 B1）', () => {
+  const pool = [
+    resurrectNode('r_prv', '私聊场的', 'fact', 0.9, NOW - 3 * DAY, { audience: 'private' }),
+    resurrectNode('r_any', '没记场的', 'fact', 0.4, NOW - 3 * DAY, { audience: 'any' }),
+  ]
+  assert.equal(
+    pickResurrect(pool, new Map(), NOW, { audienceTurn: 'group:222', audienceActive: true })?.id,
+    'r_any',
+    '群轮不翻私聊场的（audience 同一条判定）',
+  )
+  assert.equal(
+    pickResurrect(pool, new Map(), NOW, { audienceTurn: 'solo', audienceActive: false })?.id,
+    'r_prv',
+    'solo 轮全可见',
+  )
+})
+
+test('audienceVisible：any 两边都给、群轮只认同群、私聊轮只认私聊（批 B1 收口进 core）', () => {
+  assert.equal(audienceVisible('any', 'group:222'), true)
+  assert.equal(audienceVisible('', 'group:222'), true, '空受众 = any（旧行宽松起步）')
+  assert.equal(audienceVisible('group:222', 'group:222'), true)
+  assert.equal(audienceVisible('group:333', 'group:222'), false)
+  assert.equal(audienceVisible('private', 'group:222'), false)
+  assert.equal(audienceVisible('private', 'private'), true)
+  assert.equal(audienceVisible('group:222', 'solo'), true, 'solo 轮全可见')
 })

@@ -541,10 +541,10 @@ test('applyConfigPatch：httpToken/wsToken 收任意字符串（trim），sessio
   assert.equal(r.overrides.promptPrefix, '【QQ】')
 })
 
-test('VALIDATORS 白名单 19 键，一个不多', () => {
+test('VALIDATORS 白名单 20 键，一个不多（批 A4：groupFlow 进白名单）', () => {
   assert.deepEqual(Object.keys(VALIDATORS).sort(), [
     'allowGroups', 'allowRoots', 'allowUsers', 'denyRoots', 'enabled',
-    'httpToken', 'messageLogEnabled', 'messageLogMaxLines', 'onebotHttp',
+    'groupFlow', 'httpToken', 'messageLogEnabled', 'messageLogMaxLines', 'onebotHttp',
     'onebotWs', 'pokeBack', 'promptPrefix', 'replyMaxChars', 'selfUin',
     'sessionId', 'staleSeconds', 'stickerEnabled', 'targetRoot', 'wsToken',
   ])

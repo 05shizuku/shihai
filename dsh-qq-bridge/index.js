@@ -508,7 +508,7 @@ writeHeartbeat(heartbeatFile, heartbeatInfo({ version: VERSION, startedAt, pendi
       whitelist: { users: cfg.allowUsers, groups: cfg.allowGroups },
       staleSeconds: cfg.staleSeconds,
       replyMaxChars: cfg.replyMaxChars,
-      config: { effective: redactCfg(cfg), overrides: fileCfg },
+      config: { effective: redactCfg(cfg), overrides: redactCfg(fileCfg) },
     }
   }
 
@@ -661,7 +661,7 @@ writeHeartbeat(heartbeatFile, heartbeatInfo({ version: VERSION, startedAt, pendi
 
       ['/config', async (req, res) => {
         if (req.method === 'GET') {
-          return send(res, 200, { ok: true, effective: redactCfg(cfg), overrides: fileCfg })
+          return send(res, 200, { ok: true, effective: redactCfg(cfg), overrides: redactCfg(fileCfg) })
         }
         if (req.method !== 'POST') return send(res, 405, { ok: false, error: '只接受 GET / POST' })
         const text = await readBody(req)
@@ -691,7 +691,7 @@ writeHeartbeat(heartbeatFile, heartbeatInfo({ version: VERSION, startedAt, pendi
           rejected: result.rejected,
           note: '改动已写进 config.json；热重载/重启后生效',
           effective: redactCfg(cfg),
-          overrides: result.overrides,
+          overrides: redactCfg(result.overrides),
         })
       }],
 

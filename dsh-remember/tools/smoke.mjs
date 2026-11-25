@@ -1094,24 +1094,27 @@ try {
   await hS.tools.get('recall').execute({ query: '秋风萧瑟' }, spExec)
   ok(sproutRows().length === 2 && sproutRows()[1].detail.dominant === 'tense', '换感觉立即发（颜色变了不算重复）')
   ok(sproutRows()[1].text === '心头一紧', '正文取情绪措辞表（心头一紧，无数字）')
-  // ④ 沉一 → 第三声（到全局日帽）
+  // ④ 沉一 → 60 分钟内第 3 次连击 → 执受阻尼（批 B2 刀 a）：不写，强制静默 2 小时
   await hS.tools.get('recall').execute({ query: '冬雪皑皑' }, spExec)
-  ok(sproutRows().length === 3 && sproutRows()[2].detail.dominant === 'down', '第三声（down）')
-  // ⑤ 空一 → 全局日帽静默
+  ok(sproutRows().length === 2, `连击 3 次强制静默：第 3 声不落地（实际 ${sproutRows().length} 声）`)
+  ok(readFileSync(join(spDir, 'dsh-remember.log'), 'utf8').includes('执受阻尼'), '日志里留了执受阻尼的一笔')
+  // ⑤ 静默期全跳：换感觉、换种子都闭嘴（批 B2 刀 a 的静默期）
   await hS.tools.get('recall').execute({ query: '夜色深沉' }, spExec)
-  ok(sproutRows().length === 3, '全局日帽：所有种子合计到 3 声后全门静默（C-amend ②）')
-  // ⑥ 99-warm 复现：再来 10 声 warm 也压在日帽内
+  ok(sproutRows().length === 2, `静默期全跳（实际 ${sproutRows().length} 声）`)
+  // ⑥ 99-warm 复现：静默期内再来 10 声 warm 也压住
   for (let i = 0; i < 10; i++) {
     await hS.tools.get('recall').execute({ query: '春风拂面' }, spExec)
   }
-  ok(sproutRows().length <= 3, `99-warm 复现压住：行数 ${sproutRows().length} ≤ 全局日帽 3`)
+  ok(sproutRows().length === 2, `静默期压住 99-warm：行数 ${sproutRows().length}`)
   const statusSprout = await (async () => {
     const resS = fakeRes()
     const spRoute = hS.routes.find((r) => r.path === '/dsh-remember/status')
     await spRoute.handler(fakeReq('GET'), resS)
     return JSON.parse(resS.body)
   })()
-  ok(statusSprout.sprout?.today === 3 && statusSprout.sprout?.total === 3, `status.sprout 跟账走（today=3, total=3，实际 ${JSON.stringify(statusSprout.sprout ?? {})})`)
+  ok(statusSprout.sprout?.today === 2 && statusSprout.sprout?.total === 2, `status.sprout 跟账走（today=2, total=2，实际 ${JSON.stringify(statusSprout.sprout ?? {})})`)
+  // ⑦ 全局日帽（C-amend ②）改由协议层单测钉（test/book.test.mjs）——
+  // 日帽下限被 clamp 在 3，连击 3 次的静默先到，端到端小环境里帽永远轮不到拦（批 B2）
 
   // ------------------------------------------------------------------ 情绪流
   // 意图层/快层里的真事，机器认成情绪（七类枚举，认不出不给 —— mood 没 detail 就不该记）

@@ -1508,3 +1508,70 @@ export function summaryOf(nodes, now = Date.now(), { scoreOf } = {}) {
     curiosityTotal: curiosities.length,
   }
 }
+
+// ---------------------------------------------------------------- 受众与翻身位（批 B1，2026-11-25）
+
+/**
+ * 受众可见性：条目的受众要盖住这一轮的读者才给（晴猫的规矩，2026-11-17 借入）。
+ * any = 写的时候没记受众（旧行、无场信息）→ 两边都给（宽松起步：
+ * 节点是她的理解不是原话；真正的私密在事件层，事件行自带场，不需要回填）。
+ * 批 B1 起住进 core/（纯函数）：recall 与 memory_list 两边必须用同一条判定——
+ * 两套实现迟早走出大肥鱼式的偏差，所以收口成一条。
+ */
+export function audienceVisible(entryAudience, turn) {
+  const a = String(entryAudience ?? '') || 'any'
+  if (a === 'any' || turn === 'solo') return true
+  if (turn === 'private') return a === 'private'
+  if (turn.startsWith('group:')) return a === turn
+  return true
+}
+
+/**
+ * 翻身位（批 B1，2026-11-25，自举悖论）：从没被现行过的老账，每次检索给一次被想起的机会。
+ *
+ * 池（全部满足才算候选）：
+ *   · kind ∈ {fact, decision, lesson, open}——narration/curiosity/habit/skill 各有通道，
+ *     self 走槽位演化，wisdom 是转化产物，都不占翻身位；
+ *   · 未封存（isSealed；给 opts.byId 时条件封存按整本账算，不给按「眼前这本」算）；
+ *   · 未 superseded（被顶下的旧我由 restore 管）；
+ *   · 未 transformed（智已代它上场，原种子躺在 transformedBy 后面）；
+ *   · 零现行：echoAt 里没有它的 id——「被想起」过一次的走正常竞争，不回流；
+ *   · 老账：写下超过 48 小时（at < now - 48h）——新账不叫压在底下；
+ *   · 受众：opts.audienceActive 为真时按 opts.audienceTurn 过滤（audienceVisible 同款）。
+ *
+ * 选：weight 最高——被埋是排程问题不是价值问题；并列取 at 最早（先来后到）。
+ * 纯函数：不写账、不动索引、不挑时间。返回该节点或 null。
+ */
+export function pickResurrect(nodes, echoAt, now, opts = {}) {
+  const list = Array.isArray(nodes) ? nodes : []
+  const t = Number(now) || Date.now()
+  const floor = t - 48 * 60 * 60 * 1000
+  const turn = opts?.audienceTurn ?? 'solo'
+  const audActive = opts?.audienceActive === true
+  const byId = opts?.byId && typeof opts.byId.get === 'function' ? opts.byId : null
+  const hadEcho = (id) => {
+    if (!echoAt || typeof echoAt.has !== 'function') return false
+    if (!echoAt.has(id)) return false
+    const marks = echoAt.get(id)
+    return Array.isArray(marks) ? marks.length > 0 : true
+  }
+  let best = null
+  for (const n of list) {
+    if (!n || !n.id) continue
+    if (!['fact', 'decision', 'lesson', 'open'].includes(normKind(n.kind))) continue
+    if (isSealed(n, t, byId)) continue
+    if (n.superseded) continue
+    if (n.transformed) continue
+    if (hadEcho(String(n.id))) continue
+    if (!(Number(n.at) < floor)) continue
+    if (audActive && !audienceVisible(n.audience, turn)) continue
+    if (!best) {
+      best = n
+      continue
+    }
+    const w = clampWeight(n.weight, 0.5)
+    const bw = clampWeight(best.weight, 0.5)
+    if (w > bw || (w === bw && Number(n.at) < Number(best.at))) best = n
+  }
+  return best
+}
