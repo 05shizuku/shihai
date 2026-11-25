@@ -28,6 +28,9 @@
   （版本 2.56.1，随 Desktop 更新换代，用前 glob app-* 取最新）。真历史/真对象库，
   优先于 REST 快照通道（REST 只在应急时用；REST 推送不写本地对象，事后
   `git fetch origin` 即愈——2026-11-25 已愈，浅引用限制作废）。
+- **push 500 的已知解法（2026-11-25 实证）**：GitHub receive-pack 对 thin-pack
+  偶发 Internal Server Error（读通写挂、status 全绿、连挂三次）——
+  `git push --no-thin origin main` 即过。先 `git ls-remote` 确认读通再动刀。
 
 - git 操作（add 除外）只在**安静时段**做——她不活跃、无会话中途回话的窗口
 - 操作**前后各跑一次体检**：amikar 侧 check.mjs，shihai 侧考卷 + 冒烟
