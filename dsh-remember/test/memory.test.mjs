@@ -1201,6 +1201,16 @@ test('pickResurrect：封存/顶下/已转化的都不回流（批 B1）', () =>
   assert.equal(pickResurrect(pool, new Map(), NOW)?.id, 'r_ok', '三旗与按住的全部出局')
 })
 
+test('pickResurrect：显式淡出的不回流，restore 后才回来（批 C5）', () => {
+  const pool = [
+    resurrectNode('r_faded', '淡出的', 'fact', 0.99, NOW - 3 * DAY, { faded: true }),
+    resurrectNode('r_ok', '干净的', 'fact', 0.4, NOW - 3 * DAY),
+  ]
+  assert.equal(pickResurrect(pool, new Map(), NOW)?.id, 'r_ok', 'faded 不占翻身位（她自己转过的推杆不越过）')
+  const back = resurrectNode('r_faded', '捡回来的', 'fact', 0.99, NOW - 3 * DAY, { faded: false })
+  assert.equal(pickResurrect([back], new Map(), NOW)?.id, 'r_faded', 'restore 后照进池')
+})
+
 test('pickResurrect：weight 最高胜出，并列取 at 最早（批 B1）', () => {
   const pool = [
     resurrectNode('r_low', '轻的', 'fact', 0.3, NOW - 4 * DAY),

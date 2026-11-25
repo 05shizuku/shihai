@@ -1562,6 +1562,7 @@ export function pickResurrect(nodes, echoAt, now, opts = {}) {
     if (isSealed(n, t, byId)) continue
     if (n.superseded) continue
     if (n.transformed) continue
+    if (n.faded) continue // 显式淡出的不回流（批 C5）：fade 是她自己转过的推杆，翻身位不越过它
     if (hadEcho(String(n.id))) continue
     if (!(Number(n.at) < floor)) continue
     if (audActive && !audienceVisible(n.audience, turn)) continue

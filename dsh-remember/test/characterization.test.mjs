@@ -198,9 +198,9 @@ test('memory_list：hard 档过滤他场条目；off 档全显（批 A3）', asy
   }
 })
 
-// ------------------------------------------------- 批 B3（2026-11-25）：群流定死
-// 群源分册跳过：pullIntent 不读 group 册、游标不推进（连键都没有）；私聊册照旧增量。
-test('群源分册跳过：pullIntent 不读 group 册、游标不推进（批 B3）', async () => {
+// ------------------------------------------------- 批 C1（2026-11-25 方案 A）：群册恢复入库——受众检测的数据源必须活着
+// 钉 1：群分册在源清单、群行照抄入库、游标键存在；私聊册照旧增量。
+test('群册恢复入库：源清单含群分册、群行照抄、游标键在（批 C1 方案 A）', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'char-grpsrc-'))
   const realHome = process.env.DSH_HOME
   process.env.DSH_HOME = dir
@@ -208,29 +208,170 @@ test('群源分册跳过：pullIntent 不读 group 册、游标不推进（批 B
     const bridgeDir = join(dir, '.dsh-qq-bridge')
     mkdirSync(bridgeDir, { recursive: true })
     const row = (text, extra = {}) => JSON.stringify({ at: Date.now(), chatType: 'private', userId: '10001', nickname: '', text, mid: `m-${text}`, atMe: false, ...extra })
-    writeFileSync(join(bridgeDir, 'messages-group-222.jsonl'), [row('群册第一句', { chatType: 'group', groupId: '222' }), row('群册第二句', { chatType: 'group', groupId: '222', mid: 'm-群二' })].join('\n') + '\n')
+    writeFileSync(join(bridgeDir, 'messages-group-222.jsonl'), [row('群册第一句', { chatType: 'group', groupId: '222', mid: 'm-群一', atMe: true, userId: '20001' }), row('群册第二句', { chatType: 'group', groupId: '222', mid: 'm-群二', atMe: true, userId: '20001' })].join('\n') + '\n')
     writeFileSync(join(bridgeDir, 'messages-private-10001.jsonl'), row('私聊册第一句') + '\n')
     const h = harness(dir)
     const st = await h.status()
-    assert.equal(st.intent.sources.some((s) => String(s).includes('messages-group-222.jsonl')), false, '群分册不在源清单里')
+    assert.equal(st.intent.sources.some((s) => String(s).includes('messages-group-222.jsonl')), true, '群分册在源清单里（受众检测的数据源）')
     const copied = readFileSync(join(dir, 'book', 'intent.jsonl'), 'utf8')
     assert.ok(copied.includes('私聊册第一句'), '私聊册照抄')
-    assert.ok(!copied.includes('群册第一句') && !copied.includes('群册第二句'), '群册一行都不抄')
+    assert.ok(copied.includes('群册第一句') && copied.includes('群册第二句'), '群册照抄（入库只记账）')
     const cursor = JSON.parse(readFileSync(join(dir, 'book', 'intent.cursor.json'), 'utf8'))
     assert.ok(Object.keys(cursor.files ?? {}).some((k) => k === 'messages-private-10001.jsonl'), '私聊册的游标键在')
-    assert.equal(Object.keys(cursor.files ?? {}).some((k) => k.startsWith('messages-group-')), false, '群册的游标键根本不存在（游标冻结）')
-    // 第二拍：群册再添两行、私聊册添一行 → 只推进私聊，群册永远不在场
-    appendFileSync(join(bridgeDir, 'messages-group-222.jsonl'), row('群册第三句', { chatType: 'group', groupId: '222', mid: 'm-群三' }) + '\n')
-    appendFileSync(join(bridgeDir, 'messages-private-10001.jsonl'), row('私聊册第二句') + '\n')
-    const h2 = harness(dir) // 同一账本再起一拍（新实例 = 下一拍的 pullIntent）
-    const st2 = await h2.status()
+    assert.ok(Object.keys(cursor.files ?? {}).some((k) => k === 'messages-group-222.jsonl'), '群册的游标键在')
+    // 第二拍：群册增量照常推进
+    appendFileSync(join(bridgeDir, 'messages-group-222.jsonl'), row('群册第三句', { chatType: 'group', groupId: '222', mid: 'm-群三', atMe: true, userId: '20001' }) + '\n')
+    const h2 = harness(dir)
+    await h2.status()
     const copied2 = readFileSync(join(dir, 'book', 'intent.jsonl'), 'utf8')
-    assert.ok(copied2.includes('私聊册第二句'), '私聊册增量推进')
-    assert.ok(!copied2.includes('群册第三句'), '群册添的行依然不抄（游标冻结）')
-    assert.equal(st2.intent.sources.some((s) => String(s).includes('messages-group-222.jsonl')), false, '源清单第二拍仍无群册')
+    assert.ok(copied2.includes('群册第三句'), '群册增量推进')
   } finally {
     if (realHome === undefined) delete process.env.DSH_HOME
     else process.env.DSH_HOME = realHome
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+// 钉 2（N1 回归钉）：群 @ 来话在窗内 → remember 打标 group:<群号>——B3 断源时这条必红
+test('群轮受众：群 @ 来话在窗内 → remember 打标 group:<群号>（批 C1 回归钉）', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'char-grpaud-'))
+  const realHome = process.env.DSH_HOME
+  process.env.DSH_HOME = dir
+  try {
+    const bookDir = join(dir, 'book')
+    mkdirSync(bookDir, { recursive: true })
+    writeFileSync(join(bookDir, 'intent.jsonl'), [listAudIntent('i_g1', '群里的来话', 'group', '222')].map((x) => JSON.stringify(x)).join('\n') + '\n')
+    const h = harness(dir)
+    const w = await h.tools.get('remember').execute({ text: '群轮里记下的', kind: 'fact', weight: 0.5, changes: 'x' }, h.exec)
+    assert.equal(w.ok, true, `remember 应成功（${w.note}）`)
+    const saved = JSON.parse(readFileSync(join(bookDir, 'memory.json'), 'utf8'))
+    const node = (saved.nodes ?? []).find((n) => n.id === w.id)
+    assert.ok(node, '节点在账上')
+    assert.equal(node.audience, 'group:222', `群轮打标（实际 ${node.audience}）`)
+  } finally {
+    if (realHome === undefined) delete process.env.DSH_HOME
+    else process.env.DSH_HOME = realHome
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+// 钉 3（N1 的用户可见面）：hard 档群轮——私账不进 recall
+test('hard 档群轮：私聊场的条不进 recall（批 C1 回归钉）', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'char-grphard-'))
+  const realHome = process.env.DSH_HOME
+  process.env.DSH_HOME = dir
+  try {
+    const bookDir = join(dir, 'book')
+    mkdirSync(bookDir, { recursive: true })
+    const now = Date.now()
+    writeFileSync(join(bookDir, 'memory.json'), JSON.stringify({ version: 1, updatedAt: now, nodes: [
+      listAudNode('r_prv', '星屑落在私聊场的便条上，只有他看得见', 'private', 0.9),
+      listAudNode('r_g222', '星屑记在群轮该看见的地方', 'group:222', 0.9),
+      listAudNode('r_f1', '无关的垫场条目甲，随便写点别的什么字', 'any', 0.2),
+      listAudNode('r_f2', '无关的垫场条目乙，再凑一点语料长度', 'any', 0.2),
+    ] }))
+    writeFileSync(join(bookDir, 'intent.jsonl'), [listAudIntent('i_g1', '群里的来话', 'group', '222')].map((x) => JSON.stringify(x)).join('\n') + '\n')
+    const h = harness(dir, { recallAudience: 'hard' })
+    const r = await h.tools.get('recall').execute({ query: '星屑' }, h.exec)
+    assert.equal(r.ok, true, `recall 应成功（${r.note}）`)
+    assert.ok(!r.items.some((x) => x.includes('私聊场的便条')), `hard 群轮不翻私账（${r.items.join(' ┃ ').slice(0, 160)}）`)
+    assert.ok(r.items.some((x) => x.includes('群轮该看见的')), '同场的条照翻')
+  } finally {
+    if (realHome === undefined) delete process.env.DSH_HOME
+    else process.env.DSH_HOME = realHome
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+// 钉 4（N2/C2 回归钉）：翻身位端到端——命中满 5 条时 echo 仍记上它，下轮不再重复翻身
+test('翻身位端到端：echo 记上、下轮不重复（批 C2）', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'char-resur-'))
+  const realHome = process.env.DSH_HOME
+  process.env.DSH_HOME = dir
+  try {
+    const bookDir = join(dir, 'book')
+    mkdirSync(bookDir, { recursive: true })
+    const now = Date.now()
+    const oldNode = (id, text, weight, ageDays) => ({
+      id, at: now - ageDays * 24 * 60 * 60 * 1000, lastAt: now - ageDays * 24 * 60 * 60 * 1000, text, kind: 'fact', weight,
+      changes: 'x', tags: [], refs: [], touches: [], audience: 'any', happenedAt: 0, prev: '', prevSelf: '',
+      anchor: false, anchorWhy: '', restoredAt: 0, replaces: [], contexts: [], hits: 0, answered: false,
+      moodAt: null, sealed: false, sealUntil: 0, sealCond: '', faded: false, superseded: false,
+      supersededBy: '', supersededAt: 0, transformed: false, transformedBy: '', transformedAt: 0,
+    })
+    const hits = [1, 2, 3, 4, 5].map((i) =>
+      listAudNode(`r_hit${i}`, `荧光第${i}份：抽屉深处那点荧光，是谁忘了关的小灯`, 'any', 0.3))
+    const nodes = [...hits, oldNode('r_old', '一条从没被翻出来过的老账，压在最底下没人问', 0.99, 3)]
+    writeFileSync(join(bookDir, 'memory.json'), JSON.stringify({ version: 1, updatedAt: now, nodes }))
+    const h = harness(dir)
+    const r1 = await h.tools.get('recall').execute({ query: '荧光' }, h.exec)
+    assert.equal(r1.ok, true, `recall 应成功（${r1.note}）`)
+    assert.ok(r1.items.some((x) => x.includes('翻身位')), '翻身位上了 items')
+    assert.equal(r1.resurrect, 'r_old', '机读字段带翻身 id')
+    const echoRaw = readFileSync(join(bookDir, 'echo.jsonl'), 'utf8').split('\n').filter((l) => l.trim())
+    const lastEcho = JSON.parse(echoRaw[echoRaw.length - 1])
+    assert.ok((lastEcho.refs ?? []).includes('r_old'), `echo 名单含翻身条（实际 ${JSON.stringify(lastEcho.refs)}）`)
+    // 第二轮：r_old 已有现行 → 不再重复翻身
+    const r2 = await h.tools.get('recall').execute({ query: '荧光' }, h.exec)
+    assert.ok(!r2.items.some((x) => x.includes('翻身位')), '下轮不再重复翻身')
+    assert.equal(r2.resurrect, undefined, '下轮无机读翻身字段')
+  } finally {
+    if (realHome === undefined) delete process.env.DSH_HOME
+    else process.env.DSH_HOME = realHome
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+// 钉 5（N3/C3 回归钉）：kind 检索不占翻身位
+test('翻身位不进 kind 检索（批 C3）', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'char-reskind-'))
+  const realHome = process.env.DSH_HOME
+  process.env.DSH_HOME = dir
+  try {
+    const bookDir = join(dir, 'book')
+    mkdirSync(bookDir, { recursive: true })
+    const now = Date.now()
+    const decision = {
+      id: 'r_dec', at: now - 3 * 24 * 60 * 60 * 1000, lastAt: now - 3 * 24 * 60 * 60 * 1000,
+      text: '该翻身的老决定，从来没被现行过', kind: 'decision', weight: 0.9,
+      changes: 'x', tags: [], refs: [], touches: [], audience: 'any', happenedAt: 0, prev: '', prevSelf: '',
+      anchor: false, anchorWhy: '', restoredAt: 0, replaces: [], contexts: [], hits: 0, answered: false,
+      moodAt: null, sealed: false, sealUntil: 0, sealCond: '', faded: false, superseded: false,
+      supersededBy: '', supersededAt: 0, transformed: false, transformedBy: '', transformedAt: 0,
+    }
+    writeFileSync(join(bookDir, 'memory.json'), JSON.stringify({ version: 1, updatedAt: now, nodes: [decision] }))
+    const h = harness(dir)
+    const r = await h.tools.get('recall').execute({ query: '老决定', kind: 'fact' }, h.exec)
+    assert.equal(r.ok, true, `recall 应成功（${r.note}）`)
+    assert.ok(!r.items.some((x) => x.includes('翻身位')), 'kind 检索不带翻身位')
+    assert.equal(r.resurrect, undefined, 'kind 检索无机读翻身字段')
+  } finally {
+    if (realHome === undefined) delete process.env.DSH_HOME
+    else process.env.DSH_HOME = realHome
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+// 钉 6（N4/C4 回归钉）：saveNodes 失败回滚——重试不产生重复节点
+test('saveNodes 失败回滚：重试不产生重复节点（批 C4）', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'char-rollback-'))
+  try {
+    const memFile = join(dir, 'book', 'memory.json')
+    mkdirSync(join(dir, 'book'), { recursive: true })
+    writeFileSync(memFile, JSON.stringify({ version: 1, updatedAt: Date.now(), nodes: [] }))
+    const h = harness(dir)
+    chmodSync(memFile, 0o444)
+    const w1 = await h.tools.get('remember').execute({ text: '写不进去也要出声', kind: 'fact', weight: 0.5, changes: 'x' }, h.exec)
+    assert.equal(w1.ok, false, '第一次必须失败')
+    chmodSync(memFile, 0o666)
+    const w2 = await h.tools.get('remember').execute({ text: '写不进去也要出声', kind: 'fact', weight: 0.5, changes: 'x' }, h.exec)
+    assert.equal(w2.ok, true, '回滚后重试应当成功')
+    const saved = JSON.parse(readFileSync(memFile, 'utf8'))
+    const dup = (saved.nodes ?? []).filter((n) => n.text === '写不进去也要出声')
+    assert.equal(dup.length, 1, `盘上只有一条（实际 ${dup.length}）`)
+    assert.equal((saved.nodes ?? []).some((n) => n.id === w1.id), false, '失败那次的节点已回滚')
+  } finally {
+    try { chmodSync(join(dir, 'book', 'memory.json'), 0o666) } catch { /* 已经删了就算了 */ }
     rmSync(dir, { recursive: true, force: true })
   }
 })

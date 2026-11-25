@@ -153,6 +153,7 @@ import {
   saveNodes,
   noteDisplay,
   noteEcho,
+  loadFeelTracker,
   noteVikarma,
   sproutToBody,
   pullFast as fastPull,
@@ -406,6 +407,7 @@ export function apply(ctx, baseConfig = {}) {
   // 复现这一路在读取时数最近 7 天的回声。
   loadEchoIndex(book, Date.now())
   loadVikarmaIndex(book)
+  loadFeelTracker(book) // 执受阻尼的账回读（批 C6-N7）：silentUntil 跨重启有效
 
   function findNode(id) {
     const key = String(id ?? '').trim()
@@ -643,24 +645,22 @@ export function apply(ctx, baseConfig = {}) {
   // （book.intentIndex / book.intentAllIds 由 createBook 预置 —— 批③起无 TDZ 风险。）
 
   /** 源文件在哪：设置里指定了就用它；否则扫 QQ 桥家里全部分册 + 旧合订本（v0.15.0 分册）。
-   *  群流定死（批 B3，2026-11-25）：messages-group-*.jsonl 不再进源清单——群流 = 知悉，
-   *  会话内看完就散；要记住 → 显式 remember 掂量。游标随之冻结（现有群源事件保留在
-   *  intent.jsonl，只增不改，存量在 memory_list 里翻得到）；私聊册与 misc 照旧。 */
+   *  群册恢复入库（批 C1 方案 A，2026-11-25）：B3 曾把群分册踢出源清单，但 currentAudience
+   *  只吃意图层——断供后群轮受众退回 solo 兜底，hard 档在群轮反向全可见（ADR-0005 防的正是它）。
+   *  「群流=知悉」的检索面由 recall 的硬关（chatType==='group' 过滤、args.group 空）关住，
+   *  入库只记账不检索；要记住 → 显式 remember 掂量。 */
   function intentSourcePaths(cfg = getCfg()) {
-    const isGroupBook = (p) => /^messages-group-.*\.jsonl$/.test(String(p).split(/[\\/]/).pop() ?? '')
     const custom = String(cfg.intentSource ?? '').trim()
     if (custom) {
       const p = isAbsolute(custom) ? custom : join(resolveDshHome(), custom)
-      return isGroupBook(p) ? [] : [p] // 自定义源点名群分册的同样跳过
+      return [p]
     }
     const bridgeDir = join(resolveDshHome(), '.dsh-qq-bridge')
     const out = []
     const legacy = join(bridgeDir, 'messages.jsonl')
     if (exists(legacy)) out.push(legacy) // 旧合订本：抄完为止（游标到尾就不再有新行）
     try {
-      const names = readdirSync(bridgeDir)
-        .filter((n) => (/^messages-(private|misc)-.+\.jsonl$/.test(n) || n === 'messages-misc.jsonl') && !isGroupBook(n))
-        .sort()
+      const names = readdirSync(bridgeDir).filter((n) => /^messages-(group|private|misc)-.+\.jsonl$/.test(n) || n === 'messages-misc.jsonl').sort()
       for (const n of names) out.push(join(bridgeDir, n))
     } catch {
       /* 桥家扫不动就算了 */
@@ -1716,8 +1716,12 @@ export function apply(ctx, baseConfig = {}) {
           } catch (err) {
             log(`原话层写不进去：${String(err?.message ?? err).slice(0, 200)}`)
           }
+          const snapshotC = [...book.nodes]
           replaceNode(c)
-          if (!saveNodes(book)) return { ok: false, id: c.id, note: `账本没写进去：${book.meta.saveError}` }
+          if (!saveNodes(book)) {
+            book.nodes = snapshotC // 内存回滚与盘一致（批 C4）：重试不产生重复节点
+            return { ok: false, id: c.id, note: `账本没写进去：${book.meta.saveError}` }
+          }
           const st = curiosityState(c)
           const tail =
             st === 'answered'
@@ -1765,8 +1769,12 @@ export function apply(ctx, baseConfig = {}) {
           } catch (err) {
             log(`原话层写不进去：${String(err?.message ?? err).slice(0, 200)}`)
           }
+          const snapshotH = [...book.nodes]
           replaceNode(h)
-          if (!saveNodes(book)) return { ok: false, id: h.id, note: `账本没写进去：${book.meta.saveError}` }
+          if (!saveNodes(book)) {
+            book.nodes = snapshotH // 内存回滚与盘一致（批 C4）
+            return { ok: false, id: h.id, note: `账本没写进去：${book.meta.saveError}` }
+          }
           const st = habitState(h)
           const tail =
             st === 'fast'
@@ -1827,8 +1835,12 @@ export function apply(ctx, baseConfig = {}) {
           } catch (err) {
             log(`原话层写不进去：${String(err?.message ?? err).slice(0, 200)}`)
           }
+          const snapshotK = [...book.nodes]
           replaceNode(k)
-          if (!saveNodes(book)) return { ok: false, id: k.id, note: `账本没写进去：${book.meta.saveError}` }
+          if (!saveNodes(book)) {
+            book.nodes = snapshotK // 内存回滚与盘一致（批 C4）
+            return { ok: false, id: k.id, note: `账本没写进去：${book.meta.saveError}` }
+          }
           const st = skillState(k)
           const cs = (Array.isArray(k.contexts) ? k.contexts : []).length
           // 回执把两件事都说清：这条技能成立没有；这次是换了个地方，还是老地方又用了一次
@@ -1862,8 +1874,12 @@ export function apply(ctx, baseConfig = {}) {
         if (!res.restored) {
           return { ok: false, id: String(args?.restore ?? ''), note: res.note }
         }
+        const snapshotR = book.nodes
         book.nodes = res.nodes
-        if (!saveNodes(book)) return { ok: false, id: res.restored.id, note: `账本没写进去：${book.meta.saveError}` }
+        if (!saveNodes(book)) {
+          book.nodes = snapshotR // res.nodes 是新数组，引用回滚即可（批 C4）
+          return { ok: false, id: res.restored.id, note: `账本没写进去：${book.meta.saveError}` }
+        }
         try {
           appendJsonLine(book.files.lines, {
             id: res.restored.id,
@@ -2025,8 +2041,12 @@ export function apply(ctx, baseConfig = {}) {
           refNotes.push(rid)
         }
       }
+      const snapshotM = [...book.nodes]
       replaceNode(node)
-      if (!saveNodes(book)) return { ok: false, id: node.id, note: `账本没写进去：${book.meta.saveError}` }
+      if (!saveNodes(book)) {
+        book.nodes = snapshotM // 内存回滚与盘一致（批 C4）
+        return { ok: false, id: node.id, note: `账本没写进去：${book.meta.saveError}` }
+      }
       log(
         `记下 ${node.id} · ${node.kind === 'self' ? `我·${slotLabel(node.slot)}` : KIND_LABEL[node.kind]} · 分量 ${node.weight.toFixed(2)} · ${node.text.slice(0, 60)}`,
       )
@@ -2106,6 +2126,7 @@ export function apply(ctx, baseConfig = {}) {
             type: 'object',
             description: '缘起链投影（定案 B）：id → 最近一次现行的 {lastSproutAt, lastQuery, with}。机器可读。',
           },
+          resurrect: { type: 'string', description: '翻身位被翻出的那条 id（批 B1：零现行的老账给一次被想起的机会）。' },
           note: { type: 'string' },
         },
         required: ['ok', 'items', 'note'],
@@ -2235,12 +2256,20 @@ export function apply(ctx, baseConfig = {}) {
       // 翻身位（批 B1，2026-11-25）：从没被现行过的老账，每次检索给一次被想起的机会
       // —— 被埋是排程问题不是价值问题；真相关会被再想起，不相关的 14 天 τ 内自然衰减回零，自平衡。
       let resurrectPick = null
-      if (args?.query) {
+      if (args?.query && !kind) { // 带 kind 的检索不占翻身位（批 C3）：池子不分 kind，混进 kind 检索违反工具契约
         const pick = pickResurrect(book.nodes, book.echoAt, now, { audienceTurn, audienceActive, byId: dir })
         if (pick && !list.some((x) => x.id === pick.id)) {
-          list.push(pick) // 让下面的 recallEcho 把它记进熏习（第一次现行 = 翻身）
+          list.unshift(pick) // 保位进 echo 名单（批 C2）：noteEcho slice(0,5) 只认前五，push 在尾会被切——翻身永远记不上账
           resurrectPick = pick
-          items.push(`${pick.id} ${renderLine(pick, now, { byId: dir })}（翻身位：这条从来没被翻出来过）`)
+          // 每条字数闸照走（批 C6-N9）：翻身位不豁免 recallItemMax
+          const pt = String(pick.text ?? '')
+          const pLen = Array.from(pt).length
+          const pShown = itemMax && pLen > itemMax
+          const pCut = pShown
+            ? { ...pick, text: `${cutByCodePoints(pt, itemMax)}…（原文还有 ${pLen - itemMax} 字，要全文说 full=true）` }
+            : pick
+          if (pShown) clipped += 1
+          items.push(`${pick.id} ${renderLine(pCut, now, { byId: dir })}（翻身位：这条从来没被翻出来过）`)
         }
       }
       // 唤醒回弹：按词翻到的都记一笔「被想起」（原话层只增不改；节点本身不动）。
@@ -2404,8 +2433,12 @@ export function apply(ctx, baseConfig = {}) {
       } else {
         return { ok: false, id: '', note: `不认识的 mode：${mode || '（空）'}` }
       }
+      const snapshotF = [...book.nodes]
       replaceNode(next)
-      if (!saveNodes(book)) return { ok: false, id: next.id, note: `账本没写进去：${book.meta.saveError}` }
+      if (!saveNodes(book)) {
+        book.nodes = snapshotF // 内存回滚与盘一致（批 C4）
+        return { ok: false, id: next.id, note: `账本没写进去：${book.meta.saveError}` }
+      }
       try {
         appendJsonLine(book.files.lines, {
           id: next.id,
@@ -2966,8 +2999,12 @@ export function apply(ctx, baseConfig = {}) {
         now,
       )
       node.id = `n_${node.id.slice(2)}` // 思量的 id 前缀（定案 A）
+      const snapshotN = [...book.nodes]
       replaceNode(node)
-      if (!saveNodes(book)) return { ok: false, id: node.id, note: `账本没写进去：${book.meta.saveError}` }
+      if (!saveNodes(book)) {
+        book.nodes = snapshotN // 内存回滚与盘一致（批 C4）
+        return { ok: false, id: node.id, note: `账本没写进去：${book.meta.saveError}` }
+      }
       try {
         appendJsonLine(book.files.lines, {
           id: node.id,
@@ -3125,9 +3162,13 @@ export function apply(ctx, baseConfig = {}) {
       )
       node.id = `w_${node.id.slice(2)}`
       const flagged = { ...seed, transformed: true, transformedBy: node.id, transformedAt: now }
+      const snapshotT = [...book.nodes]
       replaceNode(flagged)
       replaceNode(node)
-      if (!saveNodes(book)) return { ok: false, id: node.id, note: `账本没写进去：${book.meta.saveError}` }
+      if (!saveNodes(book)) {
+        book.nodes = snapshotT // 旗与智一起回滚（批 C4）：原种子不能挂着「已转化」的空旗
+        return { ok: false, id: node.id, note: `账本没写进去：${book.meta.saveError}` }
+      }
       try {
         appendJsonLine(book.files.lines, {
           id: node.id,

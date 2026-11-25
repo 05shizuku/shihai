@@ -2,11 +2,11 @@
 // 连击 3 次强制静默 2 小时、跨 60 分钟重置、静默期全跳。直接钉 core/protocol/book.js 的 sproutToBody。
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, mkdirSync, readFileSync, existsSync, rmSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, readFileSync, existsSync, rmSync, rmdirSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-import { createBook, sproutToBody } from '../../core/protocol/book.js'
+import { createBook, loadFeelTracker, sproutToBody } from '../../core/protocol/book.js'
 import { makeNode } from '../../core/memory.js'
 
 const MIN = 60_000
@@ -105,6 +105,55 @@ test('全局日帽（C-amend ②）：合计到帽全门静默——帽在连击
     assert.equal(rows().length, 3, '全局日帽：到 3 声后全门静默')
     assert.equal(book.feelTracker.silentUntil, 0, '拦它的是日帽不是静默（无 silentUntil）')
     assert.equal(book.feelTracker.streak, 1, '最后一声的连击停在 1（没凑满 3）')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('feelTracker：写失败不涨连击（批 C6-N6）——mood 落不出去那声不算落地', () => {
+  const { dir, book, cfg } = rig('book-wfail-')
+  // 被堵成目录时 existsSync 仍为真，rig 的 rows() 会撞 EISDIR——用自己的安全行数
+  const moodPath = join(dir, '.dsh-body', 'mood-events.jsonl')
+  const countRows = () => {
+    try {
+      if (!existsSync(moodPath)) return 0
+      if (!statSync(moodPath).isFile()) return 0 // 堵着 = 写不进去 = 0 行
+      return readFileSync(moodPath, 'utf8').split('\n').filter((l) => l.trim()).length
+    } catch { return 0 }
+  }
+  try {
+    // 把 mood 目的地堵死：同名目录让 appendJsonLine 必败
+    rmSync(moodPath, { force: true })
+    mkdirSync(moodPath, { recursive: true })
+    sproutToBody(book, [dyed('r_w1', 'warm')], CALM, T0, cfg)
+    assert.equal(countRows(), 0, '写失败 → 一行都没有')
+    assert.equal(book.feelTracker.streak, 0, '连击不涨（写失败不算落地）')
+    assert.equal(book.feelTracker.silentUntil, 0, '不触发静默')
+    assert.equal(book.feelTracker.at, 0, '同感冷却表不占')
+    // 拆堵后同一拍重试：照常落地、连击从头数
+    rmdirSync(moodPath)
+    sproutToBody(book, [dyed('r_w1', 'warm')], CALM, T0 + 1000, cfg)
+    assert.equal(countRows(), 1, '拆堵后落地')
+    assert.equal(book.feelTracker.streak, 1, '连击从头数')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('feelTracker：静默期落盘，重启（新 Book）后依然静默（批 C6-N7）', () => {
+  const { dir, book, cfg, rows } = rig('book-feelpersist-')
+  try {
+    sproutToBody(book, [dyed('r_w1', 'warm')], CALM, T0, cfg)
+    sproutToBody(book, [dyed('r_t1', 'tense')], CALM, T0 + 10 * MIN, cfg)
+    sproutToBody(book, [dyed('r_d1', 'down')], CALM, T0 + 20 * MIN, cfg) // 触发静默
+    assert.equal(book.feelTracker.silentUntil, T0 + 20 * MIN + 2 * 60 * MIN, '静默已触发')
+    // 重启：同 dataDir 新 Book，loadFeelTracker 回读
+    const book2 = createBook({ dataDir: join(dir, 'book'), log: () => {}, dshHome: dir })
+    loadFeelTracker(book2)
+    assert.equal(book2.feelTracker.silentUntil, book.feelTracker.silentUntil, '静默期跨重启')
+    assert.ok(book2.feelTracker.silentUntil > T0 + 60 * MIN, '仍在静默窗内')
+    sproutToBody(book2, [dyed('r_p1', 'pleased')], CALM, T0 + 30 * MIN, cfg)
+    assert.equal(rows().length, 2, '重启后静默期内照闭嘴')
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }

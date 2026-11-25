@@ -69,6 +69,8 @@ export function createBook({ dataDir, log, dshHome }) {
     vikarma: join(dataDir, 'vikarma.jsonl'),
     /** 叫醒的账：上回什么时候醒的（重启后冷却从这儿接着算） */
     wake: join(dataDir, 'wake.json'),
+    /** 执受阻尼的账：feelTracker 落盘（批 C6-N7）——silentUntil 不许被重启绕过 */
+    feel: join(dataDir, 'feel.json'),
   }
 
   return {
@@ -697,11 +699,10 @@ export function sproutToBody(book, list, emoState, now, cfg) {
     if (streak >= 3) {
       book.feelTracker.silentUntil = now + 2 * 3600 * 1000
       book.feelTracker.streak = 0
+      saveFeelTracker(book) // 落盘（批 C6-N7）：静默期跨重启有效
       book.log('执受阻尼：60 分钟内第 3 次心头一动——强制静默 2 小时')
       continue
     }
-    book.feelTracker.streak = streak
-    book.feelTracker.at = now
     // 写
     const text = SPROUT_TEXT[feelDominant] ?? '心头一动'
     const row = {
@@ -717,10 +718,36 @@ export function sproutToBody(book, list, emoState, now, cfg) {
       book.log(`执受写不进身体家：${String(err?.message ?? err).slice(0, 160)}`)
       continue
     }
+    // 连击计数只在写成功后涨（批 C6-N6）：没写出去的那声不算「心头一动」落地——
+    // 不涨连击、不占同感冷却，幽灵连击提前触发静默的缝堵上。
+    book.feelTracker.streak = streak
+    book.feelTracker.at = now
+    saveFeelTracker(book)
     book.sproutTracker.set(n.id, { lastAt: now, day: dayKey, count: todayCount + 1 })
     book.sproutAgg.today += 1
     book.sproutAgg.total += 1
     book.feelTracker.dominant = feelDominant
     book.log(`执受：${n.id} → 身体（${text} · ${feelDominant} ${feelLevel}）`)
+  }
+}
+
+// ---------------------------------------------------------------- 执受阻尼的账（批 C6-N7）
+
+/** feelTracker 落盘回读：silentUntil/streak 纯内存会被重启绕过（强通破闸）。
+ *  小文件整存整取（atomicWriteJson）；写点只有 sproutToBody 的两处变更。 */
+export function loadFeelTracker(book) {
+  const saved = readJsonSafe(book.files.feel, null)
+  if (!isObj(saved)) return
+  if (Number.isFinite(Number(saved.at))) book.feelTracker.at = Number(saved.at) || 0
+  if (typeof saved.dominant === 'string') book.feelTracker.dominant = saved.dominant
+  if (Number.isFinite(Number(saved.streak))) book.feelTracker.streak = Math.max(0, Number(saved.streak) || 0)
+  if (Number.isFinite(Number(saved.silentUntil))) book.feelTracker.silentUntil = Math.max(0, Number(saved.silentUntil) || 0)
+}
+
+export function saveFeelTracker(book) {
+  try {
+    atomicWriteJson(book.files.feel, { ...book.feelTracker, savedAt: Date.now() })
+  } catch (err) {
+    book.log(`执受阻尼账写不进去：${String(err?.message ?? err).slice(0, 120)}`)
   }
 }
