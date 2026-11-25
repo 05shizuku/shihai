@@ -3,6 +3,14 @@ import assert from 'node:assert/strict'
 
 import { EDITABLE, applyConfigPatch, describePatch } from '../lib/config.js'
 
+test('roots 全角分隔符也认（批 D3）：输入法逗号不再把两条隔离路径并成一条假的', () => {
+  const patch = (p) => applyConfigPatch({ overrides: {}, effective: {}, patch: p })
+  const r = patch({ denyRoots: 'E:\\a\\b，E:\\c\\d' })
+  assert.deepEqual(r.overrides.denyRoots, ['E:\\a\\b', 'E:\\c\\d'], `全角逗号拆成两条（实际 ${JSON.stringify(r.overrides.denyRoots)}）`)
+  const r2 = patch({ allowRoots: 'E:\\x；E:\\y' })
+  assert.deepEqual(r2.overrides.allowRoots, ['E:\\x', 'E:\\y'], '全角分号同款')
+})
+
 test('sproutBody 同感冷却/全局日帽：inRange 边界（定案 C-amend，2026-11-19）', () => {
   const patch = (p) => applyConfigPatch({ overrides: {}, effective: {}, patch: p })
   assert.equal(patch({ sproutBodyFeelCooldownMinutes: 30 }).overrides.sproutBodyFeelCooldownMinutes, 30)

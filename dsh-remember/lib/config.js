@@ -114,7 +114,7 @@ function scalar(kind, value) {
     return { ok: true, value: s.slice(0, 260) }
   }
   if (kind === 'roots') {
-    const list = Array.isArray(value) ? value : String(value ?? '').split(/[\n,;]+/)
+    const list = Array.isArray(value) ? value : String(value ?? '').split(/[\n,;，；]+/) // 全角也认（批 D3）：输入法逗号曾把两条隔离路径并成一条假的
     const out = []
     for (const raw of list) {
       const s = String(raw ?? '').trim()

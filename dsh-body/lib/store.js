@@ -41,7 +41,7 @@ export function readJsonSafe(file, fallback = null) {
  */
 export function atomicWriteJson(file, data) {
   mkdirSync(dirname(file), { recursive: true })
-  const tmp = `${file}.${process.pid}.tmp`
+  const tmp = `${file}.${process.pid}.${Date.now()}.tmp` // tmp 带时刻（批 D5）：与 protocol 同款唯一性
   const fd = openSync(tmp, 'w')
   try {
     writeSync(fd, Buffer.from(JSON.stringify(data, null, 2), 'utf8'))
@@ -54,6 +54,22 @@ export function atomicWriteJson(file, data) {
     closeSync(fd)
   }
   renameSync(tmp, file)
+}
+
+// ---- 单例闸（批 D4，2026-11-25）：同一家目录同时只许一个实例 tick ----
+// 双跑会把情绪事件双倍折算、topup 双记、饭点双扣、body-events 双行。
+// 新实例总是接管，旧实例在下一拍读到锁换了主人就让位（与 dsh-remember 同款，各自独立安装不互 import）。
+export function claimInstance(homeDir) {
+  const lockFile = join(homeDir, 'instance.lock')
+  const mine = { pid: process.pid, at: Date.now(), id: `${process.pid}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}` }
+  atomicWriteJson(lockFile, mine)
+  return { lockFile, id: mine.id }
+}
+
+export function instanceStillOwner(lock) {
+  if (!lock || !lock.lockFile) return true
+  const cur = readJsonSafe(lock.lockFile, null)
+  return Boolean(cur && cur.id === lock.id)
 }
 
 /** 状态文件读取；坏文件不让插件崩，退回默认值 */

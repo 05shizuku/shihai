@@ -35,7 +35,8 @@ export function readTextSafe(file, fallback = '') {
 export function readJsonSafe(file, fallback = null) {
   try {
     const raw = readFileSync(file, 'utf8')
-    const value = JSON.parse(raw)
+    // BOM 剥离（批 D2）：记事本存一次带 BOM 的配置，JSON.parse 就炸——隔离名单静默放空的病根
+    const value = JSON.parse(raw.charCodeAt(0) === 0xfeff ? raw.slice(1) : raw)
     return value ?? fallback
   } catch {
     return fallback
@@ -57,7 +58,8 @@ const lastGoodJson = new Map()
 export function readJsonSafeSticky(file, fallback = null) {
   try {
     const raw = readFileSync(file, 'utf8')
-    const value = JSON.parse(raw)
+    // BOM 剥离（批 D2）：记事本存一次带 BOM 的配置，JSON.parse 就炸——隔离名单静默放空的病根
+    const value = JSON.parse(raw.charCodeAt(0) === 0xfeff ? raw.slice(1) : raw)
     if (value != null) {
       lastGoodJson.set(file, value)
       return value
@@ -222,6 +224,22 @@ export function fileSize(file) {
   } catch {
     return 0
   }
+}
+
+// ---- 单例闸（批 D4，2026-11-25）：同一家目录同时只许一个实例干活 ----
+// HMR 窗口/误双开时，新实例总是接管（「新代码赢」），旧实例在下一拍读到锁换了主人就停手。
+// 防：节点表互覆丢账、双心跳同事件双叫醒、工具双写。文件就是公告牌，id 对不上 = 让位。
+export function claimInstance(homeDir) {
+  const lockFile = join(homeDir, 'instance.lock')
+  const mine = { pid: process.pid, at: Date.now(), id: `${process.pid}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}` }
+  atomicWriteJson(lockFile, mine)
+  return { lockFile, id: mine.id }
+}
+
+export function instanceStillOwner(lock) {
+  if (!lock || !lock.lockFile) return true
+  const cur = readJsonSafe(lock.lockFile, null)
+  return Boolean(cur && cur.id === lock.id)
 }
 
 export function normPath(p) {

@@ -225,7 +225,7 @@ window.__ModuleLoader__.load({
     /** 多行文本 → 路径数组（也认逗号和分号）。 */
     function splitPaths(v) {
       return String(v ?? '')
-        .split(/[\n,;]+/)
+        .split(/[\n,;，；]+/) // 全角也认（批 D3）：与服务端 config.js 同一口径
         .map((s) => s.trim())
         .filter(Boolean)
     }

@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -106,4 +106,18 @@ test('heartbeatVerdict：新鲜＝活着；超过三次没写＝停了；没有�
 test('常量：一分钟写一次、三分钟算哑（写进测试里，改的人得先看见）', () => {
   assert.equal(HEARTBEAT_INTERVAL_MS, 60_000)
   assert.equal(HEARTBEAT_STALE_MS, 180_000)
+})
+
+test('writeHeartbeat：tmp 带 pid+时刻，双写不互踩无残骸（批 D5）', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'hb-atomic-'))
+  try {
+    const f = join(dir, 'heartbeat.json')
+    writeHeartbeat(f, heartbeatInfo({ version: '1', startedAt: Date.now() }))
+    writeHeartbeat(f, heartbeatInfo({ version: '2', startedAt: Date.now() }))
+    assert.equal(JSON.parse(readFileSync(f, 'utf8')).version, '2', '二次写覆盖')
+    const residue = readdirSync(dir).filter((x) => x.endsWith('.tmp'))
+    assert.equal(residue.length, 0, `无 tmp 残骸（${residue.join('、')}）`)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
 })

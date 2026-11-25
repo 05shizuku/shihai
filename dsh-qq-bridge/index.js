@@ -13,7 +13,7 @@
  * 群友问「为什么戳你不理我」，这是给她的回音。
  */
 
-import { appendFileSync, existsSync, mkdirSync, renameSync, statSync, readFileSync, writeFileSync } from 'node:fs'
+import { appendFileSync, closeSync, existsSync, fsyncSync, mkdirSync, openSync, renameSync, statSync, readFileSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -482,8 +482,18 @@ writeHeartbeat(heartbeatFile, heartbeatInfo({ version: VERSION, startedAt, pendi
   }
 
   function atomicWriteJson(file, obj) {
-    const tmp = `${file}.${process.pid}.tmp`
-    writeFileSync(tmp, JSON.stringify(obj, null, 2), 'utf8')
+    const tmp = `${file}.${process.pid}.${Date.now()}.tmp` // tmp 带 pid+时刻（批 D5）
+    const fd = openSync(tmp, 'w')
+    try {
+      writeSync(fd, Buffer.from(JSON.stringify(obj, null, 2), 'utf8'))
+      try {
+        fsyncSync(fd)
+      } catch {
+        /* 个别文件系统不支持对文件 fsync —— 内容已写，rename 照走（批 D5 对齐 protocol） */
+      }
+    } finally {
+      closeSync(fd)
+    }
     renameSync(tmp, file)
   }
 
@@ -1079,7 +1089,7 @@ export function createBridge({ cfg, log = () => {}, sessionController, livenessB
   }
   const writeLastEventAt = (at) => {
     try {
-      writeFileSync(lastEventAtFile, JSON.stringify({ at }))
+      atomicWriteJson(lastEventAtFile, { at }) // 原子写（批 D5）：撕裂的 lastEventAt 会让停机窗私聊永不补抄
     } catch {}
   }
   let lastEventAt = readLastEventAt() ?? Date.now()

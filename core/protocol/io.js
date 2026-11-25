@@ -43,7 +43,8 @@ export function readTextSafe(file, fallback = '') {
 export function readJsonSafe(file, fallback = null) {
   try {
     const raw = readFileSync(file, 'utf8')
-    const value = JSON.parse(raw)
+    // BOM 剥离（批 D2）：记事本存一次带 BOM 的配置，JSON.parse 就炸——隔离名单静默放空的病根
+    const value = JSON.parse(raw.charCodeAt(0) === 0xfeff ? raw.slice(1) : raw)
     return value ?? fallback
   } catch {
     return fallback
@@ -65,7 +66,8 @@ const lastGoodJson = new Map()
 export function readJsonSafeSticky(file, fallback = null) {
   try {
     const raw = readFileSync(file, 'utf8')
-    const value = JSON.parse(raw)
+    // BOM 剥离（批 D2）：记事本存一次带 BOM 的配置，JSON.parse 就炸——隔离名单静默放空的病根
+    const value = JSON.parse(raw.charCodeAt(0) === 0xfeff ? raw.slice(1) : raw)
     if (value != null) {
       lastGoodJson.set(file, value)
       return value

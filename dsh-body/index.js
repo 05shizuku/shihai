@@ -44,6 +44,8 @@ import { applyConfigPatch, tailLines } from './lib/report.js'
 import { appendEvent, countEvents, makeEvent, readEvents, renderFastSection } from './lib/fast.js'
 import {
   atomicWriteJson,
+  claimInstance,
+  instanceStillOwner,
   isUnder,
   loadOverrides,
   loadState,
@@ -275,6 +277,19 @@ export function apply(ctx, baseConfig = {}) {
     log(`启动：状态 ${join(dataDir, 'state.json')}；只挂给她 → root=${t.root || '(未配置)'} ids=${t.ids.join(',') || '(无)'}（applyToAll=${getCfg().applyToAll}）`)
   }
 
+  // 单例闸（批 D4）：新实例总是接管 instance.lock；旧实例的下一拍 tick 读到锁换了主人
+  // 就让位——只打一行日志就回家，不再吃饭、不再折情绪、不再写 body-events。
+  const instanceLock = claimInstance(dataDir)
+  let instanceYieldLogged = false
+  function instanceYielded() {
+    const mine = instanceStillOwner(instanceLock)
+    if (!mine && !instanceYieldLogged) {
+      instanceYieldLogged = true
+      log('单例闸：身体已由新实例接管，本实例的 tick 让位（不再吃饭、不再折情绪）。')
+    }
+    return !mine
+  }
+
   function load(stateFile) {
     return loadState(stateFile, Date.now(), (t) => defaultState(t, getCfg().initial))
   }
@@ -358,6 +373,7 @@ export function apply(ctx, baseConfig = {}) {
 
   // ---- 心跳：吃、涨、回、凉 ----
   function tick() {
+    if (instanceYielded()) return
     const now = Date.now()
     const { cfg, stateFile, moodFile, statusFile } = paths()
     let st = load(stateFile)

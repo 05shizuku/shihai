@@ -158,3 +158,21 @@ test('feelTracker：静默期落盘，重启（新 Book）后依然静默（批 
     rmSync(dir, { recursive: true, force: true })
   }
 })
+
+test('feelTracker+sproutTracker：追踪表落盘，重启后日帽与冷却延续（批 D6）', () => {
+  const { dir, book, cfg, rows } = rig('book-trackerpersist-')
+  try {
+    sproutToBody(book, [dyed('r_w1', 'warm')], CALM, T0, cfg)
+    assert.equal(book.sproutTracker.get('r_w1')?.count, 1, '本运行期追踪在')
+    // 重启：同 dataDir 新 Book 回读——追踪表与累计口径都在
+    const book2 = createBook({ dataDir: join(dir, 'book'), log: () => {}, dshHome: dir })
+    loadFeelTracker(book2)
+    assert.equal(book2.sproutTracker.get('r_w1')?.count, 1, '每种子冷却/日帽跨重启')
+    assert.equal(book2.sproutAgg.total, 1, '累计口径跨重启')
+    // 重启后再来一声同感觉：全局同感冷却还在 → 不重发
+    sproutToBody(book2, [dyed('r_w2', 'warm')], CALM, T0 + 60 * 1000, cfg)
+    assert.equal(rows().length, 1, `同感冷却跨重启压住（实际 ${rows().length} 声）`)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})

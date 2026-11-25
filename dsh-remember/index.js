@@ -132,12 +132,16 @@ import {
   agentSessionId,
   appendJsonLine,
   atomicWriteJson,
+  claimInstance,
   countLines,
   exists,
+  instanceStillOwner,
   isUnder,
   makeFileLogger,
   readJsonLines,
   readJsonSafe,
+  readJsonSafeSticky,
+  readTextSafe,
   resolveDshHome,
   tailLines,
 } from './lib/store.js'
@@ -360,10 +364,26 @@ export function apply(ctx, baseConfig = {}) {
   const log = makeFileLogger(join(dataDir, 'dsh-remember.log'), { prefix: 'dsh-remember' }) // = book.files.log（book 在下两行才建）
 
   let cfgCache = { at: 0, value: null }
+  /** 配置读带防御（批 D2）：BOM 剥离、解析失败亮日志并沿用上次读到的好的——
+   *  记事本存一次 BOM 就把 denyRoots 静默放空的病根堵上（ADR-0007 事故家族；
+   *  readJsonSafeSticky 是 11-12 自我段断供事故的现成药，这次喂到配置头上）。 */
+  function loadOverridesLogged() {
+    const raw = readTextSafe(book.files.config, '')
+    if (!raw.trim()) return {}
+    try {
+      const value = JSON.parse(raw.charCodeAt(0) === 0xfeff ? raw.slice(1) : raw)
+      return isObj(value) ? value : {}
+    } catch (err) {
+      log(`配置 config.json 解析失败（${String(err?.message ?? err).slice(0, 120)}）——沿用上次读到的好的；盘上原文别删，修好后自动接回。`)
+      const sticky = readJsonSafeSticky(book.files.config, {})
+      return isObj(sticky) ? sticky : {}
+    }
+  }
+
   function getCfg(force = false) {
     const now = Date.now()
     if (!force && cfgCache.value && now - cfgCache.at < REFRESH_MS) return cfgCache.value
-    const overrides = readJsonSafe(book.files.config, {})
+    const overrides = loadOverridesLogged()
     const merged = sanitizeCfg({ ...DEFAULTS, ...(isObj(baseConfig) ? baseConfig : {}), ...(isObj(overrides) ? overrides : {}) })
     merged.dataDir = dataDir
     cfgCache = { at: now, value: merged }
@@ -408,6 +428,20 @@ export function apply(ctx, baseConfig = {}) {
   loadEchoIndex(book, Date.now())
   loadVikarmaIndex(book)
   loadFeelTracker(book) // 执受阻尼的账回读（批 C6-N7）：silentUntil 跨重启有效
+
+  // 单例闸（批 D4）：新实例总是接管 instance.lock；旧实例在下一拍/下一次工具调用读到
+  // 锁换了主人就让位——不再写账、不再叫醒。teardown 时锁还是自己的就顺手摘掉。
+  // 锁文件不清理：它只是「当前主人」的公告牌，本实例死了下一实例启动时直接覆盖。
+  const instanceLock = claimInstance(dataDir)
+  let instanceYieldLogged = false
+  function instanceYielded() {
+    const mine = instanceStillOwner(instanceLock)
+    if (!mine && !instanceYieldLogged) {
+      instanceYieldLogged = true
+      log('单例闸：这本账已由新实例接管，本实例让位——不再写账、不再叫醒（HMR/双开窗口）。')
+    }
+    return !mine
+  }
 
   function findNode(id) {
     const key = String(id ?? '').trim()
@@ -1142,6 +1176,7 @@ export function apply(ctx, baseConfig = {}) {
    * 没递进去不算醒过（下一拍再试）；每一拍都不许抛。
    */
   async function wakeBeat(now = Date.now()) {
+    if (instanceYielded()) return
     wakeState.beats += 1
     const cfg = getCfg()
     if (!cfg.enabled || cfg.wakeEnabled === false || cfg.fastEnabled === false) return
@@ -3224,6 +3259,9 @@ export function apply(ctx, baseConfig = {}) {
         const def = {
           ...raw,
           execute: async (args, exec) => {
+            if (instanceYielded()) {
+              return { ...reject(), note: '单例闸：这本账已由新实例接管，本实例只读（HMR/双开窗口）。' }
+            }
             if (!scopeOk(exec?.agent)) {
               log(
                 `拒绝了一次范围外的调用：${raw.name} · session=${agentSessionId(exec?.agent) || '?'} cwd=${agentCwd(exec?.agent) || '?'}`,
@@ -3749,7 +3787,7 @@ export function apply(ctx, baseConfig = {}) {
           const method = String(req.method ?? 'GET').toUpperCase()
           if (method === 'GET') {
             const cfg = getCfg(true)
-            const overrides = readJsonSafe(book.files.config, {})
+            const overrides = loadOverridesLogged()
             send(res, 200, { ok: true, effective: cfg, overrides: isObj(overrides) ? overrides : {}, editable: Object.keys(EDITABLE) })
             return
           }
@@ -3766,7 +3804,7 @@ export function apply(ctx, baseConfig = {}) {
             return
           }
           const cfg = getCfg(true)
-          const overrides = isObj(readJsonSafe(book.files.config, {})) ? readJsonSafe(book.files.config, {}) : {}
+          const overrides = loadOverridesLogged()
           const result = applyConfigPatch({ overrides, effective: cfg, patch })
           if (!result.ok) {
             send(res, 400, { ok: false, accepted: result.accepted, rejected: result.rejected })

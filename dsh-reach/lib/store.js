@@ -10,6 +10,7 @@ import {
   chmodSync,
   closeSync,
   existsSync,
+  fsyncSync,
   mkdirSync,
   openSync,
   readFileSync,
@@ -18,6 +19,7 @@ import {
   rmSync,
   statSync,
   writeFileSync,
+  writeSync,
 } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
@@ -81,11 +83,16 @@ export function removeFileSafe(file) {
 export function atomicWriteJson(file, data, mode = 0o600) {
   ensureDir(dirname(file))
   const tmp = `${file}.${process.pid}.${Date.now()}.tmp`
-  writeFileSync(tmp, JSON.stringify(data, null, 2), 'utf8')
+  const fd = openSync(tmp, 'w', mode)
   try {
-    chmodSync(tmp, mode)
-  } catch {
-    /* Windows 上 chmod 是空操作，失败不算错 */
+    writeSync(fd, Buffer.from(JSON.stringify(data, null, 2), 'utf8'))
+    try {
+      fsyncSync(fd)
+    } catch {
+      /* 个别文件系统不支持对文件 fsync —— 内容已写，rename 照走（批 D5 对齐 protocol） */
+    }
+  } finally {
+    closeSync(fd)
   }
   renameSync(tmp, file)
 }

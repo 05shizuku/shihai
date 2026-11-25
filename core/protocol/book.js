@@ -16,7 +16,7 @@
 // 也不 import index.js —— 账本协议是被抽出来的地基，不许反向依赖宿主胶水。
 // 文件 I/O 助手用 ./io.js（与 dsh-remember/lib/store.js 逐字同源的副本）。
 
-import { copyFileSync } from 'node:fs'
+import { copyFileSync, existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { isSealed, normNodes } from '../memory.js'
 import { normFastEvent, pushFastIndex } from '../fast.js'
@@ -227,7 +227,28 @@ export function loadBook(book) {
       }
     }
   } catch { /* 读文件本身出问题——按三道护栏的兜底走 */ }
-  const snap = readJsonSafe(snapFile, null)
+  // 快照兜底（批 D1，2026-11-25 外部审查 P0-1）：走到这里 = memory.json 空文件/持续不可读，
+  // 且六连重试＋严格重读都没成。兜底不许静默——红灯、留证、日志，三道护栏在这一支也要生效：
+  // 没有这三样，任意一次成功保存就把整本账「合法」格掉。
+  if (!existsSync(book.files.memory)) {
+    // 账本文件不存在 = 首次启动（或整本被挪走）：空账是合法起点，不亮红灯；有快照就先恢复现场。
+    const snap = readJsonSafeSticky(snapFile, null)
+    if (isObj(snap)) book.log(`账本 memory.json 不在，按快照恢复现场（快照 updatedAt ${new Date(Number(snap.updatedAt) || 0).toISOString()}）。`)
+    loaded = isObj(snap) ? snap : null
+    book.nodes = normNodes(loaded?.nodes ?? [], Date.now())
+    return book.nodes
+  }
+  book.broken = true
+  try {
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-')
+    const bak = `${book.files.memory}.empty-${stamp}.bak`
+    copyFileSync(book.files.memory, bak) // 空文件/半截文件也留证：它何时变空，本身就是线索
+    book.backupOk = true
+    book.log(`账本 memory.json 读不出能认的账（空文件或持续不可读）。现状已备份到 ${bak}；本次按快照兜底——快照之后若还有只落在 memory.json 里的改动，要人工对一遍。`)
+  } catch (bakErr) {
+    book.log(`账本 memory.json 读不出且备份失败（${String(bakErr?.message ?? bakErr).slice(0, 120)}）——本次运行拒绝覆盖写节点表，请先手动备份 ${book.files.memory}。`)
+  }
+  const snap = readJsonSafeSticky(snapFile, null)
   loaded = isObj(snap) ? snap : null
   book.nodes = normNodes(loaded?.nodes ?? [], Date.now())
   return book.nodes
@@ -718,15 +739,15 @@ export function sproutToBody(book, list, emoState, now, cfg) {
       book.log(`执受写不进身体家：${String(err?.message ?? err).slice(0, 160)}`)
       continue
     }
-    // 连击计数只在写成功后涨（批 C6-N6）：没写出去的那声不算「心头一动」落地——
-    // 不涨连击、不占同感冷却，幽灵连击提前触发静默的缝堵上。
-    book.feelTracker.streak = streak
-    book.feelTracker.at = now
-    saveFeelTracker(book)
     book.sproutTracker.set(n.id, { lastAt: now, day: dayKey, count: todayCount + 1 })
     book.sproutAgg.today += 1
     book.sproutAgg.total += 1
+    // 连击计数只在写成功后涨（批 C6-N6；批 D6 重排：tracker/agg 就位后再落盘，
+    // feel.json 一次带上执受追踪完整现场——重启回读不丢日帽，幽灵连击的缝照堵）。
+    book.feelTracker.streak = streak
+    book.feelTracker.at = now
     book.feelTracker.dominant = feelDominant
+    saveFeelTracker(book)
     book.log(`执受：${n.id} → 身体（${text} · ${feelDominant} ${feelLevel}）`)
   }
 }
@@ -742,11 +763,30 @@ export function loadFeelTracker(book) {
   if (typeof saved.dominant === 'string') book.feelTracker.dominant = saved.dominant
   if (Number.isFinite(Number(saved.streak))) book.feelTracker.streak = Math.max(0, Number(saved.streak) || 0)
   if (Number.isFinite(Number(saved.silentUntil))) book.feelTracker.silentUntil = Math.max(0, Number(saved.silentUntil) || 0)
+  // 执受追踪回读（批 D6）：每日帽/每种子冷却不因重启清零——帽被重启绕过连发的缝堵上。
+  if (isObj(saved.sproutAgg)) {
+    book.sproutAgg.day = String(saved.sproutAgg.day ?? '')
+    book.sproutAgg.today = Number(saved.sproutAgg.today) || 0
+    book.sproutAgg.total = Number(saved.sproutAgg.total) || 0
+  }
+  if (isObj(saved.sproutTracker)) {
+    for (const [sid, t] of Object.entries(saved.sproutTracker)) {
+      if (!sid || !isObj(t)) continue
+      book.sproutTracker.set(String(sid), { lastAt: Number(t.lastAt) || 0, day: String(t.day ?? ''), count: Number(t.count) || 0 })
+    }
+  }
 }
 
 export function saveFeelTracker(book) {
   try {
-    atomicWriteJson(book.files.feel, { ...book.feelTracker, savedAt: Date.now() })
+    // 追踪表随手剪枝：7 天没动静的种子不进快照（文件有界；7 天前的冷却早就过期了，行为不变）
+    const now = Date.now()
+    const sproutTracker = {}
+    for (const [sid, t] of book.sproutTracker) {
+      if (now - (Number(t.lastAt) || 0) > 7 * 24 * 60 * 60 * 1000) continue
+      sproutTracker[sid] = t
+    }
+    atomicWriteJson(book.files.feel, { ...book.feelTracker, sproutAgg: { ...book.sproutAgg }, sproutTracker, savedAt: now })
   } catch (err) {
     book.log(`执受阻尼账写不进去：${String(err?.message ?? err).slice(0, 120)}`)
   }

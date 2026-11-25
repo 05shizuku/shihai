@@ -8,7 +8,7 @@
  * 纯逻辑，零依赖，方便单测。
  */
 
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
+import { closeSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, writeSync } from 'node:fs'
 import { dirname } from 'node:path'
 
 /** 多久写一次 */
@@ -38,8 +38,18 @@ export function heartbeatInfo({ version = '', startedAt = 0, now = Date.now(), p
 /** 原子写：先写 .tmp 再改名，读到一半的坏文件不会出现 */
 export function writeHeartbeat(file, info) {
   mkdirSync(dirname(file), { recursive: true })
-  const tmp = `${file}.tmp`
-  writeFileSync(tmp, `${JSON.stringify(info)}\n`)
+  const tmp = `${file}.${process.pid}.${Date.now()}.tmp` // tmp 带 pid+时刻（批 D5）：双实例窗口不再互踩
+  const fd = openSync(tmp, 'w')
+  try {
+    writeSync(fd, Buffer.from(`${JSON.stringify(info)}\n`, 'utf8'))
+    try {
+      fsyncSync(fd)
+    } catch {
+      /* 个别文件系统不支持对文件 fsync —— 内容已写，rename 照走（批 D5 对齐 protocol） */
+    }
+  } finally {
+    closeSync(fd)
+  }
   renameSync(tmp, file)
   return info
 }

@@ -8,7 +8,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 import { apply } from '../index.js'
-import { createBook, saveNodes } from '../../core/protocol/book.js'
+import { createBook, loadBook, saveNodes } from '../../core/protocol/book.js'
 
 function harness(dir, extraCfg = {}) {
   const tools = new Map()
@@ -372,6 +372,116 @@ test('saveNodes 失败回滚：重试不产生重复节点（批 C4）', async (
     assert.equal((saved.nodes ?? []).some((n) => n.id === w1.id), false, '失败那次的节点已回滚')
   } finally {
     try { chmodSync(join(dir, 'book', 'memory.json'), 0o666) } catch { /* 已经删了就算了 */ }
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+// ------------------------------------------------- 批 D1（2026-11-25）：快照兜底不许静默
+const d1Node = (id, text) => ({
+  id, at: Date.now() - 3600_000, lastAt: Date.now() - 3600_000, text, kind: 'fact', weight: 0.5,
+  changes: 'x', tags: [], refs: [], touches: [], audience: 'any', happenedAt: 0, prev: '', prevSelf: '',
+  anchor: false, anchorWhy: '', restoredAt: 0, replaces: [], contexts: [], hits: 0, answered: false,
+  moodAt: null, sealed: false, sealUntil: 0, sealCond: '', faded: false, superseded: false,
+  supersededBy: '', supersededAt: 0, transformed: false, transformedBy: '', transformedAt: 0,
+})
+
+test('loadBook：memory.json 空文件 → 红灯+留证+日志，按快照兜底不再静默（批 D1）', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'char-d1empty-'))
+  try {
+    const bookDir = join(dir, 'book')
+    mkdirSync(bookDir, { recursive: true })
+    writeFileSync(join(bookDir, 'memory.json'), '') // 空文件：三道护栏曾被这一支绕开
+    writeFileSync(join(bookDir, 'memory.snapshot.json'), JSON.stringify({ version: 1, updatedAt: Date.now(), nodes: [d1Node('r_snap1', '快照里的最后一份好账')] }))
+    const logs = []
+    const book = createBook({ dataDir: bookDir, log: (l) => logs.push(l), dshHome: dir })
+    loadBook(book)
+    assert.equal(book.broken, true, '红灯亮起（不再静默）')
+    assert.equal(book.backupOk, true, '现状留证成功')
+    assert.equal(book.nodes[0]?.id, 'r_snap1', '按快照兜底')
+    assert.ok(logs.some((l) => l.includes('读不出能认的账')), '日志写明兜底与恢复口径')
+    const baks = readdirSync(bookDir).filter((f) => f.includes('.empty-') && f.endsWith('.bak'))
+    assert.equal(baks.length, 1, `空文件留了证（${baks.join('、')}）`)
+    // 备份成功 → 覆盖写放行（与 corrupt 路径同一口径）：写成一次红灯解除
+    assert.equal(saveNodes(book), true, 'backupOk 后照常放行')
+    assert.equal(book.broken, false, '写成一次 = 红灯解除')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('loadBook：memory.json 不存在 = 首次启动合法空账，不亮红灯（批 D1）', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'char-d1fresh-'))
+  try {
+    const bookDir = join(dir, 'book')
+    mkdirSync(bookDir, { recursive: true })
+    const logs = []
+    const book = createBook({ dataDir: bookDir, log: (l) => logs.push(l), dshHome: dir })
+    loadBook(book)
+    assert.equal(book.broken, false, '首次启动不亮红灯')
+    assert.equal(book.nodes.length, 0, '空账起步')
+    // 有快照就先恢复现场
+    writeFileSync(join(bookDir, 'memory.snapshot.json'), JSON.stringify({ version: 1, updatedAt: Date.now(), nodes: [d1Node('r_snap2', '快照恢复现场')] }))
+    const book2 = createBook({ dataDir: bookDir, log: () => {}, dshHome: dir })
+    loadBook(book2)
+    assert.equal(book2.broken, false, '恢复现场也不亮红灯')
+    assert.equal(book2.nodes[0]?.id, 'r_snap2', '有快照先恢复现场')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+// ------------------------------------------------- 批 D2（2026-11-25）：配置读带防御
+test('config.json 带 BOM → 配置照读，隔离名单不再静默放空（批 D2）', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'char-bom-'))
+  try {
+    const bookDir = join(dir, 'book')
+    mkdirSync(bookDir, { recursive: true })
+    writeFileSync(join(bookDir, 'config.json'), String.fromCharCode(0xfeff) + JSON.stringify({ recallAudience: 'hard' }))
+    const h = harness(dir)
+    const st = await h.status()
+    assert.equal(st.audience?.mode, 'hard', `BOM 配置生效（实际 ${JSON.stringify(st.audience ?? {})}）`)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('config.json 坏掉 → 日志亮灯 + 默认值兜底，工具照常（批 D2）', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'char-badcfg-'))
+  try {
+    const bookDir = join(dir, 'book')
+    mkdirSync(bookDir, { recursive: true })
+    writeFileSync(join(bookDir, 'config.json'), '{ "recallAudience": ') // 撕裂 JSON
+    const h = harness(dir)
+    const st = await h.status()
+    assert.equal(st.audience?.mode, 'off', '坏配置回落默认')
+    const w = await h.tools.get('remember').execute({ text: '坏配置下照常记', kind: 'fact', changes: 'x' }, h.exec)
+    assert.equal(w.ok, true, '工具照常（默认值兜底）')
+    const logText = readFileSync(join(dir, 'book', 'dsh-remember.log'), 'utf8')
+    assert.ok(logText.includes('config.json 解析失败'), '日志亮灯（不再静默）')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+// ------------------------------------------------- 批 D4（2026-11-25）：单例闸——新实例接管，旧实例让位
+test('双实例：新实例接管后，旧实例工具只读让位（批 D4）', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'char-dual-'))
+  try {
+    const h1 = harness(dir)
+    const w1 = await h1.tools.get('remember').execute({ text: '接管前正常记', kind: 'fact', changes: 'x' }, h1.exec)
+    assert.equal(w1.ok, true, '接管前旧实例正常写')
+    const h2 = harness(dir) // 新实例接管（instance.lock 换主）
+    const w2 = await h2.tools.get('remember').execute({ text: '新实例的账', kind: 'fact', changes: 'x' }, h2.exec)
+    assert.equal(w2.ok, true, '新实例照常写')
+    const w3 = await h1.tools.get('remember').execute({ text: '旧实例不该再写', kind: 'fact', changes: 'x' }, h1.exec)
+    assert.equal(w3.ok, false, '旧实例工具让位（只读）')
+    assert.ok(String(w3.note).includes('单例闸'), `回执说明卡在哪（${w3.note}）`)
+    // 新实例写的那条在账上；旧实例被拒的那条不在
+    const saved = JSON.parse(readFileSync(join(dir, 'book', 'memory.json'), 'utf8'))
+    const texts = (saved.nodes ?? []).map((n) => n.text)
+    assert.ok(texts.includes('新实例的账'), '新实例的账落了盘')
+    assert.ok(!texts.includes('旧实例不该再写'), '旧实例让位后没写盘')
+  } finally {
     rmSync(dir, { recursive: true, force: true })
   }
 })
