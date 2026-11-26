@@ -32,6 +32,7 @@ import {
   STATUS,
   TRIGGER_CHECKIN,
   TRIGGER_DUE,
+  TRIGGER_GREET,
   TRIGGER_URGE,
   applyConfigPatch,
   clamp,
@@ -41,11 +42,13 @@ import {
   isDue,
   makeEntry,
   nextCheckInAt,
+  parseGreet,
   parseHHMM,
   parseUrge,
   parseWhen,
   renderCheckInText,
   renderDeliveryText,
+  renderGreetText,
   renderUrgeText,
   toHHMM,
 } from './lib/reach.js'
@@ -120,6 +123,8 @@ export const DEFAULTS = {
    */
   urgeEnabled: true,
   urgeFile: '',
+  /** 问候灯的账（拆灯方案 §三）：greetFile 留空 = 不认（同 urgeFile 口径） */
+  greetFile: '',
   urgeCooldownMinutes: 30,
   /** 灯的保质期（毫秒）：超过说明这盏灯旧了。默认对齐心事冷却（30 分钟）——
    *  保质期比冷却短的话，冷却期内新亮的灯等冷却过了必然已过期，心事结构性丢失 */
@@ -192,6 +197,7 @@ function mergeConfig(base, ...layers) {
   out.checkInMinQuietMinutes = clamp(out.checkInMinQuietMinutes, 0, 1440)
   out.urgeEnabled = Boolean(out.urgeEnabled)
   out.urgeFile = String(out.urgeFile ?? '').trim()
+  out.greetFile = String(out.greetFile ?? '').trim()
   out.urgeCooldownMinutes = clamp(out.urgeCooldownMinutes, 1, 1440)
   out.urgeFreshMs = clamp(out.urgeFreshMs, 30000, 3600000)
   out.idleMinutes = clamp(out.idleMinutes, 1, 720)
@@ -409,6 +415,11 @@ export function apply(ctx, baseConfig = {}) {
     return attachSection(agent, `dsh-reach-urge-${stamp}`, () => renderUrgeText(urge))
   }
 
+  /** 问候回合的段落（R3 拆灯 §三）：显式仪式——说/忍都是合法出路 */
+  function attachGreet(agent, greet, stamp) {
+    return attachSection(agent, `dsh-reach-greet-${stamp}`, () => renderGreetText(greet))
+  }
+
   // ---------------------------------------------------------------- 投递
 
   async function deliver(entry) {
@@ -578,6 +589,54 @@ export function apply(ctx, baseConfig = {}) {
     }
   }
 
+  /** 问候灯叫醒（R3 拆灯 §三）：与心事灯同池并账（wakeCount/lastWakeAt/lastUrgeAt），
+   *  票号分记（lastGreetToken）；心事优先由心跳段的次序保证（心事先查，叫成则本拍不查问候）。 */
+  async function runGreetWake(greet, reason) {
+    const sc = safeGet('sessionController')
+    if (!sc || typeof sc.prompt !== 'function') return { ok: false, why: '宿主没有 sessionController.prompt' }
+    const target = await pickTargetSession()
+    if (!target) {
+      log(`问候灯没叫：范围里没有够安静的会话（灯过期会自己灭）`)
+      return { ok: false, why: '找不到该投给哪条会话（也许他刚说过话）' }
+    }
+
+    const now = Date.now()
+    pendingWakes.set(target.sessionId, { kind: 'greet', urge: greet })
+    const live = liveAgents.get(target.sessionId)
+    if (live) attachGreet(live, greet, now)
+    const cleanup = setTimeout(() => pendingWakes.delete(target.sessionId), 2 * 60 * 1000)
+    cleanup.unref?.()
+
+    try {
+      await sc.prompt(
+        {
+          requestId: `dsh-reach-greet-${now}`,
+          sessionId: target.sessionId,
+          mode: target.running ? 'steer' : 'queue',
+          content: [{ type: 'text', text: TRIGGER_GREET }],
+          clientTimeZone: timeZone(),
+        },
+        AbortSignal.timeout(30000),
+      )
+      const dk = dayKey(now)
+      if (state.wakeDay !== dk) {
+        state.wakeDay = dk
+        state.wakeCount = 0
+      }
+      state.wakeCount += 1
+      state.lastWakeAt = now
+      state.lastUrgeAt = now // 共享池并账：问候叫醒也占冷却（嘴是同一张）
+      state.lastGreetToken = String(greet?.token ?? '')
+      saveState(true)
+      log(`问候叫醒（${reason}）：session=${target.sessionId} 票=${greet?.token ?? '—'}`)
+      return { ok: true, sessionId: target.sessionId }
+    } catch (err) {
+      const why = String(err?.message ?? err).slice(0, 300)
+      log(`问候叫不动：${why}`)
+      return { ok: false, why }
+    }
+  }
+
   async function pickTargetSession() {
     const cfg = getCfg()
     const items = await refreshList(0)
@@ -639,11 +698,26 @@ export function apply(ctx, baseConfig = {}) {
         const underCap = state.wakeCount < clamp(cfg.maxWakePerDay, 0, 48)
         const sig = parseUrge(readJsonSafe(cfg.urgeFile, null), now, cfg)
         if (sig.ok && cooled && underCap && sig.urge.token !== state.lastUrgeToken) {
-          const r = await runUrgeWake(sig.urge, `强度 ${sig.urge.intensity}`)
+          const r = await runUrgeWake(sig.urge, `impulse ${sig.urge.intensity}`)
           if (r.ok) wokeThisTick = true
           else log(`心事灯这次没叫成：${r.why}`)
         } else if (sig.ok && !cooled) {
           if (getCfg().debug) log('心事灯亮着，但还在冷却里')
+        }
+      }
+
+      // 问候灯（R3 拆灯 §三）：心事优先——心事叫成（wokeThisTick）则问候延后一轮；
+      // 问候灯 30 分钟内有效（parseGreet 新鲜窗），下一拍心事不在场时接上。
+      if (cfg.urgeEnabled && cfg.greetFile && !wokeThisTick) {
+        const cooled = now - (state.lastUrgeAt || 0) >= clamp(cfg.urgeCooldownMinutes, 1, 1440) * 60000
+        const underCap = state.wakeCount < clamp(cfg.maxWakePerDay, 0, 48)
+        const gsig = parseGreet(readJsonSafe(cfg.greetFile, null), now, cfg)
+        if (gsig.ok && cooled && underCap && gsig.greet.token !== state.lastGreetToken) {
+          const r = await runGreetWake(gsig.greet, '问候灯')
+          if (r.ok) wokeThisTick = true
+          else log(`问候灯这次没叫成：${r.why}`)
+        } else if (gsig.ok && !cooled) {
+          if (getCfg().debug) log('问候灯亮着，但共享冷却里（嘴是同一张）')
         }
       }
 
@@ -897,6 +971,7 @@ export function apply(ctx, baseConfig = {}) {
     if (wake) {
       pendingWakes.delete(sid)
       if (wake.kind === 'urge') attachUrge(agent, wake.urge, Date.now())
+      else if (wake.kind === 'greet') attachGreet(agent, wake.urge, Date.now())
       else attachCheckIn(agent, wake.stamp)
     }
   })

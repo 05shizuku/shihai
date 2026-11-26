@@ -18,10 +18,13 @@ import {
   isDue,
   makeEntry,
   nextCheckInAt,
+  parseGreet,
   parseHHMM,
+  parseUrge,
   parseWhen,
   renderCheckInText,
   renderDeliveryText,
+  renderGreetText,
   sanitize,
   toHHMM,
 } from '../lib/reach.js'
@@ -351,4 +354,50 @@ test('applyConfigPatch：空补丁不算成功', () => {
   const r = applyConfigPatch({ overrides: {}, effective: {}, patch: {} })
   assert.equal(r.ok, false)
   assert.equal(r.accepted.length, 0)
+})
+
+// ------------------------------------------------- R3 拆灯（2026-11-26）：问候灯 + impulse 主字段
+test('parseUrge：新形状 urge.json（impulse 主字段、lampKind）认下——影子期旧形状（intensity）兼容（R3）', () => {
+  const now = Date.now()
+  const newRow = {
+    at: now - 1000, lampKind: 'urge', active: true, dryrun: false,
+    token: 'u_x_1', impulse: 1.06, threshold: 1.0, reasons: ['事件 warm·强度 1.0'],
+    event: { id: 'e_warm1', at: now - 3600_000, kind: 'warm', norm: 1.0, source: 'intent' },
+    target: { kind: 'private', userId: 'x' }, hint: 'h',
+  }
+  const r = parseUrge(newRow, now, { checkInWindowStart: '00:00', checkInWindowEnd: '24:00' })
+  assert.equal(r.ok, true, `新形状认下（${r.why ?? ''}）`)
+  assert.equal(r.urge.lampKind, 'urge', '灯种标 urge')
+  assert.equal(r.urge.intensity, 1.06, 'impulse 主字段读进（旧字段名沿用给渲染层）')
+  assert.equal(r.urge.event?.id, 'e_warm1', '触发事件带出处')
+  // 旧形状（R2 期）：无 impulse 有 intensity
+  const oldRow = { ...newRow, impulse: undefined, intensity: 2.4, threshold: 2.0, event: undefined }
+  const r2 = parseUrge(oldRow, now, { checkInWindowStart: '00:00', checkInWindowEnd: '24:00' })
+  assert.equal(r2.ok, true, '旧形状兼容')
+  assert.equal(r2.urge.intensity, 2.4, '旧 intensity 读进')
+})
+
+test('parseGreet：亮灯认下；干跑/旧灯/无票各拒（R3 拆灯 §三）', () => {
+  const now = Date.now()
+  const mk = (over = {}) => ({
+    at: now - 1000, lampKind: 'greet', active: true, dryrun: false,
+    token: 'g_x_1', reason: '问候灯', referral: { mid: 'm-100', at: now - 7200_000 },
+    target: { kind: 'private', userId: 'x' }, hint: 'h', ...over,
+  })
+  const win = { checkInWindowStart: '00:00', checkInWindowEnd: '24:00' }
+  const ok = parseGreet(mk(), now, win)
+  assert.equal(ok.ok, true, `亮灯认下（${ok.why ?? ''}）`)
+  assert.equal(ok.greet.lampKind, 'greet', '灯种标 greet')
+  assert.equal(ok.greet.referral?.mid, 'm-100', 'refs 出处带着')
+  assert.equal(parseGreet(mk({ active: false, wouldBeActive: true, dryrun: true }), now, win).ok, false, '干跑灯拒（wouldBeActive 的真话）')
+  assert.equal(parseGreet(mk({ at: now - 40 * 60_000 }), now, win).ok, false, '旧灯拒（30 分钟新鲜窗 = 问候延后一轮的有效窗）')
+  assert.equal(parseGreet(mk({ token: '' }), now, win).ok, false, '无票拒')
+  assert.equal(parseGreet(mk({ lampKind: 'urge' }), now, win).ok, false, '灯种不对拒（greet.json 里躺着一盏心事灯是文件错）')
+})
+
+test('renderGreetText：显式仪式口径 + refs 指到册行（R3）', () => {
+  const text = renderGreetText({ at: Date.now(), reason: 'r', referral: { mid: 'm-100', at: Date.now() }, hint: 'h' })
+  assert.ok(text.includes('问候灯'), '抬头在')
+  assert.ok(text.includes('显式仪式'), '不伪装成自主（拆灯方案 §二的分界）')
+  assert.ok(text.includes('m-100'), 'refs 指到册行')
 })

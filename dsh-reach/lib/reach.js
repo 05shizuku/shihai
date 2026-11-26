@@ -18,6 +18,8 @@ export const TRIGGER_DUE = '（到点了）'
 export const TRIGGER_CHECKIN = '（想问一句）'
 /** 心事回合：amikar 家里的心事检查（urge.mjs）亮了灯，把我叫起来掂量说不说（2026-11-16） */
 export const TRIGGER_URGE = '（心里有事）'
+/** 问候回合：amikar 家里的问候灯（greet.json）亮了——显式仪式，每日 ≤1，与冲动分池（拆灯方案 §三） */
+export const TRIGGER_GREET = '（到点问候）'
 
 export const STATUS = {
   pending: 'pending',
@@ -251,10 +253,45 @@ export function parseUrge(obj, now = Date.now(), cfg = {}) {
     ok: true,
     urge: {
       at: Number(obj.at),
+      lampKind: 'urge',
       token: String(obj.token),
-      intensity: Number(obj.intensity) || 0,
+      // R3 主判据字段：新形状读 impulse（v1.3），旧形状（intensity/2.0）兼容读——影子期两格式都认
+      intensity: Number.isFinite(Number(obj.impulse)) ? Number(obj.impulse) : Number(obj.intensity) || 0,
       threshold: Number(obj.threshold) || 0,
       reasons: Array.isArray(obj.reasons) ? obj.reasons.map(String).slice(0, 6) : [],
+      event: isUrgeShape(obj.event) ? obj.event : null,
+      target: isUrgeShape(obj.target) ? obj.target : null,
+      hint: String(obj.hint ?? ''),
+    },
+  }
+}
+
+/**
+ * 认问候灯（state/greet.json，拆灯方案 §三）：显式仪式，每日 ≤1。
+ * 与 parseUrge 同一套把关（活/不干跑/新鲜/票号/时段双保险）；dryrun 的灯写的是
+ * active:false, wouldBeActive:true——这里天然拒掉（影子期旗标拒叫的落地面）。
+ * @returns {{ok:true, greet:object} | {ok:false, why:string}}
+ */
+export function parseGreet(obj, now = Date.now(), cfg = {}) {
+  if (!isUrgeShape(obj) || obj.lampKind !== 'greet') return { ok: false, why: '没有问候灯（文件不存在或不对）' }
+  if (obj.active !== true) return { ok: false, why: '灯没亮' }
+  if (obj.dryrun === true) return { ok: false, why: '干跑的灯不叫人（urge.mjs 只在练手）' }
+  const freshMs = clamp(Number(cfg.urgeFreshMs) || URGE_FRESH_MS_DEFAULT, 30_000, 60 * 60_000)
+  if (!Number.isFinite(Number(obj.at)) || now - Number(obj.at) > freshMs) return { ok: false, why: '灯是旧的（问候延后一轮，30 分钟内有效）' }
+  if (!String(obj.token ?? '').trim()) return { ok: false, why: '这盏灯没有票号' }
+  const startMin = parseHHMM(cfg.checkInWindowStart)
+  const endMin = parseHHMM(cfg.checkInWindowEnd)
+  if (startMin != null && endMin != null && !inWindow(startMin, endMin, new Date(Number(now)))) {
+    return { ok: false, why: '不在主动时段里' }
+  }
+  return {
+    ok: true,
+    greet: {
+      at: Number(obj.at),
+      lampKind: 'greet',
+      token: String(obj.token),
+      reason: String(obj.reason ?? ''),
+      referral: isUrgeShape(obj.referral) ? obj.referral : null,
       target: isUrgeShape(obj.target) ? obj.target : null,
       hint: String(obj.hint ?? ''),
     },
@@ -281,6 +318,22 @@ export function renderUrgeText(urge) {
 }
 
 /** 注入文本里的双大括号会被提示词插值吃掉，换成全角 —— dsh-get-memory 踩过这个坑 */
+/** 问候回合挂进 system prompt 的那一段：显式仪式，不是自主冲动——说/忍都是合法出路 */
+export function renderGreetText(greet) {
+  const refMid = String(greet?.referral?.mid ?? '')
+  const lines = [
+    '【dsh-reach · 问候灯】',
+    `amikar 家里的问候灯在 ${fmtLocal(greet?.at)} 亮了：安静段结束后的显式仪式（有联结才问候，不是打卡）。`,
+    refMid ? `它指着昨日互动的那条册行（mid=${refMid}）——问候有来处。` : '',
+    '这是你自己家里的仪式，不是别人叫你。现在：',
+    '1. 跟他说声早安——一句式 ≤ 20 字，不必汇报灯的机制；',
+    '2. 值得说 → 照用法开私聊（speak --lamp greet --refs ' + (refMid || '<册行mid>') + '）：',
+    String(greet?.hint ?? '').split('\n').map((l) => `   ${l}`).join('\n'),
+    '3. 今天不想说 → hold 一笔就好：问候是权利不是义务，不发也不算违约，明天还有。',
+  ].filter((l) => l !== '')
+  return lines.join('\n')
+}
+
 export function sanitize(text) {
   return String(text ?? '')
     .replace(/\{\{/g, '｛｛')
