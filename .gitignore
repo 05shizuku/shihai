@@ -22,5 +22,5 @@ _smoke_stack.txt
 Thumbs.db
 desktop.ini
 
-# 考卷冻结集是配置不是数据——豁免 *.jsonl 全局忽略（2026-11-22 它被这条规则静默吞过一次）
-!dsh-remember/tools/exam/*.jsonl
+# 考卷公开卷是配置不是数据——豁免 *.jsonl 全局忽略（2026-11-22 吞卷事故的豁免，2026-11-26 收窄到公开卷：pii 拆分后私有卷 frozen.jsonl 退出追踪、本地保留照跑，见 ADR-0007 公开卷/私有卷分记节）
+!dsh-remember/tools/exam/frozen-public.jsonl

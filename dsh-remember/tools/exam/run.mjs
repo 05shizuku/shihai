@@ -27,10 +27,11 @@ const file = process.argv.includes('--file')
   ? process.argv[process.argv.indexOf('--file') + 1]
   : join(dshHome, '.dsh-remember', 'memory.json')
 const draft = process.argv.includes('--draft')
+const pub = process.argv.includes('--public') // 公开卷口径（批 pii 拆分，2026-11-26）：46 题，门按 B′ 判
 const asJson = process.argv.includes('--json')
 const gate = process.argv.includes('--gate')
 
-const casesFile = join(HERE, draft ? 'draft.jsonl' : 'frozen.jsonl')
+const casesFile = join(HERE, pub ? 'frozen-public.jsonl' : draft ? 'draft.jsonl' : 'frozen.jsonl')
 const cases = readFileSync(casesFile, 'utf8')
   .split(/\r?\n/)
   .filter((l) => l.trim())
@@ -77,7 +78,7 @@ for (const c of neg) {
 const r5 = pos.length ? hits / pos.length : 0
 const mrr = pos.length ? mrrSum / pos.length : 0
 const summary = {
-  suite: draft ? 'draft' : 'frozen',
+  suite: pub ? 'frozen-public' : draft ? 'draft' : 'frozen',
   ledger: nodes.length,
   cases: cases.length,
   recallAt5: Number(r5.toFixed(3)),
@@ -87,11 +88,14 @@ const summary = {
 }
 
 if (gate) {
-  // 回归门程序化（批 D14，ADR-0007）：R@5 ≥ B−0.05 且 MRR@5 ≥ 0.689 且负题 0 → exit 0，否则 1
-  const GATE_R5 = 0.888
-  const GATE_MRR = 0.689
-  const pass = summary.recallAt5 >= GATE_R5 && summary.mrrAt5 >= GATE_MRR && summary.negativeHits === 0
-  console.log(`[门] R@5 ≥ ${GATE_R5} && MRR@5 ≥ ${GATE_MRR} && 负题 0 → ${pass ? 'PASS' : 'FAIL'}（ADR-0007 回归门 = B − 0.05）`)
+  // 双门账（批 pii 拆分，ADR-0007）：本地全卷按 B−0.05，公开卷按 B′−0.05——两本门账分记、互不漂移
+  const GATES = {
+    frozen: { r5: 0.888, mrr: 0.689, why: 'B − 0.05（53 题全卷，2026-11-22 立碑）' },
+    'frozen-public': { r5: 0.877, mrr: 0.663, why: 'B′ − 0.05（B′ = 0.927/0.713/负题 0，46 题公开卷口径，立数 2026-11-26）' },
+  }
+  const g = GATES[summary.suite] ?? GATES.frozen
+  const pass = summary.recallAt5 >= g.r5 && summary.mrrAt5 >= g.mrr && summary.negativeHits === 0
+  console.log(`[门·${summary.suite}] R@5 ≥ ${g.r5} && MRR@5 ≥ ${g.mrr} && 负题 0 → ${pass ? 'PASS' : 'FAIL'}（${g.why}）`)
   process.exitCode = pass ? 0 : 1
 }
 
