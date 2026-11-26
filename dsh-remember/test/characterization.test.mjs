@@ -485,3 +485,35 @@ test('双实例：新实例接管后，旧实例工具只读让位（批 D4）',
     rmSync(dir, { recursive: true, force: true })
   }
 })
+
+// ------------------------------------------------- 批 D13b（2026-11-26）：hard 档五分段同闸
+test('hard 档群轮：自我/好奇分段也不挂他场的条（批 D13b）', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'char-hardsecs-'))
+  const realHome = process.env.DSH_HOME
+  process.env.DSH_HOME = dir
+  try {
+    const bookDir = join(dir, 'book')
+    mkdirSync(bookDir, { recursive: true })
+    const now = Date.now()
+    const selfPrv = {
+      id: 'r_selfprv', at: now - 3600_000, lastAt: now - 3600_000, text: '私聊场写下的自我认知，不该在群轮挂出',
+      kind: 'self', slot: 'identity', weight: 0.9, changes: '三年后我也这么想', tags: [], refs: [], touches: [],
+      audience: 'private', happenedAt: 0, prev: '', prevSelf: '', anchor: false, anchorWhy: '', restoredAt: 0,
+      replaces: [], contexts: [], hits: 0, answered: false, moodAt: null, sealed: false, sealUntil: 0,
+      sealCond: '', faded: false, superseded: false, supersededBy: '', supersededAt: 0,
+      transformed: false, transformedBy: '', transformedAt: 0,
+    }
+    const curPrv = { ...listAudNode('r_curprv', '私聊场的好奇条，群轮不该挂', 'private', 0.9), kind: 'curiosity', context: '私聊好奇主题' }
+    writeFileSync(join(bookDir, 'memory.json'), JSON.stringify({ version: 1, updatedAt: now, nodes: [selfPrv, curPrv] }))
+    writeFileSync(join(bookDir, 'intent.jsonl'), [listAudIntent('i_g1', '群里的来话', 'group', '222')].map((x) => JSON.stringify(x)).join('\n') + '\n')
+    const h = harness(dir, { recallAudience: 'hard' })
+    const st = await h.status()
+    assert.ok(!String(st.injection?.selfSection ?? '').includes('私聊场写下的自我认知'), `hard 群轮自我段不挂私账（${String(st.injection?.selfSection ?? '').slice(0, 80)}）`)
+    assert.ok(!String(st.injection?.curiositySection ?? '').includes('私聊场的好奇条'), 'hard 群轮好奇段不挂私账')
+    assert.ok(!String(st.injection?.section ?? '').includes('私聊场'), '主段照旧不挂（既有钉的同口径）')
+  } finally {
+    if (realHome === undefined) delete process.env.DSH_HOME
+    else process.env.DSH_HOME = realHome
+    rmSync(dir, { recursive: true, force: true })
+  }
+})

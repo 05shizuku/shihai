@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { makeSeenFile } from '../index.js'
 import {
   PendingReplies,
   assistantText,
@@ -779,4 +780,29 @@ test('extractText：reply 段给 [引用:id] 占位（2026-11-21 引用链路修
   const segs = [{ type: 'reply', data: { id: '12345' } }, { type: 'text', data: { text: '看看这条' } }]
   assert.equal(extractText(segs), '[引用:12345]看看这条')
   assert.equal(extractText([{ type: 'reply', data: {} }]), '[引用]')
+})
+
+test('makeSeenFile：unsee 摘账——递话失败的 mid 给重发让路（批 D8①）', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'seen-unsee-'))
+  try {
+    const seen = makeSeenFile(dir)
+    const now = Date.now()
+    assert.equal(seen('m1', now), false, '首见返回 false 并记下')
+    assert.equal(seen('m1', now), true, '再查命中（已记）')
+    assert.equal(seen.unsee('m1'), true, 'unsee 摘掉')
+    assert.equal(seen('m1', now), false, '摘掉后可重递')
+    assert.equal(seen.unsee('m-none'), false, '摘不存在的返回 false')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('PendingReplies：兜底认领不写 boundAt——不吃宽窗，过期按入队算（批 D8③）', () => {
+  const p = new PendingReplies({ staleMs: 1000, inFlightMs: 60_000 })
+  const key = p.mark('u1', '【QQ】甲（1）说：早', 1000)
+  const bound = p.bindTurn('【QQ】', '【QQ】别的回合的话', 7, 1100)
+  assert.equal(bound, key, '兜底认领仍然发生（行为不变的一半）')
+  // 旧行为：boundAt=1100 被写 → 基准 1100 窗 60s → takeReply(7, 5000) 拿得到
+  // 新行为：不写 boundAt → 基准 = 入队 1000、窗 = staleMs 1s → 5000 时已过期
+  assert.equal(p.takeReply(7, 5000), null, '兜底认领不吃 inFlightMs 宽窗（错绑最多占队 staleMs）')
 })

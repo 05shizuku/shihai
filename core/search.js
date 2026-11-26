@@ -336,9 +336,9 @@ export function rankByQuery(nodes, query, { k1 = 1.2, b = 0.75, expand = true } 
   // 强单词匹配 bm≈4-8 → 0.57-0.71。附带收益：同一 doc 的 relevance 不随别的节点变化
   // ——「重放同结果」的不变量第一次在检索层也成立，绝对分让跨查询可比。
   // 实测修正（同日）：负题的长 query 会靠常见 bigram（「时间」之类）把 bm 堆到 2-8.5，
-  // 与最弱正题的 bm 重叠——单靠 K 分不开，需要第二把尺 topIdf（命中的最大 idf）：
-  // 真命中都由稀有实词扛起（idf 高），假命中全是常见字堆叠（idf 低）。门槛 IDF_FLOOR
-  // 在消费方（searchNodes / 考卷跑卷器）按生产口径执行。
+  // 与最弱正题的 bm 重叠——K 之外本想再加第二把尺 topIdf（IDF_FLOOR），实测四个候选
+  // 特征与正题全部重叠、单调重打分无法全 silencing，未落地（README 检索节有账）。
+  // 负题沉默实际由单闸 MIN_RELEVANCE + K=2 标定把守，负题门由冻结考卷程序化验收（批 D14 --gate）。
   const K = 2
   docs.forEach((doc, i) => {
     if (bm[i] <= 0) return

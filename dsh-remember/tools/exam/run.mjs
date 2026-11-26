@@ -28,6 +28,7 @@ const file = process.argv.includes('--file')
   : join(dshHome, '.dsh-remember', 'memory.json')
 const draft = process.argv.includes('--draft')
 const asJson = process.argv.includes('--json')
+const gate = process.argv.includes('--gate')
 
 const casesFile = join(HERE, draft ? 'draft.jsonl' : 'frozen.jsonl')
 const cases = readFileSync(casesFile, 'utf8')
@@ -83,6 +84,15 @@ const summary = {
   mrrAt5: Number(mrr.toFixed(3)),
   negativeHits: negHits,
   byCategory: [...byCat.entries()].map(([cat, v]) => ({ cat, hit: v.hit, total: v.total })),
+}
+
+if (gate) {
+  // 回归门程序化（批 D14，ADR-0007）：R@5 ≥ B−0.05 且 MRR@5 ≥ 0.689 且负题 0 → exit 0，否则 1
+  const GATE_R5 = 0.888
+  const GATE_MRR = 0.689
+  const pass = summary.recallAt5 >= GATE_R5 && summary.mrrAt5 >= GATE_MRR && summary.negativeHits === 0
+  console.log(`[门] R@5 ≥ ${GATE_R5} && MRR@5 ≥ ${GATE_MRR} && 负题 0 → ${pass ? 'PASS' : 'FAIL'}（ADR-0007 回归门 = B − 0.05）`)
+  process.exitCode = pass ? 0 : 1
 }
 
 if (asJson) {

@@ -2,11 +2,11 @@
 // 连击 3 次强制静默 2 小时、跨 60 分钟重置、静默期全跳。直接钉 core/protocol/book.js 的 sproutToBody。
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, mkdirSync, readFileSync, existsSync, rmSync, rmdirSync, statSync } from 'node:fs'
+import { appendFileSync, mkdtempSync, mkdirSync, readFileSync, existsSync, rmSync, rmdirSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-import { createBook, loadFeelTracker, sproutToBody } from '../../core/protocol/book.js'
+import { createBook, loadEmotionIndex, loadFeelTracker, refreshEmotion, sproutToBody } from '../../core/protocol/book.js'
 import { makeNode } from '../../core/memory.js'
 
 const MIN = 60_000
@@ -20,7 +20,7 @@ function rig(dirName) {
   const bookDir = join(dir, 'book')
   mkdirSync(bookDir, { recursive: true })
   mkdirSync(join(dir, '.dsh-body'), { recursive: true })
-  const book = createBook({ dataDir: bookDir, log: () => {}, dshHome: dir })
+  const book = createBook({ dataDir: bookDir, log: () => {}, dshHome: dir, bodyHome: join(dir, '.dsh-body'), rememberTag: 'dsh-remember', bodySourceTag: 'dsh-body' })
   const cfg = {
     sproutBodyEnabled: true,
     sproutBodyCooldownMinutes: 1,
@@ -148,7 +148,7 @@ test('feelTracker：静默期落盘，重启（新 Book）后依然静默（批 
     sproutToBody(book, [dyed('r_d1', 'down')], CALM, T0 + 20 * MIN, cfg) // 触发静默
     assert.equal(book.feelTracker.silentUntil, T0 + 20 * MIN + 2 * 60 * MIN, '静默已触发')
     // 重启：同 dataDir 新 Book，loadFeelTracker 回读
-    const book2 = createBook({ dataDir: join(dir, 'book'), log: () => {}, dshHome: dir })
+    const book2 = createBook({ dataDir: join(dir, 'book'), log: () => {}, dshHome: dir, bodyHome: join(dir, '.dsh-body'), rememberTag: 'dsh-remember', bodySourceTag: 'dsh-body' })
     loadFeelTracker(book2)
     assert.equal(book2.feelTracker.silentUntil, book.feelTracker.silentUntil, '静默期跨重启')
     assert.ok(book2.feelTracker.silentUntil > T0 + 60 * MIN, '仍在静默窗内')
@@ -165,13 +165,43 @@ test('feelTracker+sproutTracker：追踪表落盘，重启后日帽与冷却延�
     sproutToBody(book, [dyed('r_w1', 'warm')], CALM, T0, cfg)
     assert.equal(book.sproutTracker.get('r_w1')?.count, 1, '本运行期追踪在')
     // 重启：同 dataDir 新 Book 回读——追踪表与累计口径都在
-    const book2 = createBook({ dataDir: join(dir, 'book'), log: () => {}, dshHome: dir })
+    const book2 = createBook({ dataDir: join(dir, 'book'), log: () => {}, dshHome: dir, bodyHome: join(dir, '.dsh-body'), rememberTag: 'dsh-remember', bodySourceTag: 'dsh-body' })
     loadFeelTracker(book2)
     assert.equal(book2.sproutTracker.get('r_w1')?.count, 1, '每种子冷却/日帽跨重启')
     assert.equal(book2.sproutAgg.total, 1, '累计口径跨重启')
     // 重启后再来一声同感觉：全局同感冷却还在 → 不重发
     sproutToBody(book2, [dyed('r_w2', 'warm')], CALM, T0 + 60 * 1000, cfg)
     assert.equal(rows().length, 1, `同感冷却跨重启压住（实际 ${rows().length} 声）`)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+// ------------------------------------------------- 批 D7（2026-11-26）：情绪流常驻索引
+const emoRow = (id, at, emotion = 'warm') =>
+  JSON.stringify({ at, kind: 'event', id, source: 'intent', ref: id, key: `intent|${id}`, emotion, delta: 0.3, halfLife: 30, intensity: 1, text: `事件 ${id}` })
+
+test('emotionIndex：启动整读 + 增量拉取不重不漏，截断 reset 重建（批 D7）', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'book-emo-'))
+  try {
+    const bookDir = join(dir, 'book')
+    mkdirSync(bookDir, { recursive: true })
+    const emoFile = join(bookDir, 'emotion.jsonl')
+    writeFileSync(emoFile, [emoRow('e1', T0), emoRow('e2', T0 + 1000), emoRow('e3', T0 + 2000)].join('\n') + '\n')
+    const book = createBook({ dataDir: bookDir, log: () => {}, dshHome: dir, bodyHome: join(dir, '.dsh-body'), rememberTag: 'dsh-remember', bodySourceTag: 'dsh-body' })
+    loadEmotionIndex(book)
+    assert.equal(book.emotionRows.length, 3, '启动整读 3 行')
+    // 增量：外部追加 2 行 → refresh 只拉新的
+    appendFileSync(emoFile, emoRow('e4', T0 + 3000) + '\n' + emoRow('e5', T0 + 4000) + '\n')
+    refreshEmotion(book)
+    assert.equal(book.emotionRows.length, 5, '增量拉到 5 行')
+    refreshEmotion(book)
+    assert.equal(book.emotionRows.length, 5, '再 refresh 不重复（游标在尾）')
+    // 截断：账被外力剪掉 → reset 从头重建
+    writeFileSync(emoFile, [emoRow('e1', T0), emoRow('e2', T0 + 1000)].join('\n') + '\n')
+    refreshEmotion(book)
+    assert.equal(book.emotionRows.length, 2, '截断 → reset 重建（不重放不残留）')
+    assert.equal(book.emotionRows[0].id, 'e1', '重建后首行正确')
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }

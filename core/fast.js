@@ -44,14 +44,16 @@ export function fastEventId({ source = '', at = 0, kind = '', text = '' } = {}) 
  * 把一行原始事件归一化。坏行返回 null（不因为一行坏了丢整批）。
  * text 不许带阿拉伯数字 —— 那是身体那边的规矩，抄过来也守着。
  */
-export function normFastEvent(raw, { now = Date.now() } = {}) {
+export function normFastEvent(raw, { now = Date.now(), defaultSource = '' } = {}) {
   if (!raw || typeof raw !== 'object') return null
   const at = Number(raw.at)
   if (!Number.isFinite(at) || at <= 0) return null
   const text = String(raw.text ?? '').replace(/\s+/g, ' ').trim()
   if (!text) return null
   const kind = FAST_KINDS.includes(String(raw.kind)) ? String(raw.kind) : 'other'
-  const source = String(raw.source ?? 'dsh-body').trim() || 'dsh-body'
+  // source 缺省由调用方给（批 D11）：core 的词汇表里不再有宿主插件名——
+  // 写入方是谁，宿主说了算（账本协议的 wire 常量住在适配层）
+  const source = String(raw.source ?? defaultSource).trim() || defaultSource
   const ev = {
     id: fastEventId({ source, at, kind, text }),
     at,

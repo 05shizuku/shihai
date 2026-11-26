@@ -403,9 +403,10 @@ export class PendingReplies {
       if (Number.isFinite(turn)) p.turn = turn
       else if (primed) p.primedAt = now
       // 宿主开始答这一条了：过期时钟从这一刻起算（不再从消息收到时刻算）。
-      // 兜底认领（原文对不上、也没 rpcId）不写 primedAt —— 它没被证实是我们的，
-      // 不能让 turn/start 抢走（GUI 里开的转不该动我们的挂起）。
-      p.boundAt = now
+      // 只在「证实是我们的」时写 boundAt（批 D8③）：兜底认领（原文对不上、也没 rpcId）
+      // 不写——它没被证实是我们的，_expired 按入队时刻走 staleMs，不能吃 inFlightMs 宽窗
+      //（错绑的挂起最多占队 staleMs，不再占 6 小时）。
+      if (primed) p.boundAt = now
     }
     if (rpcId) {
       for (const [key, p] of this.map) {

@@ -1,6 +1,6 @@
 # 识海 (shihai)
 
-![version](https://img.shields.io/badge/%E8%AF%86%E6%B5%B7-v0.27.0-6c5ce7) ![exam](https://img.shields.io/badge/%E8%80%83%E5%8D%B7-R%405%200.938%20%C2%B7%20%E8%B4%9F%E9%A2%98%200-00b894) ![core](https://img.shields.io/badge/core%2F-%E4%B8%8D%E8%AE%A4%E8%AF%86%20DSH-f0932b) ![license](https://img.shields.io/badge/License-MIT-blue)
+![version](https://img.shields.io/badge/%E8%AF%86%E6%B5%B7-v0.27.3-6c5ce7) ![exam](https://img.shields.io/badge/%E8%80%83%E5%8D%B7-R%405%200.938%20%C2%B7%20%E8%B4%9F%E9%A2%98%200-00b894) ![core](https://img.shields.io/badge/core%2F-%E4%B8%8D%E8%AE%A4%E8%AF%86%20DSH-f0932b) ![license](https://img.shields.io/badge/License-MIT-blue)
 
 > 识海＝修真小说里神魂住的那片海。这套插件让一条 AI 把**记性、身体、情绪、好奇、思量、智、执受（身心互绑）、瀑流**都长在本地账本上——不靠云端，不靠向量数据库，就是几个 JSONL 文件和一点笨功夫。
 

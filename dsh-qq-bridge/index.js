@@ -132,7 +132,7 @@ export function resolveDshHome() {
 const SEEN_MS = 10 * 60 * 1000
 /** 盘上的账多久重读一次：热重载双实例窗口里，另一个实例记下的重复消息也要认得 */
 const SEEN_RELOAD_MS = 5000
-function makeSeenFile(homeDir, scoped = null) {
+export function makeSeenFile(homeDir, scoped = null) {
   const file = join(homeDir, 'seen.json')
   let cache = null
   let loadedAt = 0
@@ -158,7 +158,7 @@ function makeSeenFile(homeDir, scoped = null) {
       /* 写不进去就退化为只认本实例的账 */
     }
   }
-  return function seenRecently(mid, now) {
+  const seenFn = function seenRecently(mid, now) {
     const map = load()
     // 顺手清过期
     let dirty = false
@@ -176,6 +176,16 @@ function makeSeenFile(homeDir, scoped = null) {
     save()
     return false
   }
+  /** 递话失败时把 mid 从 seen 里摘掉（批 D8①）：prompt 抛错的那条要给重发让路——
+   *  否则账在消息流里、话却永远没递出去，协议端重发还被去重拦住。 */
+  seenFn.unsee = function unseeRecently(mid) {
+    const map = load()
+    if (map[mid] === undefined) return false
+    delete map[mid]
+    save()
+    return true
+  }
+  return seenFn
 }
 
 
@@ -1356,7 +1366,9 @@ export function createBridge({ cfg, log = () => {}, sessionController, livenessB
       if (saved0.some((s) => s.ok)) log(`收图存了 ${saved0.filter((s) => s.ok).length} 张 → ${photosDir}`)
       if (messageLog) {
         messageLog.note({
-          at: Date.now(),
+          // 用协议端给的消息真时间戳（批 D8②，对齐群块与 README）：收货时刻会让
+          // intent id 漂移（seen 过期后的重发变成两条不同 id 的意图事件）、账序歪
+          at: Number(ev.time) > 0 ? Number(ev.time) * 1000 : Date.now(),
           chatType: 'private',
           userId: String(ev.user_id ?? ''),
           nickname: String(ev.sender?.nickname ?? ''),
@@ -1417,6 +1429,7 @@ export function createBridge({ cfg, log = () => {}, sessionController, livenessB
         log(`递进会话 ${sid}：${line}`)
       } catch (err) {
         pending.fail(key)
+        if (mid) seenRecently.unsee(mid) // 批 D8①：没递进去的从 seen 摘掉，重发能再走一遍
         log(`递话失败（${sid}）：${err?.message ?? err}`)
       }
       return
@@ -1487,6 +1500,7 @@ export function createBridge({ cfg, log = () => {}, sessionController, livenessB
         openTopicWindow(ev.group_id)
       } catch (err) {
         pending.fail(key)
+        if (midG) seenRecently.unsee(midG) // 批 D8①：没递进去的从 seen 摘掉，重发能再走一遍
         log(`群 @ 递话失败（${sid}）：${err?.message ?? err}`)
       }
     }

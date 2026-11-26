@@ -142,7 +142,11 @@ export function contextKey(v) {
 }
 
 export function tauDays(weight, kind = '') {
-  if (normKind(kind) === 'self') return SLOW_TAU_BASE + SLOW_TAU_SPAN * clampWeight(weight)
+  // 慢钟三层补全（批 D10，2026-11-26）：narration/wisdom 与 self 同走慢钟——
+  // philosophy「思量/智按月淡」与 ADR-0004 的字面落地（recency 侧早已对齐，这里补分量淡侧）
+  if (['self', 'narration', 'wisdom'].includes(normKind(kind))) {
+    return SLOW_TAU_BASE + SLOW_TAU_SPAN * clampWeight(weight)
+  }
   return TAU_BASE + TAU_SPAN * clampWeight(weight)
 }
 
@@ -285,7 +289,9 @@ export function makeNode(input = {}, now = Date.now()) {
     at: Number(src.at) || now,
     lastAt: Number(src.lastAt) || Number(src.at) || now,
     /**
-     * 两个时间（借自晴猫，2026-11-17）：at 是「得知」（写下的时刻，淡忘从这算）；
+     * 两个时间（借自晴猫，2026-11-17）：at 是「得知」（写下的时刻）；淡忘实际从 lastAt
+     * 算（decayFactor）——被想起过的条多活一阵，这是设计直觉（批 D10 拍板 2026-11-26：
+     * 维持 lastAt，本注释与实现对齐；原稿「淡忘从 at 算」与实现矛盾，作废）；
      * happenedAt 是「发生」——refs 指向的来话/事件的原始时间。转述类条目展示时标出来。
      * 旧行没有这字段 = 0 = 不是转述（或来源时刻没记到）。
      */

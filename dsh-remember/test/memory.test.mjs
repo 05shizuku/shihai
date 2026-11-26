@@ -1252,3 +1252,9 @@ test('audienceVisible：any 两边都给、群轮只认同群、私聊轮只认�
   assert.equal(audienceVisible('private', 'private'), true)
   assert.equal(audienceVisible('group:222', 'solo'), true, 'solo 轮全可见')
 })
+
+test('慢钟三层补全：narration/wisdom 与 self 同走慢钟（批 D10）', () => {
+  assert.equal(tauDays(0.9, 'narration'), tauDays(0.9, 'self'), '思量与自我同一档慢钟')
+  assert.equal(tauDays(0.9, 'wisdom'), tauDays(0.9, 'self'), '智与自我同一档慢钟')
+  assert.ok(tauDays(0.9, 'narration') > tauDays(0.9, 'fact'), '慢钟确实比事实层慢')
+})

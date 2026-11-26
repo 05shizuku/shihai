@@ -157,8 +157,10 @@ import {
   saveNodes,
   noteDisplay,
   noteEcho,
+  loadEmotionIndex,
   loadFeelTracker,
   noteVikarma,
+  refreshEmotion,
   sproutToBody,
   pullFast as fastPull,
   pullIntent as intentPull,
@@ -391,7 +393,14 @@ export function apply(ctx, baseConfig = {}) {
   }
 
   // Book：账本协议的显式状态（批③起，闭包状态都装在这里；字段表见 docs/g1-batch3-book-skeleton.md §1）
-  const book = createBook({ dataDir, log, dshHome: resolveDshHome() })
+  const book = createBook({
+  dataDir,
+  log,
+  dshHome: resolveDshHome(),
+  bodyHome: join(resolveDshHome(), '.dsh-body'), // 批 D11：身体家目录由宿主注入
+  rememberTag: 'dsh-remember', // 批 D11：wire 身份住适配层，core 不认识插件名
+  bodySourceTag: 'dsh-body',
+})
   loadBook(book)
 
   // ---------------------------------------------------------------- 账本
@@ -428,6 +437,7 @@ export function apply(ctx, baseConfig = {}) {
   loadEchoIndex(book, Date.now())
   loadVikarmaIndex(book)
   loadFeelTracker(book) // 执受阻尼的账回读（批 C6-N7）：silentUntil 跨重启有效
+  loadEmotionIndex(book) // 情绪流常驻索引（批 D7）：启动整读一次，此后增量
 
   // 单例闸（批 D4）：新实例总是接管 instance.lock；旧实例在下一拍/下一次工具调用读到
   // 锁换了主人就让位——不再写账、不再叫醒。teardown 时锁还是自己的就顺手摘掉。
@@ -501,11 +511,19 @@ export function apply(ctx, baseConfig = {}) {
    * 自我层那一段。它跟「我记得的」是**两个段**：一个是「发生过什么」，
    * 一个是「我现在是这样」。自我走慢钟（按月淡），且每槽只留一条。
    */
+  /** hard 档的段级受众闸（批 D13b）：五个分段与主池同一条判定——群/私聊轮不挂别的场的条。
+   *  soft 档不动分段（开头本来就几条，降存在感没有排位可让，与主段同口径）。 */
+  function hardAudNodes(nodes, now = Date.now()) {
+    const turnAud = currentAudience(now)
+    if (getCfg().recallAudience !== 'hard' || turnAud === 'solo') return nodes
+    return nodes.filter((n) => audienceVisible(n.audience, turnAud))
+  }
+
   function currentSelfSection(now = Date.now()) {
     const cfg = getCfg()
     if (!cfg.enabled || cfg.selfEnabled === false) return ''
     try {
-      return renderSelfSection(book.nodes, {
+      return renderSelfSection(hardAudNodes(book.nodes, now), {
         now,
         maxChars: clamp(cfg.selfMaxChars, 80, 2000),
         title: '我',
@@ -521,7 +539,7 @@ export function apply(ctx, baseConfig = {}) {
     const cfg = getCfg()
     if (!cfg.enabled || cfg.unsettledEnabled === false) return ''
     try {
-      return renderUnsettledSection(book.nodes, {
+      return renderUnsettledSection(hardAudNodes(book.nodes, now), {
         now,
         maxChars: clamp(cfg.unsettledMaxChars, 80, 2000),
         title: '还没定的',
@@ -540,7 +558,7 @@ export function apply(ctx, baseConfig = {}) {
     const cfg = getCfg()
     if (!cfg.enabled || cfg.habitEnabled === false) return ''
     try {
-      return renderHabitSection(book.nodes, {
+      return renderHabitSection(hardAudNodes(book.nodes, now), {
         now,
         limit: clamp(cfg.habitLimit, 0, 10),
         maxChars: clamp(cfg.habitMaxChars, 80, 2000),
@@ -560,7 +578,7 @@ export function apply(ctx, baseConfig = {}) {
     const cfg = getCfg()
     if (!cfg.enabled || cfg.curiosityEnabled === false) return ''
     try {
-      return renderCuriositySection(book.nodes, {
+      return renderCuriositySection(hardAudNodes(book.nodes, now), {
         now,
         limit: clamp(cfg.curiosityLimit, 0, 10),
         maxChars: clamp(cfg.curiosityMaxChars, 80, 2000),
@@ -620,7 +638,7 @@ export function apply(ctx, baseConfig = {}) {
   function fastAllEvents(now = Date.now()) {
     const out = []
     for (const raw of readJsonLines(book.files.fast)) {
-      const ev = normFastEvent(raw, { now })
+      const ev = normFastEvent(raw, { now, defaultSource: 'dsh-body' }) // 副本行缺 source 的旧行按身体算（批 D11，wire 常量住适配层）
       if (ev) out.push(ev)
     }
     return out
@@ -632,7 +650,7 @@ export function apply(ctx, baseConfig = {}) {
     book.fastAllIds.clear()
     const cap = clamp(getCfg().fastMaxEvents, 0, 5000)
     for (const raw of readJsonLines(book.files.fast)) {
-      const ev = normFastEvent(raw, { now })
+      const ev = normFastEvent(raw, { now, defaultSource: 'dsh-body' }) // 副本行缺 source 的旧行按身体算（批 D11，wire 常量住适配层）
       if (!ev) continue
       book.fastAllIds.add(ev.id)
       book.fastIndex = pushFastIndex(book.fastIndex, ev, cap)
@@ -819,16 +837,16 @@ export function apply(ctx, baseConfig = {}) {
   //
   // 状态只是「上次的我的笔记」：它不接管嘴 —— 说出口的心情仍然是我当轮的判断。
 
-  /** 情绪流账本里的每一行（坏行跳过）。5 秒缓存（book.emotionLinesCache）：status 一拍里
-   *  pullEmotion 和 emotionState 各读一遍整本（这文件只增不减），缓存砍掉一半（对齐 echoStats）。 */
+  /** 情绪流账本里的每一行（批 D7）：常驻内存索引 + 字节游标增量——启动整读一次，
+   *  此后每次调用只拉新增字节（通常零字节）。原来每 5 秒整本 parse 11MB（47ms/拍、
+   *  4.3 万对象/拍）的灯案复发通道就此关死；情绪流是地层不裁旧，内存换时间。 */
   function emotionLines() {
-    const nowMs = Date.now()
-    if (nowMs - book.emotionLinesCache.at < 5000) return book.emotionLinesCache.lines
-    const lines = readJsonLines(book.files.emotion)
-      .map((raw) => normEmotionLine(raw))
-      .filter(Boolean)
-    book.emotionLinesCache = { at: nowMs, lines }
-    return lines
+    try {
+      refreshEmotion(book)
+    } catch {
+      /* 拉不动就用手上的旧索引——情绪笔记宁可旧一拍，不能空一轮 */
+    }
+    return book.emotionRows
   }
 
   /** 此刻的状态（折出来的笔记）+ 现在的系数表 */
@@ -886,8 +904,8 @@ export function apply(ctx, baseConfig = {}) {
       text: String(text ?? '').slice(0, 120),
     }
     try {
-      appendJsonLine(book.files.emotion, line)
-      book.emotionLinesCache = { at: 0, lines: [] } // 账上多了行，缓存作废
+      appendJsonLine(book.files.emotion, line) // 批 D7：游标不动；:896 push 进内存，这里先把 id 记进去重集
+      book.emotionRowIds.add(String(line.id ?? ''))
     } catch (err) {
       log(`情绪流记不进去：${String(err?.message ?? err).slice(0, 200)}`)
       return null
@@ -1461,12 +1479,13 @@ export function apply(ctx, baseConfig = {}) {
     // 自我段排在账本段前面：先知道我是谁，再看记得什么
     if (cfg.selfEnabled !== false) {
       add('dsh-remember:self', clamp(cfg.selfSectionOrder, 1000, 9999), () => currentSelfSection())
-      // 思量段（定案 A）：紧跟我 —— 恒审思量是「我」自己的动作，系统只给时机
-      if (cfg.narrationEnabled !== false) {
-        add('dsh-remember:narration', clamp(cfg.narrationSectionOrder, 1000, 9999), () => currentNarrationSection())
-      }
-      add('dsh-remember:unsettled', clamp(cfg.unsettledSectionOrder, 1000, 9999), () => currentUnsettledSection())
     }
+    // 思量段（定案 A）：恒审思量是「我」自己的动作，系统只给时机。
+    // 批 D13a：思量/还没定的与「我」段解耦——关自我段不再连坐杀掉两段（定案 A：思量是独立段）
+    if (cfg.narrationEnabled !== false) {
+      add('dsh-remember:narration', clamp(cfg.narrationSectionOrder, 1000, 9999), () => currentNarrationSection())
+    }
+    add('dsh-remember:unsettled', clamp(cfg.unsettledSectionOrder, 1000, 9999), () => currentUnsettledSection())
     // 好奇段：排在自我段之后 —— 我想知道什么，是「我」之后的下一层
     if (cfg.curiosityEnabled !== false) {
       add('dsh-remember:curiosity', clamp(cfg.curiositySectionOrder, 1000, 9999), () => currentCuriositySection())
@@ -2831,8 +2850,7 @@ export function apply(ctx, baseConfig = {}) {
         ...(halfLife ? { halfLife } : {}),
       }
       try {
-        appendJsonLine(book.files.emotion, line)
-        book.emotionLinesCache = { at: 0, lines: [] } // 系数改了（tune 行入账），缓存作废
+        appendJsonLine(book.files.emotion, line) // 批 D7：游标不动，tune 行由下次 refresh 进内存（按 id 去重不双记）
       } catch (err) {
         return {
           ok: false,
@@ -3076,7 +3094,7 @@ export function apply(ctx, baseConfig = {}) {
   function currentNarrationSection(now = Date.now()) {    const cfg = getCfg()
     if (!cfg.enabled || cfg.narrationEnabled === false) return ''
     try {
-      const all = book.nodes.filter((n) => n && normKind(n.kind) === 'narration')
+      const all = hardAudNodes(book.nodes, now).filter((n) => n && normKind(n.kind) === 'narration')
       if (!all.length) return ''
       const newest = all.reduce((a, b) => ((Number(b.at) || 0) > (Number(a.at) || 0) ? b : a))
       // 链头要答过四问才挂（hasThought 闸门原样适用）；没答的翻得到、不挂段
@@ -3697,7 +3715,7 @@ export function apply(ctx, baseConfig = {}) {
       },
       // 思量（定案 A）：全内存算（hub 每 5 秒拉一次 status，别读文件——灯案教训）
       narration: (() => {
-        const all = book.nodes.filter((n) => n && normKind(n.kind) === 'narration')
+        const all = hardAudNodes(book.nodes, now).filter((n) => n && normKind(n.kind) === 'narration')
         const newest = all.reduce((a, b) => {
           const aa = Number(a?.at) || 0
           const bb = Number(b?.at) || 0

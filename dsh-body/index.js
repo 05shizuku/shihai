@@ -396,10 +396,12 @@ export function apply(ctx, baseConfig = {}) {
 
     const { events, nextIndex } = readMoodEvents(moodFile, st.moodEventsConsumed)
     for (const ev of events) {
-      const before = st.anger
+      // 幻影 mood 修复（批 D9）：判「这一行真的动了状态」要看三个标量，不能看 lastMoodEvent——
+      // 未知 kind 不清它，陈旧旧值恒真，每条不认识的行都会写一条幻影「心里动了一下」快层事件。
+      const beforeMood = { anger: st.anger, sadness: st.sadness, mood: st.mood }
       st = applyMoodEvent(st, ev, now)
-      if (st.anger !== before || st.lastMoodEvent) {
-        log(`心情事件 ${String(ev?.kind ?? '')}：anger ${before.toFixed(1)} → ${st.anger.toFixed(1)}`)
+      if (st.anger !== beforeMood.anger || st.sadness !== beforeMood.sadness || st.mood !== beforeMood.mood) {
+        log(`心情事件 ${String(ev?.kind ?? '')}：anger ${beforeMood.anger.toFixed(1)} → ${st.anger.toFixed(1)}`)
         const kind = String(ev?.kind ?? '')
         const words =
           kind === 'sprout'

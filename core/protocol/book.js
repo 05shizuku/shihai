@@ -19,6 +19,7 @@
 import { copyFileSync, existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { isSealed, normNodes } from '../memory.js'
+import { normEmotionLine } from '../emotion.js'
 import { normFastEvent, pushFastIndex } from '../fast.js'
 import {
   intentEventFromMessage,
@@ -46,7 +47,7 @@ import {
  *   dshHome——DSH 家目录（resolveDshHome() 的结果，sproutMoodFile 等家目录推导用）。
  * @returns Book 对象（字段清单见 docs/g1-batch3-book-skeleton.md §1，逐项对应 index.js 现声明）
  */
-export function createBook({ dataDir, log, dshHome }) {
+export function createBook({ dataDir, log, dshHome, bodyHome = '', rememberTag = '', bodySourceTag = '' }) {
   const files = {
     dir: dataDir,
     memory: join(dataDir, 'memory.json'),
@@ -77,7 +78,11 @@ export function createBook({ dataDir, log, dshHome }) {
     // 环境
     dataDir,
     dshHome,
-    sproutMoodFile: join(dshHome, '.dsh-body', 'mood-events.jsonl'),
+    // 宿主注入（批 D11）：身体家目录与两个 wire 身份——core 不再拼宿主插件名
+    bodyHome,
+    rememberTag,
+    bodySourceTag,
+    sproutMoodFile: bodyHome ? join(bodyHome, 'mood-events.jsonl') : '',
     files,
     log,
 
@@ -117,8 +122,12 @@ export function createBook({ dataDir, log, dshHome }) {
     },
 
     // 缓存（读路径 5 秒纪律的产物）
-    emotionLinesCache: { at: 0, lines: [] },
+    emotionLinesCache: { at: 0, lines: [] }, // 已退役（批 D7）：由 emotionRows + 字节游标取代，字段保留防外部引用
     echoStatsCache: { at: 0, stats: new Map() },
+    // 情绪流常驻索引（批 D7）：启动整读一次，此后增量拉取——不再每 5 秒整本 parse
+    emotionRows: [],
+    emotionCursor: 0,
+    emotionRowIds: new Set(), // 内存去重（批 D7）：写入点顺手 push 的行与 refresh 重读的行只算一份
 
     // 游标（内存态；落盘 files.fastCursor / files.intentCursor，语义零变化）
     cursor: { fast: {}, intent: {} },
@@ -315,10 +324,9 @@ export function pullFast(book, now, cfg, source) {
   const cap = clamp(cfg.fastMaxEvents, 0, 5000)
   let added = 0
   for (const raw of got.rows) {
-    const ev = normFastEvent(raw, { now })
+    const ev = normFastEvent(raw, { now, defaultSource: book.bodySourceTag })
     if (!ev) continue
     if (book.fastAllIds.has(ev.id)) continue
-    book.fastAllIds.add(ev.id)
     try {
       appendJsonLine(book.files.fast, {
         id: ev.id,
@@ -333,6 +341,7 @@ export function pullFast(book, now, cfg, source) {
       book.log(`快层副本写不进去：${String(err?.message ?? err).slice(0, 160)}`)
       continue
     }
+    book.fastAllIds.add(ev.id) // 写成功后再记（批 D12）：append 失败不留僵尸 id，下一拍重抄
     book.fastIndex = pushFastIndex(book.fastIndex, ev, cap)
     added += 1
   }
@@ -401,7 +410,6 @@ export function pullIntent(book, now, cfg, sources, labelOf) {
       }
       // 被撤回的原话只入档不进索引 —— 「撤回过」的事实行照常走
       if (ev.mid && book.intentTombstoned.has(ev.mid)) continue
-      book.intentAllIds.add(ev.id)
       try {
         appendJsonLine(book.files.intent, {
           id: ev.id,
@@ -427,6 +435,7 @@ export function pullIntent(book, now, cfg, sources, labelOf) {
         book.log(`意图层副本写不进去：${String(err?.message ?? err).slice(0, 160)}`)
         continue
       }
+      book.intentAllIds.add(ev.id) // 写成功后再记（批 D12）：append 失败不留僵尸 id，下一拍重抄
       book.intentIndex = pushIntentIndex(book.intentIndex, ev, cap)
       added += 1
     }
@@ -731,7 +740,7 @@ export function sproutToBody(book, list, emoState, now, cfg) {
       kind: 'sprout',
       text,
       detail: { seedId: n.id, dominant: feelDominant, level: feelLevel },
-      source: 'dsh-remember',
+      source: book.rememberTag,
     }
     try {
       appendJsonLine(book.sproutMoodFile, row)
@@ -750,6 +759,45 @@ export function sproutToBody(book, list, emoState, now, cfg) {
     saveFeelTracker(book)
     book.log(`执受：${n.id} → 身体（${text} · ${feelDominant} ${feelLevel}）`)
   }
+}
+
+// ---------------------------------------------------------------- 情绪流常驻索引（批 D7，2026-11-26）
+
+/**
+ * 启动整读一次：情绪行进内存（emotionRows），字节游标落到文件尾。
+ * 此后 refreshEmotion 只拉新增字节——11MB 账每 5 秒整本 parse（47ms/拍、4.3 万对象/拍）
+ * 的灯案复发通道就此关死。情绪流是地层（拍板 2026-11-25：不裁旧），内存换时间。
+ */
+export function loadEmotionIndex(book) {
+  const got = readJsonLinesFrom(book.files.emotion, 0)
+  const rows = []
+  for (const raw of got.rows) {
+    const n = normEmotionLine(raw)
+    if (n) rows.push(n)
+  }
+  book.emotionRows = rows
+  book.emotionRowIds = new Set(rows.map((n) => String(n.id ?? '')).filter(Boolean))
+  book.emotionCursor = got.next
+  return rows.length
+}
+
+/** 增量拉一次：只读游标之后的新字节（通常零字节，一次 stat 就回来）。文件被截断/轮转 → reset 从头重建。 */
+export function refreshEmotion(book) {
+  const got = readJsonLinesFrom(book.files.emotion, book.emotionCursor)
+  if (got.reset) {
+    book.emotionRows = [] // 账被外力截断：内存索引从头重建，语义与 pull* 的 reset 一致
+    book.emotionRowIds.clear()
+  }
+  for (const raw of got.rows) {
+    const n = normEmotionLine(raw)
+    if (!n) continue
+    const id = String(n.id ?? '')
+    if (id && book.emotionRowIds.has(id)) continue // 写入点已顺手进内存（noteEmotion push），文件重读只算一份
+    if (id) book.emotionRowIds.add(id)
+    book.emotionRows.push(n)
+  }
+  book.emotionCursor = got.next
+  return got.rows.length
 }
 
 // ---------------------------------------------------------------- 执受阻尼的账（批 C6-N7）
