@@ -66,6 +66,23 @@ export function fileExists(file) {
   }
 }
 
+/**
+ * 坏文件留证：改名成 .bad-时间戳.bak，返回留证路径（失败返回空串）。
+ * 2026-11-27（跟 dsh-look 同款体检）：文件读不出时先留证再起步，
+ * 别让下一次正常写把坏现场盖掉。
+ */
+export function backupBadFile(file) {
+  try {
+    if (!file || !existsSync(file)) return ''
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-')
+    const bak = `${file}.bad-${stamp}.bak`
+    renameSync(file, bak)
+    return bak
+  } catch {
+    return ''
+  }
+}
+
 /** 删掉一个文件；删不掉也不算错（可能正被占着） */
 export function removeFileSafe(file) {
   try {

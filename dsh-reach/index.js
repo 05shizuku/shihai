@@ -56,6 +56,7 @@ import {
   agentCwd,
   agentSessionId,
   atomicWriteJson,
+  backupBadFile,
   fileExists,
   isUnder,
   makeFileLogger,
@@ -277,7 +278,19 @@ export function apply(ctx, baseConfig = {}) {
   // ---------------------------------------------------------------- 状态
 
   function loadState() {
-    const raw = readJsonSafe(stateFile, {})
+    const raw = readJsonSafe(stateFile, null)
+    // 2026-11-27（跟 dsh-look 同款体检）：state.json 存在但读不出 = 挂起条目全丢，
+    // 以前一声不响。现在留证 + 亮灯，别让下次正常写盖掉坏现场。
+    if (!raw || typeof raw !== 'object') {
+      if (fileExists(stateFile)) {
+        const kept = backupBadFile(stateFile)
+        try {
+          log(`状态读不出能认的数（${stateFile}）；${kept ? '坏文件已留证：' + kept : '留证失败'}；本次按空账起步（挂起的 reach 条目丢了）`)
+        } catch {
+          /* 日志写不进去也不挡启动 */
+        }
+      }
+    }
     const entries = Array.isArray(raw?.entries) ? raw.entries.filter((e) => isObj(e) && e.id && e.status) : []
     const lastActivity = isObj(raw?.lastActivity) ? raw.lastActivity : {}
     return {

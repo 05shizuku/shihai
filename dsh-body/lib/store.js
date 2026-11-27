@@ -72,10 +72,36 @@ export function instanceStillOwner(lock) {
   return Boolean(cur && cur.id === lock.id)
 }
 
-/** 状态文件读取；坏文件不让插件崩，退回默认值 */
-export function loadState(file, nowMs, makeDefault) {
+/**
+ * 状态文件读取；坏文件不让插件崩，退回默认值。
+ *
+ * 2026-11-27（跟 dsh-look 同款体检）：以前「文件存在但读不出」会静默退回默认值——
+ * 身体数值悄悄重置，谁也不知情。现在照 dsh-remember 批 D1 的三道护栏：
+ * 文件存在但读不出 → 亮灯（onProblem 回调）+ 留证（坏文件改名 .bad-时间戳）+ 默认起步。
+ * 文件不存在 = 合法首次启动，不响。
+ */
+export function loadState(file, nowMs, makeDefault, onProblem = null) {
   const raw = readJsonSafe(file, null)
-  if (!raw || typeof raw !== 'object') return makeDefault(nowMs)
+  if (!raw || typeof raw !== 'object') {
+    const empty = makeDefault(nowMs)
+    if (file && existsSync(file)) {
+      let kept = ''
+      try {
+        const stamp = new Date().toISOString().replace(/[:.]/g, '-')
+        const bak = `${file}.bad-${stamp}.bak`
+        renameSync(file, bak)
+        kept = bak
+      } catch {
+        kept = ''
+      }
+      try {
+        if (typeof onProblem === 'function') onProblem({ file, kept })
+      } catch {
+        /* 回调炸了不挡启动 */
+      }
+    }
+    return empty
+  }
   return { ...makeDefault(nowMs), ...raw }
 }
 

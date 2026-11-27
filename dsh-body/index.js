@@ -291,7 +291,10 @@ export function apply(ctx, baseConfig = {}) {
   }
 
   function load(stateFile) {
-    return loadState(stateFile, Date.now(), (t) => defaultState(t, getCfg().initial))
+    return loadState(stateFile, Date.now(), (t) => defaultState(t, getCfg().initial), ({ file, kept }) => {
+      // 2026-11-27：坏状态不静默（跟 dsh-look 同款体检）——留证 + 亮灯，身体从默认起步
+      log(`身体状态读不出能认的数（${file}）；${kept ? '坏文件已留证：' + kept : '留证失败'}；本次按默认值起步`)
+    })
   }
 
   // ---- 渲染（宿主每次组装提示词时取） ----

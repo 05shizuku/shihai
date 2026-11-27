@@ -954,12 +954,34 @@ export function createBridge({ cfg, log = () => {}, sessionController, livenessB
   }
   // 挂起的回话记在盘上：热重载/重启不让「等着回的话」跟着实例一起没掉
   //（上次就是热重载把他等的那条回话洗掉了，我只能走侧门补发）
+  // 2026-11-27（跟 dsh-look 同款体检）：文件存在但读不出 = 挂起全丢，以前一声不响。
+  // 现在留证 + 亮灯，坏文件改名 .bad-时间戳.bak，别让坏账盖掉好账的现场。
   const readPendingFile = () => {
     if (!pendingFile) return []
+    let text = null
     try {
-      const raw = JSON.parse(readFileSync(pendingFile, 'utf8'))
+      text = readFileSync(pendingFile, 'utf8')
+    } catch {
+      return [] // 文件不存在/读不了 = 首次启动或没权限心跳，不响
+    }
+    try {
+      const raw = JSON.parse(text)
       return Array.isArray(raw?.items) ? raw.items : []
     } catch {
+      let kept = ''
+      try {
+        const stamp = new Date().toISOString().replace(/[:.]/g, '-')
+        const bak = `${pendingFile}.bad-${stamp}.bak`
+        renameSync(pendingFile, bak)
+        kept = bak
+      } catch {
+        kept = ''
+      }
+      try {
+        console.warn(`[dsh-qq-bridge] 挂起队列读不出能认的数（${pendingFile}）；${kept ? '坏文件已留证：' + kept : '留证失败'}；本次按空队列起步`)
+      } catch {
+        /* logger 不在也不挡 */
+      }
       return []
     }
   }
