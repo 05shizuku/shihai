@@ -24,8 +24,7 @@ import {
   exists,
   readJsonLines,
   readJsonSafe,
-  resolveDshHome as storeResolveDshHome,
-} from '../lib/store.js'
+} from '../../core/protocol/io.js'
 import {
   EMOTION_KINDS,
   EMOTION_LABEL,
@@ -55,7 +54,9 @@ function clamp(n, lo, hi) {
   return Math.max(lo, Math.min(hi, v))
 }
 
-export function createEmotionCommands({ book, log, cfg, now = () => Date.now(), resolveDshHome: resolveHome = storeResolveDshHome }) {
+export function createEmotionCommands({ book, log, cfg, now = () => Date.now(), resolveDshHome: resolveHome }) {
+  if (typeof resolveHome !== 'function') throw new Error('createEmotionCommands：resolveDshHome 必填注入（家目录解析是宿主关切，core 归位前不默认）')
+
   /* ---------------- 情绪流常驻索引（批 D7 语义，闭包同款） ---------------- */
 
   function emotionLines() {

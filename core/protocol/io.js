@@ -22,7 +22,22 @@ import {
   writeFileSync,
   writeSync,
 } from 'node:fs'
-import { dirname } from 'node:path'
+import { dirname, normalize, resolve, sep } from 'node:path'
+
+/** 路径归一（批 A 自 lib/store.js 逐字同源归位——normPath 多实现债的第一刀收口）：小写、正斜杠统一、去尾分隔符 */
+export function normPath(p) {
+  const s = String(p ?? '').trim()
+  if (!s) return ''
+  return normalize(resolve(s)).replace(/[\\\\/]+$/, '').toLowerCase()
+}
+
+/** child 是否在 parent 里（或就是它）——allowRoots/denyRoots 的判定底座 */
+export function isUnder(child, parent) {
+  const c = normPath(child)
+  const p = normPath(parent)
+  if (!c || !p) return false
+  return c === p || c.startsWith(p.endsWith(sep) ? p : p + sep)
+}
 
 export function ensureDir(dir) {
   try {
@@ -184,7 +199,7 @@ export function readJsonLinesFrom(file, fromOffset = 0) {
   return { rows, next, reset, exists: true, pending: lastNl < buf.length - 1 }
 }
 
-function exists(file) {
+export function exists(file) {
   try {
     return existsSync(file)
   } catch {

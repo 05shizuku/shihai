@@ -145,7 +145,8 @@ import {
   resolveDshHome,
   tailLines,
 } from './lib/store.js'
-import { createEmotionCommands } from './commands/emotion.mjs' // 批 A：情绪域命令层（决策本体，回执逐字不变）
+import { createEmotionCommands } from './commands/emotion.mjs'
+import { createLedgerCommands } from './commands/ledger.mjs' // 批 A：情绪域命令层（决策本体，回执逐字不变）
 
 // 批③（账本协议迁移，docs/g1-batch3-book-skeleton.md）：协议函数与 Book 工厂住在
 // core/protocol —— 闭包状态装进 book，协议函数统一收 book 首参。pullFast/pullIntent
@@ -1589,7 +1590,9 @@ export function apply(ctx, baseConfig = {}) {
   // 批 A（G-2 施工稿）：情绪域命令的决策本体在 commands/emotion.mjs；本文件只留适配壳
   //（scopeOk/agent 概念在壳，回执逐字不变）。闭包里的同名助手（pullFast/emotionState/noteEmotion…）
   // 还有 buildStatus/recall 等消费者，后续批次逐域切到 commands 再退役。
-  const emotionCommands = createEmotionCommands({ book, log, cfg: getCfg })
+  const emotionCommands = createEmotionCommands({ book, log, cfg: getCfg, resolveDshHome })
+  // 批 A 第二步：账本视图命令层（activationCtx 全家 + 缓存同车 + memory_list）
+  const ledgerCommands = createLedgerCommands({ book, log, cfg: getCfg, pulls: emotionCommands })
 
   const rememberTool = defineTool({
     name: 'remember',
@@ -2552,134 +2555,8 @@ export function apply(ctx, baseConfig = {}) {
       ],
     },
     async execute(_args, exec) {
-      const now = Date.now()
-      const cfg = getCfg()
-      // 受众过滤（批 A3，2026-11-25 外部审查 P1-3）：各源集合在组装行之前套一层过滤——
-      // 判定复用 recall 的同一条函数（currentAudience + audienceVisible，两边一致才不出大肥鱼式偏差）；
-      // 只在 hard 档过滤；off / soft 全显——listing 是全景视图，soft 的降位语义不适用（拍板，不是遗漏）。
-      // 意图事件的受众字段走 intentEventAudience（recall 同款）；快层事件行自带 body 场、没有受众字段，不过滤。
-      const turnAud = currentAudience(now)
-      const hardAud = cfg.recallAudience === 'hard' && turnAud !== 'solo'
-      const nodeVisible = (n) => !hardAud || audienceVisible(n?.audience, turnAud)
-      const eventVisible = (ev) => !hardAud || audienceVisible(intentEventAudience(ev), turnAud)
-      // 最重的几条按激活度排（此刻的目录、刚发生的事都算数），行尾把激活值标出来
-      const scoreOf = activationScorer(exec?.agent, now)
-      const s = summaryOf(book.nodes, now, { scoreOf })
-      const top = rankNodes(
-        book.nodes.filter((n) => nodeVisible(n) && normKind(n.kind) !== 'self' && normKind(n.kind) !== 'curiosity'),
-        now,
-        { limit: 5, scoreOf },
-      ).map((h) => `${h.node.id} ${renderLine(h.node, now)} · 激活 ${scoreOf(h.node, now).toFixed(2)}`)
-      const self = activeSelfNodes(book.nodes.filter(nodeVisible), now)
-      const fast = fastHabits(book.nodes.filter(nodeVisible), now, { limit: clamp(cfg.habitLimit, 0, 10) })
-      const curiosities = activeCuriosities(book.nodes.filter(nodeVisible), now, { limit: clamp(cfg.curiosityLimit, 0, 10) })
-      // 快层：先接过来最新的那几条，别让它们只闪一下
-      try {
-        pullFast(now)
-      } catch {
-        /* 接不上就算了 */
-      }
-      // 意图层：机器刚认出来的那几句，也得能列出来
-      try {
-        pullIntent(now)
-      } catch {
-        /* 接不上就算了 */
-      }
-      const fastEvents = book.fastIndex.slice(0, 5)
-      const fastSum = fastSummary(fastAllEvents(now), { weighed: weighedFastIds() })
-      const intentEvents = book.intentIndex.filter(eventVisible).slice(0, 5)
-      const intentAll = intentAllEvents(now)
-      const intentSum = summarizeIntents(intentAll)
-      const intentWeighed = weighedIntentIds()
-      const intentPending = intentAll.filter((ev) => !intentWeighed.has(ev.id)).length
-      const recent = book.nodes.filter(nodeVisible).slice(-3).map((n) => {
-        const when = relTime(n.at, now)
-        return `${n.id}（${when === '刚写下' ? '刚写下' : `${when}写的`}）${n.text.slice(0, 40)}`
-      })
-      const summary =
-        `一共 ${s.total} 条（活着 ${s.alive}，按住 ${s.sealed}，想过三问的 ${s.thought}）；` +
-        `最重的现在 ${s.topScore}（激活值，0 到 1）；` +
-        KINDS.map((k) => `${KIND_LABEL[k]} ${s.kinds[k] ?? 0}`).join('、') +
-        `；快层 ${fastSum.total} 条（还没掂量 ${fastSum.pending} 条）` +
-        `；意图 ${intentSum.total} 条（还没掂量 ${intentPending} 条）`
-      const selfLines = self.length
-        ? ['现在我是：', ...self.map((n) => `· ${slotLabel(n.slot)}：${n.text}`)]
-        : []
-      // 我执演化史（定案 A，2026-11-18）：自我槽位沿 prevSelf、思量沿 prev 走链——
-      // 退下不是终点，是链条上的一环。链走的是账本实况，谁接谁一目了然。
-      const chainLines = []
-      const walkChain = (id, depth) => {
-        const out = []
-        let cur = String(id ?? '').trim()
-        for (let i = 0; i < depth && cur; i += 1) {
-          const n = book.nodes.find((x) => x && x.id === cur)
-          if (!n) break
-          out.push(n)
-          cur = n.prevSelf || n.prev || ''
-        }
-        return out
-      }
-      for (const n of self) {
-        const chain = walkChain(n.prevSelf, 4)
-        if (chain.length) {
-          chainLines.push(`· ${slotLabel(n.slot)}：现行「${n.text.slice(0, 24)}」← ${chain.map((c) => `「${c.text.slice(0, 20)}」`).join(' ← ')}`)
-        }
-      }
-      const narrHead = book.nodes
-        .filter((x) => x && normKind(x.kind) === 'narration')
-        .sort((a, b) => (Number(b.at) || 0) - (Number(a.at) || 0))[0]
-      if (narrHead) {
-        const chain = walkChain(narrHead.prev, 4)
-        chainLines.push(
-          `· 思量链：现行「${narrHead.text.slice(0, 24)}」` +
-            (chain.length ? ` ← ${chain.map((c) => `「${c.text.slice(0, 20)}」`).join(' ← ')}` : '（链的第一环）'),
-        )
-      }
-      const selfChainLines = chainLines.length ? ['我执演化史：', ...chainLines] : []
-      const habitLines = fast.length
-        ? [
-            '走快通路的习惯：',
-            ...fast.map((n) => `· ${n.context}：${n.text.slice(0, 80)}（第 ${n.hits} 次）`),
-          ]
-        : []
-      const curiosityLines = curiosities.length
-        ? [
-            '现在好奇的：',
-            ...curiosities.map(
-              (n) => `· ${n.context}：${n.text.slice(0, 80)}${n.hits > 1 ? `（惦记 ${n.hits} 次）` : ''}`,
-            ),
-            `（上限 ${clamp(cfg.curiosityLimit, 0, 10)} 条，超出的沉在账本里，翻得到）`,
-          ]
-        : []
-      const fastLines = fastEvents.length
-        ? [
-            '刚刚发生的（快层，没有分量，不跟上面的条抢位置）：',
-            ...fastEvents.map((ev) => `${ev.id} ${renderFastLine(ev, now)}`),
-            `（快层一共 ${fastSum.total} 条，还没掂量 ${fastSum.pending} 条 —— 掂量一次就是拿 remember 写一条，refs 指回它的 id）`,
-          ]
-        : []
-      const intentLines = intentEvents.length
-        ? [
-            '刚刚认出来的（意图层，机器认的，没有分量，不跟上面的条抢位置）：',
-            ...intentEvents.map((ev) => `${ev.id} ${renderIntentLine(ev, now)}`),
-            `（意图层一共 ${intentSum.total} 条，还没掂量 ${intentPending} 条 —— 掂量一次就是拿 remember 写一条，refs 指回它的 id）`,
-          ]
-        : []
-      return {
-        ok: true,
-        summary,
-        items: [
-          ...selfLines,
-          ...selfChainLines,
-          ...curiosityLines,
-          ...habitLines,
-          ...fastLines,
-          ...intentLines,
-          ...top,
-          ...(recent.length ? ['最近写的：', ...recent] : []),
-        ],
-        note: '',
-      }
+      // 批 A：决策本体在 commands/ledger.mjs（activationCtx 全家 + 热路径缓存同车），这里只做适配
+      return ledgerCommands.memoryList(_args, { cwd: agentCwd(exec?.agent), sessionId: agentSessionId(exec?.agent) })
     },
   })
 

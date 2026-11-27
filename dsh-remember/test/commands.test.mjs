@@ -15,6 +15,7 @@ import { join } from 'node:path'
 
 import { createBook, loadEmotionIndex, loadFeelTracker } from '../../core/protocol/book.js'
 import { createEmotionCommands } from '../commands/emotion.mjs'
+import { createLedgerCommands } from '../commands/ledger.mjs'
 
 const T0 = Date.parse('2026-11-27T02:00:00.000Z')
 
@@ -221,4 +222,47 @@ test('emotion_state 快路径：事件折进 items（批 A 特征钉，命令层
   assert.equal(out.dominant, 'warm')
   assert.ok(out.items.some((l) => l.startsWith('e_x1 ')), 'items 带事件行 id 前缀')
   assert.ok(out.coefficients.warm, '系数表带 warm')
+})
+
+
+// ------------------------------------------------- 批 A 第二步：memory_list + activationCtx 全家
+
+function nodeOf(id, text, audience = 'any', extra = {}) {
+  return { id, at: T0 - 600_000, lastAt: T0 - 600_000, text, kind: 'fact', weight: 0.8, changes: '', conflicts: '', willDo: '', known: '', tags: [], refs: [], touches: [], audience, happenedAt: 0, prev: '', prevSelf: '', anchor: false, anchorWhy: '', restoredAt: 0, replaces: [], contexts: [], hits: 0, answered: false, moodAt: null, sealed: false, sealUntil: 0, sealCond: '', faded: false, superseded: false, supersededBy: '', supersededAt: 0, transformed: false, transformedBy: '', transformedAt: 0, slot: '', context: '', ...extra }
+}
+
+function ledgerRig(cfgOver = {}) {
+  const base = rig({ enabled: true, ...cfgOver })
+  const cfg = () => ({ enabled: true, ...cfgOver })
+  const ledger = createLedgerCommands({ book: base.book, log: () => {}, cfg, now: () => T0, pulls: base.commands })
+  return { ...base, ledger, cfg }
+}
+
+test('memory_list：off 档全显——他场条照进 top 与 recent（批 A 特征钉）', () => {
+  const { book, ledger } = ledgerRig({ recallAudience: 'off' })
+  book.nodes.push(nodeOf('r_prv1', '私聊场写下的条', 'private'), nodeOf('r_any1', '哪都能看见的条'))
+  const out = ledger.memoryList({}, { cwd: 'D:\\\\work', sessionId: 's1' })
+  assert.equal(out.ok, true)
+  assert.ok(out.items.some((l) => l.includes('私聊场写下的条')), 'off 档私账也显')
+  assert.ok(out.summary.includes('一共 2 条'), 'summary 计数真实（' + out.summary.slice(0, 30) + '…）')
+})
+
+test('memory_list：hard 档群轮——他场条退场，行尾激活值两位小数（批 A 特征钉）', () => {
+  const { book, ledger } = ledgerRig({ recallAudience: 'hard' })
+  book.nodes.push(nodeOf('r_prv2', '私聊场写下的条不该出现', 'private'), nodeOf('r_grp1', '群场写下的条', 'group:222'))
+  book.intentIndex.unshift({ at: T0 - 60_000, id: 'i_g1', kind: 'ask', chatType: 'group', atMe: true, groupId: '222', intensity: 2, text: '群里的来话' })
+  const out = ledger.memoryList({}, { cwd: 'D:\\\\work', sessionId: 's1' })
+  assert.equal(out.ok, true)
+  assert.ok(!out.items.some((l) => l.includes('不该出现')), 'hard 群轮私账退场')
+  assert.ok(out.items.some((l) => l.includes('群场写下的条')), '同场条保留')
+  const actLine = out.items.find((l) => l.includes('群场写下的条'))
+  assert.match(actLine ?? '', / · 激活 [01]\.\d{2}$/, '行尾激活值两位小数（原始形态：toFixed(2)）')
+})
+
+test('activationCtx 热路径：echoStats 缓存挂 book——命令层与闭包同一份（批 A 特征钉）', () => {
+  const { book, ledger } = ledgerRig({ recallAudience: 'off' })
+  book.echoAt.set('r_any1', [T0 - 1000])
+  ledger.echoCounts(T0)
+  assert.equal(book.echoStatsCache.at, T0, '缓存写在 book 上（搬家不换家，ADR-0006）')
+  assert.ok(book.echoStatsCache.stats.get('r_any1'), '熏习统计进缓存')
 })
