@@ -145,6 +145,7 @@ import {
   resolveDshHome,
   tailLines,
 } from './lib/store.js'
+import { createEmotionCommands } from './commands/emotion.mjs' // 批 A：情绪域命令层（决策本体，回执逐字不变）
 
 // 批③（账本协议迁移，docs/g1-batch3-book-skeleton.md）：协议函数与 Book 工厂住在
 // core/protocol —— 闭包状态装进 book，协议函数统一收 book 首参。pullFast/pullIntent
@@ -904,14 +905,19 @@ export function apply(ctx, baseConfig = {}) {
       text: String(text ?? '').slice(0, 120),
     }
     try {
-      appendJsonLine(book.files.emotion, line) // 批 D7：游标不动；:896 push 进内存，这里先把 id 记进去重集
-      book.emotionRowIds.add(String(line.id ?? ''))
+      appendJsonLine(book.files.emotion, line) // 批 D7：游标不动，行进内存靠下面 push + refresh 按 id 去重
     } catch (err) {
       log(`情绪流记不进去：${String(err?.message ?? err).slice(0, 200)}`)
       return null
     }
-    // 记成了就同步进外面传进来的那本，同一批里后面的事才去重得到
-    if (Array.isArray(lines)) lines.push(line)
+    // 记成了就同步进外面传进来的那本，同一批里后面的事才去重得到。
+    // 批 A 修正（2026-11-27，命令层特征钉挖出的 v0.27.3 潜伏缺陷）：去重集只在行
+    // **真的进了常驻索引**时才记——recall 路径不带 lines，行要靠 refresh 进内存；
+    // 若在这里就记集，refresh 会把它当「已在内存」跳过，行永久进不了索引。
+    if (Array.isArray(lines)) {
+      lines.push(line)
+      if (lines === book.emotionRows) book.emotionRowIds.add(String(line.id ?? ''))
+    }
     seenKeys?.add(key)
     return line
   }
@@ -1579,6 +1585,11 @@ export function apply(ctx, baseConfig = {}) {
   }, 'dsh-remember: agent/created')
 
   // ---------------------------------------------------------------- 工具
+
+  // 批 A（G-2 施工稿）：情绪域命令的决策本体在 commands/emotion.mjs；本文件只留适配壳
+  //（scopeOk/agent 概念在壳，回执逐字不变）。闭包里的同名助手（pullFast/emotionState/noteEmotion…）
+  // 还有 buildStatus/recall 等消费者，后续批次逐域切到 commands 再退役。
+  const emotionCommands = createEmotionCommands({ book, log, cfg: getCfg })
 
   const rememberTool = defineTool({
     name: 'remember',
@@ -2709,57 +2720,8 @@ export function apply(ctx, baseConfig = {}) {
       ],
     },
     async execute(args) {
-      const now = Date.now()
-      const cfg = getCfg()
-      if (!cfg.enabled) {
-        return {
-          ok: false,
-          dominant: 'calm',
-          label: '平静',
-          level: 0,
-          levels: {},
-          coefficients: {},
-          items: [],
-          note: '账本现在是关着的（设置 → 记得）。',
-        }
-      }
-      // 先接一次：刚发生的事得能算进来
-      try {
-        pullFast(now)
-      } catch {
-        /* 接不上就算了 */
-      }
-      try {
-        pullIntent(now)
-      } catch {
-        /* 接不上就算了 */
-      }
-      try {
-        pullEmotion(now)
-      } catch {
-        /* 算不出来就算了 */
-      }
-      const state = emotionState(now)
-      const limit = clamp(args?.limit ?? 8, 1, 50)
-      const events = state.lines
-        .filter((l) => l.kind === 'event')
-        .sort((a, b) => b.at - a.at)
-        .slice(0, limit)
-      const items = events.map((l) => `${l.id} ${renderEmotionLine(l, now)}`)
-      const coeff = {}
-      for (const [k, v] of Object.entries(state.coefficients ?? {})) {
-        coeff[k] = { coefficient: v.coefficient, halfLife: v.halfLife }
-      }
-      return {
-        ok: true,
-        dominant: state.dominant,
-        label: state.label,
-        level: state.level,
-        levels: state.levels,
-        coefficients: coeff,
-        items,
-        note: '',
-      }
+      // 批 A：决策本体在 commands/emotion.mjs（情绪域命令层），这里只做适配
+      return emotionCommands.emotionState(args)
     },
   })
 
@@ -2801,73 +2763,8 @@ export function apply(ctx, baseConfig = {}) {
       ],
     },
     async execute(args) {
-      const cfg = getCfg()
-      if (!cfg.enabled) {
-        return { ok: false, id: '', emotion: '', from: 0, to: 0, note: '账本现在是关着的（设置 → 记得）。' }
-      }
-      const emotion = String(args?.emotion ?? '')
-      if (!EMOTION_KINDS.includes(emotion)) {
-        return {
-          ok: false,
-          id: '',
-          emotion,
-          from: 0,
-          to: 0,
-          note: `只认这七种：${EMOTION_KINDS.join(' / ')}`,
-        }
-      }
-      const to = Number(args?.to)
-      if (!Number.isFinite(to) || to <= 0 || to > 3) {
-        return { ok: false, id: '', emotion, from: 0, to: 0, note: '系数得在 0 到 3 之间。' }
-      }
-      const reason = cleanText(args?.reason, 200)
-      if (!reason) {
-        return {
-          ok: false,
-          id: '',
-          emotion,
-          from: 0,
-          to,
-          note: '改系数得给个理由 —— 写给以后的我看。',
-        }
-      }
-      let halfLife = 0
-      if (args?.halfLife !== undefined && args?.halfLife !== null && args?.halfLife !== '') {
-        halfLife = clamp(args?.halfLife, 5, 1440)
-      }
-      const lines = emotionLines()
-      const table = emotionCoefficients(lines)
-      const from = table[emotion]?.coefficient ?? 1
-      const at = Date.now()
-      const line = {
-        at,
-        kind: 'tune',
-        id: emotionTuneId({ emotion, at, to }),
-        emotion,
-        from,
-        to,
-        reason,
-        ...(halfLife ? { halfLife } : {}),
-      }
-      try {
-        appendJsonLine(book.files.emotion, line) // 批 D7：游标不动，tune 行由下次 refresh 进内存（按 id 去重不双记）
-      } catch (err) {
-        return {
-          ok: false,
-          id: '',
-          emotion,
-          from,
-          to,
-          note: `写不进情绪流的账：${String(err?.message ?? err).slice(0, 120)}`,
-        }
-      }
-      log(`情绪系数改了 ${emotion} ${from} → ${to}${halfLife ? `（半衰期 ${halfLife} 分）` : ''}：${reason}`)
-      const note =
-        `把「${EMOTION_LABEL[emotion] ?? emotion}」的系数从 ${from} 改成 ${to}` +
-        (halfLife ? `，半衰期 ${halfLife} 分钟` : '') +
-        `。理由：${reason}。改动只对往后的事生效 —— 已经记下的那几笔还是当时那个数。` +
-        `想让它进【我记得的】就拿 remember 写一条，refs 指回 ${line.id}。`
-      return { ok: true, id: line.id, emotion, from, to, note }
+      // 批 A：决策本体在 commands/emotion.mjs，这里只做适配
+      return emotionCommands.emotionTune(args)
     },
   })
 
@@ -2901,69 +2798,11 @@ export function apply(ctx, baseConfig = {}) {
       ],
     },
     async execute(args, exec) {
-      const cfg = getCfg()
-      if (!cfg.enabled) return { ok: false, id: '', note: '账本现在是关着的。' }
+      // 批 A：决策本体在 commands/emotion.mjs。enabled 检查留壳首（保原始判定顺序：
+      // 关账 + 范围外同发时回「关着」）；scopeOk 在壳（agent 概念不进命令层）。
+      if (!getCfg().enabled) return { ok: false, id: '', note: '账本现在是关着的。' }
       if (!scopeOk(exec?.agent)) return { ok: false, id: '', note: '这条会话不在允许记账的目录里。' }
-      const seedId = String(args?.seedId ?? '').trim()
-      const node = findNode(seedId)
-      if (!node) return { ok: false, id: seedId, note: `没有这条种子：${seedId || '（空）'}` }
-      if (!String(node.willDo ?? '').trim()) {
-        return { ok: false, id: seedId, note: '这条种子没写 will_do —— 没有「说会做得不一样」，就谈不上违熏。' }
-      }
-      const reason = String(args?.reason ?? '').trim()
-      if (!VIKARMA_REASONS.includes(reason)) {
-        return { ok: false, id: seedId, note: `reason 只认三个：${VIKARMA_REASONS.join(' / ')}` }
-      }
-      const now = Date.now()
-      // echoId 不填：走内存索引拿最近一次现行的行 id —— 不全量扫 echo.jsonl
-      // （2026-11-16 复核建议：echo.jsonl 只增不减，全量读会越来越卡）
-      let echoId = String(args?.echoId ?? '').trim()
-      if (echoId && !echoId.startsWith('e_')) {
-        // 传入的也校验个形状 —— 双键要能定位，抄错了入账就查不出（2026-11-16 复核建议）
-        return { ok: false, id: seedId, note: `echoId 得是回声行的 id（e_ 开头）：${echoId.slice(0, 40)}` }
-      }
-      if (!echoId) {
-        echoId = String(book.latestEchoRow.get(seedId)?.rowId ?? '')
-      }
-      const willDoAll = String(node.willDo ?? '')
-      const row = {
-        id: `vk_${now.toString(36)}`,
-        at: now,
-        kind: 'vikarma',
-        seedId,
-        echoId,
-        // 按码点截：长句的 will_do 不劈代理对，超了补 …（2026-11-16 复核建议）
-        expected: `${cutByCodePoints(willDoAll, 200)}${Array.from(willDoAll).length > 200 ? '…' : ''}`,
-        actual: String(args?.actual ?? '').slice(0, 200),
-        reason,
-        sessionId: agentSessionId(exec?.agent),
-        cwd: agentCwd(exec?.agent),
-      }
-      try {
-        noteVikarma(book, row) // 违熏写入点（批③子步 2 收 core/protocol；失败回执文案不变）
-      } catch (err) {
-        return { ok: false, id: seedId, note: `违熏写不进去：${String(err?.message ?? err).slice(0, 120)}` }
-      }
-      // 原话层留痕，跟 forget 一个路数
-      try {
-        appendJsonLine(book.files.lines, {
-          id: seedId,
-          at: now,
-          kind: node.kind,
-          text: `违熏：${reason}${args?.actual ? ` —— ${String(args.actual).slice(0, 80)}` : ''}`,
-          note: 'vikarma',
-          sessionId: agentSessionId(exec?.agent),
-          cwd: agentCwd(exec?.agent),
-        })
-      } catch {
-        /* 原话层写不进去不影响违熏已记 */
-      }
-      log(`违熏 ${seedId} · ${reason} · echo=${echoId || '（未关联）'}`)
-      return {
-        ok: true,
-        id: row.id,
-        note: `「${String(node.text).slice(0, 40)}」这次没做到（${reason}）—— 下次 recall 翻到它时行尾会提醒`,
-      }
+      return emotionCommands.vikarma(args, { cwd: agentCwd(exec?.agent), sessionId: agentSessionId(exec?.agent) })
     },
   })
 
