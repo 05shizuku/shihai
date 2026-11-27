@@ -30,10 +30,7 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
   STATUS,
-  TRIGGER_CHECKIN,
   TRIGGER_DUE,
-  TRIGGER_GREET,
-  TRIGGER_URGE,
   applyConfigPatch,
   clamp,
   dayKey,
@@ -46,9 +43,12 @@ import {
   parseHHMM,
   parseUrge,
   parseWhen,
+  renderCheckInPrompt,
   renderCheckInText,
   renderDeliveryText,
+  renderGreetPrompt,
   renderGreetText,
+  renderUrgePrompt,
   renderUrgeText,
   toHHMM,
 } from './lib/reach.js'
@@ -512,7 +512,7 @@ export function apply(ctx, baseConfig = {}) {
           requestId: `dsh-reach-checkin-${now}`,
           sessionId: target.sessionId,
           mode: target.running ? 'steer' : 'queue',
-          content: [{ type: 'text', text: TRIGGER_CHECKIN }],
+          content: [{ type: 'text', text: renderCheckInPrompt() }],
           clientTimeZone: timeZone(),
         },
         AbortSignal.timeout(30000), // 同 deliver：挂死不得堵死心跳链
@@ -563,7 +563,7 @@ export function apply(ctx, baseConfig = {}) {
           requestId: `dsh-reach-urge-${now}`,
           sessionId: target.sessionId,
           mode: target.running ? 'steer' : 'queue',
-          content: [{ type: 'text', text: TRIGGER_URGE }],
+          content: [{ type: 'text', text: renderUrgePrompt(urge) }],
           clientTimeZone: timeZone(),
         },
         AbortSignal.timeout(30000), // 同 deliver：挂死不得堵死心跳链
@@ -613,7 +613,7 @@ export function apply(ctx, baseConfig = {}) {
           requestId: `dsh-reach-greet-${now}`,
           sessionId: target.sessionId,
           mode: target.running ? 'steer' : 'queue',
-          content: [{ type: 'text', text: TRIGGER_GREET }],
+          content: [{ type: 'text', text: renderGreetPrompt(greet) }],
           clientTimeZone: timeZone(),
         },
         AbortSignal.timeout(30000),

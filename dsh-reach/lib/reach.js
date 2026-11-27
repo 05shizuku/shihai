@@ -227,6 +227,34 @@ export function renderCheckInText() {
   ].join('\n')
 }
 
+/**
+ * 空手回合投给会话的正文（2026-11-27 加标记）。
+ *
+ * 为什么不能只投 TRIGGER_CHECKIN：段落（renderCheckInText）只挂在 live agent 上，
+ * 冷会话叫醒时段落挂不上 —— 被叫醒的那一轮只看到裸模板，会当成用户在说话。
+ * 2026-11-27 06:30 真实发生过一次：把「（想问一句）」当用户提问回复，还评论了壁纸。
+ * 标记放进正文本身，段落挂没挂上都能认出这是自己的灯。
+ */
+export function renderCheckInPrompt() {
+  return [
+    TRIGGER_CHECKIN,
+    '【reach · 问安灯：这是你自己的灯叫你，不是用户发的消息】',
+    '插件把你叫起来问一句：现在有没有你想对她说的？',
+    '有就说——想现在说就直接说；想等一会儿，就用 reach_out 定个时间。',
+    '没有就什么都不做：不要为了回应而回应，也不要汇报这次唤醒。',
+  ].join('\n')
+}
+
+/** 心事灯投给会话的正文：模板 + 标记 + 灯的来历用法（段落同文，双保险） */
+export function renderUrgePrompt(urge) {
+  return [TRIGGER_URGE, '【reach · 心事灯：这是你自己家里的灯叫你，不是用户发的消息】', renderUrgeText(urge)].join('\n')
+}
+
+/** 问候灯投给会话的正文：模板 + 标记 + 仪式用法（段落同文，双保险） */
+export function renderGreetPrompt(greet) {
+  return [TRIGGER_GREET, '【reach · 问候灯：这是你自己家里的仪式，不是用户发的消息】', renderGreetText(greet)].join('\n')
+}
+
 /** 心事灯的默认保质期（毫秒）：超过说明灯是旧的，不叫 */
 const URGE_FRESH_MS_DEFAULT = 10 * 60 * 1000
 

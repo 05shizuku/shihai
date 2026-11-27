@@ -297,8 +297,12 @@ const checkinRes = makeRes()
 await routes.get('/dsh-reach/checkin').handler(makeReq({ method: 'POST' }), checkinRes)
 const ciJson = readJson(checkinRes)
 ok(checkinRes.statusCode === 200 && ciJson.ok === true, '空手回合投出去了', JSON.stringify(ciJson))
-const checkinPrompt = prompts.find((p) => p.content?.[0]?.text === '（想问一句）')
-ok(Boolean(checkinPrompt), '触发是"（想问一句）"')
+const checkinPrompt = prompts.find((p) => String(p.content?.[0]?.text ?? '').startsWith('（想问一句）'))
+ok(Boolean(checkinPrompt), '触发是"（想问一句）"开头')
+ok(
+  String(checkinPrompt?.content?.[0]?.text ?? '').includes('不是用户发的消息'),
+  '正文自带「这是你自己的灯」标记（冷会话段落挂不上时的兜底）',
+)
 ok(checkinPrompt?.sessionId === SID, '没投给 subagent 那条', checkinPrompt?.sessionId)
 const checkinSection = sections.find((s) => String(s.name).startsWith('dsh-reach-checkin-'))
 const checkinText = typeof checkinSection?.text === 'function' ? checkinSection.text() : ''
