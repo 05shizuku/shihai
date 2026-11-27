@@ -16,6 +16,7 @@ import { join } from 'node:path'
 import { createBook, loadEmotionIndex, loadFeelTracker } from '../../core/protocol/book.js'
 import { createEmotionCommands } from '../commands/emotion.mjs'
 import { createLedgerCommands } from '../commands/ledger.mjs'
+import { createRecallCommands } from '../commands/recall.mjs'
 
 const T0 = Date.parse('2026-11-27T02:00:00.000Z')
 
@@ -265,4 +266,34 @@ test('activationCtx 热路径：echoStats 缓存挂 book——命令层与闭包
   ledger.echoCounts(T0)
   assert.equal(book.echoStatsCache.at, T0, '缓存写在 book 上（搬家不换家，ADR-0006）')
   assert.ok(book.echoStatsCache.stats.get('r_any1'), '熏习统计进缓存')
+})
+
+
+// ------------------------------------------------- 批 A 第三步：recall 命令层直调
+test('recall 命令层：echoed/origins/resurrect 条件字段 + 情绪流听翻账（批 A 特征钉）', () => {
+  const base = rig({ enabled: true, recallAudience: 'off' })
+  const cfg = () => ({ enabled: true, recallAudience: 'off' })
+  const ledger = createLedgerCommands({ book: base.book, log: () => {}, cfg, now: () => T0, pulls: base.commands })
+  const recall = createRecallCommands({ book: base.book, log: () => {}, cfg, now: () => T0, pulls: base.commands, ledger, emo: base.commands })
+  base.book.nodes.push(nodeOf('r_blue', '蓝色多瑙河的傍晚我们在河边走', 'any'))
+  // ① 首翻：命中 + echoed + 翻身位老账（r_old 从未被现行）
+  base.book.nodes.push(nodeOf('r_old', '一条从未被翻出来过的老账，讲的是雨天的渡口', 'any'))
+  base.book.nodes[base.book.nodes.length - 1].at = T0 - 20 * 24 * 60 * 60 * 1000
+  base.book.nodes[base.book.nodes.length - 1].lastAt = T0 - 20 * 24 * 60 * 60 * 1000
+  const out1 = recall.recall({ query: '蓝色多瑙河' }, { cwd: 'D:\\work', sessionId: 's9' })
+  assert.equal(out1.ok, true)
+  assert.equal(out1.echoed, true, '按词翻到记回声')
+  assert.ok(base.book.echoAt.get('r_blue'), 'echoAt 记账（唤醒回弹）')
+  assert.ok(out1.items.some((l) => l.startsWith('r_blue ')), '命中条在 items')
+  // origins 反映「上一次现行」——noteEcho 在 items 组装之后才跑，首翻的 origins 合法为空，二翻带出（定案 B 语义）
+  const out2 = recall.recall({ query: '蓝色多瑙河' }, { cwd: 'D:\\work', sessionId: 's9' })
+  assert.ok(out2.origins && out2.origins.r_blue, 'origins 机读投影（定案 B）——二翻带出首翻的缘')
+  assert.equal(out2.origins.r_blue.lastQuery, '蓝色多瑙河', '缘起链带 query')
+  // ② 情绪流听翻账：recall|id|桶 去重键落账（无 lines 路径——批 A 修正的活体回归）
+  const emoRows = readFileSync(base.emoFile, 'utf8').split(/\r?\n/).filter((l) => l.trim()).map((l) => JSON.parse(l))
+  const recallRow = emoRows.find((r) => r.source === 'recall' && r.ref === 'r_blue')
+  assert.ok(recallRow, '情绪流记了翻账这一笔')
+  assert.equal(emoRows.filter((r) => r.source === 'recall' && r.ref === 'r_blue').length, 1, '同桶只记一次')
+  // ③ 首翻可能带出 resurrect（老账从未被现行）——条件字段存在时必是 id
+  if (out1.resurrect !== undefined) assert.ok(String(out1.resurrect).startsWith('r_'), 'resurrect 是条件字段，出现即 id')
 })

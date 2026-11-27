@@ -146,7 +146,8 @@ import {
   tailLines,
 } from './lib/store.js'
 import { createEmotionCommands } from './commands/emotion.mjs'
-import { createLedgerCommands } from './commands/ledger.mjs' // 批 A：情绪域命令层（决策本体，回执逐字不变）
+import { createLedgerCommands } from './commands/ledger.mjs'
+import { createRecallCommands } from './commands/recall.mjs' // 批 A：情绪域命令层（决策本体，回执逐字不变）
 
 // 批③（账本协议迁移，docs/g1-batch3-book-skeleton.md）：协议函数与 Book 工厂住在
 // core/protocol —— 闭包状态装进 book，协议函数统一收 book 首参。pullFast/pullIntent
@@ -1593,6 +1594,8 @@ export function apply(ctx, baseConfig = {}) {
   const emotionCommands = createEmotionCommands({ book, log, cfg: getCfg, resolveDshHome })
   // 批 A 第二步：账本视图命令层（activationCtx 全家 + 缓存同车 + memory_list）
   const ledgerCommands = createLedgerCommands({ book, log, cfg: getCfg, pulls: emotionCommands })
+  // 批 A 第三步：recall 决策本体（染色/翻身位/执受接线随迁；回执含条件字段 resurrect）
+  const recallCommands = createRecallCommands({ book, log, cfg: getCfg, pulls: emotionCommands, ledger: ledgerCommands, emo: emotionCommands })
 
   const rememberTool = defineTool({
     name: 'remember',
@@ -2213,197 +2216,9 @@ export function apply(ctx, baseConfig = {}) {
       ],
     },
     async execute(args, exec) {
-      const now = Date.now()
-      const limit = clamp(args?.limit ?? 5, 1, 50)
-      const kind = args?.kind ? normKind(args.kind) : ''
-      // 原文优先，但有字数闸：每条截到 recallItemMax，一次总共 recallMaxChars。
-      // （吴晓观提的第三条：工具返回会进对话历史，每轮都带着 —— 我自己能管住的是别一次掏太多。）
-      const cfg = getCfg()
-      const wantFull = Boolean(args?.full)
-      const itemMax = wantFull ? 0 : clamp(cfg.recallItemMax ?? 400, 100, 4000)
-      const budget = clamp(cfg.recallMaxChars ?? 8000, 1000, 200000)
-      // 排名用激活度：此刻的目录、快层刚发生的事、原话层最近写下的行都算数
-      const scoreOf = activationScorer(exec?.agent, now)
-      // 翻之前先把快层新发生的事接过来 —— 不然翻到的是上一次的
-      try {
-        pullFast(now)
-      } catch {
-        /* 接不上就算了，不该因为快层把翻账本弄坏 */
-      }
-      // 意图层同理：机器刚认出来的那几句，也得能翻到
-      try {
-        pullIntent(now)
-      } catch {
-        /* 接不上就算了，不该因为意图层把翻账本弄坏 */
-      }
-      // 条件封存也算按住：到点/翻篇之前，不给 include_sealed 就不翻出来。
-      // 目录先编好：按词找（searchNodes）和不按词翻（rankNodes）都要看得见整本账，
-      // include_sealed 也要真能递进去 —— 不然「连被按住的也翻出来」在按词这条路上是空话。
-      const dir = indexNodes(book.nodes)
-      const wantSealed = Boolean(args?.include_sealed)
-      let list = args?.query
-        ? searchNodes(book.nodes, args.query, { limit, now, scoreOf, byId: dir, includeSealed: wantSealed }).map((h) => h.node)
-        : rankNodes(book.nodes, now, {
-            limit,
-            includeSealed: wantSealed,
-            kind,
-            scoreOf,
-            byId: dir,
-          }).map((h) => h.node)
-      if (kind) list = list.filter((n) => normKind(n.kind) === kind)
-      if (!wantSealed) list = list.filter((n) => !isSealed(n, now, dir))
-      // 受众过滤（借自晴猫，2026-11-17）：群轮/私聊轮不翻别的场的账。
-      // off = 现状；soft = 别的场的条排到尾上（还给，降存在感）；hard = 别的场不翻出来。
-      // solo 轮（桌面打字/自己醒来）全可见 —— 跟现状一个样。
-      const audienceTurn = currentAudience(now)
-      const audienceMode = String(cfg.recallAudience ?? 'off')
-      const audienceActive = audienceMode !== 'off' && audienceTurn !== 'solo'
-      if (audienceActive) {
-        const visible = list.filter((n) => audienceVisible(n.audience, audienceTurn))
-        if (audienceMode === 'hard') {
-          list = visible
-        } else {
-          list = [...visible, ...list.filter((n) => !audienceVisible(n.audience, audienceTurn))]
-        }
-      }
-      // 染色层（whale-card P0-4）：这次翻账时心里有颜色、且到了再染的时机，才在条目后带一句
-      let recolors = new Map()
-      if (list.length) {
-        try {
-          recolors = recolorRecall(list, emotionState(now), now, dir)
-        } catch {
-          /* 折不出情绪就不染 */
-        }
-      }
-      let clipped = 0
-      const origins = {} // 缘起链的机读投影（定案 B）：id → 最近一次现行的 {lastSproutAt, lastQuery, with}
-      const items = list.map((n) => {
-        const t = String(n.text ?? '')
-        const recolor = recolors.get(n.id)
-        const recolorSuffix = recolor ? `\n（现在想起它：${recolor}）` : ''
-        // 违熏提醒（2026-11-16）：只挂 recall 返回的条上 —— 注入是系统自动挂的，
-        // 不是主动记忆，提醒了未必接得住；recall 是主动翻找，此刻提醒才有校正意义。
-        // 30 天窗：超了就不再提醒 —— 久了就变成唠叨，不是校正（账还在 vikarma.jsonl 里）
-        const vk = book.vikarmaAt.get(n.id)
-        const vkSuffix =
-          vk && now - vk.at < 30 * 24 * 60 * 60 * 1000
-            ? `\n（上次现行时没兑现：${vk.reason}，${relTime(vk.at, now)}）`
-            : ''
-        // 缘起链投影（定案 B，2026-11-18）：最近一次现行的缘（query）与同现种子——
-        // 人读尾巴在 vikarma 之后；机读 origins 跟着 output 走。echo 行本就带 query/refs，零回填。
-        const le = cfg.recallOrigin === false ? null : book.latestEchoRow.get(n.id)
-        let originSuffix = ''
-        if (le) {
-          origins[n.id] = {
-            lastSproutAt: new Date(le.at).toISOString(),
-            lastQuery: le.query ?? '',
-            with: Array.isArray(le.with) ? le.with : [],
-          }
-          const withNames = (Array.isArray(le.with) ? le.with : [])
-            .map((id) => {
-              const w = findNode(id)
-              return w ? `「${cutByCodePoints(w.text, 12)}」` : null
-            })
-            .filter(Boolean)
-            .slice(0, 3)
-          originSuffix = `\n（${relTime(le.at, now)}前因「${String(le.query || '（无缘）').slice(0, 24)}」想起${
-            withNames.length ? `，当时与 ${withNames.join('、')} 一起浮上来` : ''
-          }）`
-        }
-        const suffix = recolorSuffix + vkSuffix + originSuffix
-        if (itemMax && Array.from(t).length > itemMax) {
-          clipped += 1
-          // 判断和切都按码点 —— UTF-16 的 length/slice 会把 emoji 当两个字，
-          // 劈出半个代理对（2026-11-16 重新接回）
-          const remaining = Math.max(0, Array.from(t).length - itemMax)
-          const cut = { ...n, text: `${cutByCodePoints(t, itemMax)}…（原文还有 ${remaining} 字，要全文说 full=true）` }
-          return `${n.id} ${renderLine(cut, now, { byId: dir })}${suffix}`
-        }
-        return `${n.id} ${renderLine(n, now, { byId: dir })}${suffix}`
-      })
-      // 翻身位（批 B1，2026-11-25）：从没被现行过的老账，每次检索给一次被想起的机会
-      // —— 被埋是排程问题不是价值问题；真相关会被再想起，不相关的 14 天 τ 内自然衰减回零，自平衡。
-      let resurrectPick = null
-      if (args?.query && !kind) { // 带 kind 的检索不占翻身位（批 C3）：池子不分 kind，混进 kind 检索违反工具契约
-        const pick = pickResurrect(book.nodes, book.echoAt, now, { audienceTurn, audienceActive, byId: dir })
-        if (pick && !list.some((x) => x.id === pick.id)) {
-          list.unshift(pick) // 保位进 echo 名单（批 C2）：noteEcho slice(0,5) 只认前五，push 在尾会被切——翻身永远记不上账
-          resurrectPick = pick
-          // 每条字数闸照走（批 C6-N9）：翻身位不豁免 recallItemMax
-          const pt = String(pick.text ?? '')
-          const pLen = Array.from(pt).length
-          const pShown = itemMax && pLen > itemMax
-          const pCut = pShown
-            ? { ...pick, text: `${cutByCodePoints(pt, itemMax)}…（原文还有 ${pLen - itemMax} 字，要全文说 full=true）` }
-            : pick
-          if (pShown) clipped += 1
-          items.push(`${pick.id} ${renderLine(pCut, now, { byId: dir })}（翻身位：这条从来没被翻出来过）`)
-        }
-      }
-      // 唤醒回弹：按词翻到的都记一笔「被想起」（原话层只增不改；节点本身不动）。
-      let echoed = false
-      if (args?.query && list.length) echoed = noteEcho(book, list, args.query, now, dir)
-      // 执受（定案 C）：带情绪的现行通知身体 —— 反射弧，不是思量。写完 echo 就发。
-      if (list.length) {
-        try {
-          sproutToBody(book, list, emotionState(now), now, getCfg())
-        } catch {
-          /* 执受写不进去不影响 recall 本身 */
-        }
-      }
-      // 快层也翻得到：它不是节点（没有分量、不跟账本里的条抢位置），
-      // 但秒级发生的事不该只闪一下就没了 —— 按词找得到它。
-      if (args?.query && !kind) {
-        const fastHits = searchFastEvents(fastAllEvents(now), args.query, { limit })
-        for (const ev of fastHits) items.push(`${ev.id} ${renderFastLine(ev, now)}`)
-      }
-      // 意图层同理：机器认出来的那几句话也翻得到（它没有分量，翻到的是「发生过这句」）
-      // args.group：点名只要某个场 —— 群号，或 'private' 只翻私聊（v0.15.0 分册）。
-      // hard 档在群/私聊轮也盖意图层 —— 事件行自带场，零回填（soft 档不筛：本来就在尾上）。
-      if (args?.query && !kind) {
-        // 群流定死（批 B3，2026-11-25）：recall 的意图段硬关群事件——过了就弃，翻旧账的门关上。
-        // 群流 = 知悉（会话内看完就散）；要记住 → 显式 remember 掂量。args.group 点名群号 → 空。
-        const intentPoolNoGroup = intentAllEvents(now).filter((ev) => ev?.chatType !== 'group')
-        const intentPool =
-          audienceActive && audienceMode === 'hard'
-            ? intentPoolNoGroup.filter((ev) => audienceVisible(intentEventAudience(ev), audienceTurn))
-            : intentPoolNoGroup
-        const intentHits = searchIntentEvents(intentPool, args.query, { limit, group: args?.group })
-        for (const ev of intentHits) items.push(`${ev.id} ${renderIntentLine(ev, now)}`)
-      }
-      // 总量闸：超了从尾巴省（最不相关的先走），省了多少写在 note 里 —— 不装没发生。
-      let dropped = 0
-      const totalChars = () => items.reduce((a, s) => a + s.length, 0)
-      while (items.length > 1 && totalChars() > budget) {
-        items.pop()
-        dropped += 1
-      }
-      const noteParts = []
-      if (clipped) noteParts.push(`${clipped} 条原文截短了（要全文说 full=true）`)
-      if (dropped) noteParts.push(`还有 ${dropped} 条没给出来（问具体点我单翻）`)
-      if (audienceActive) {
-        noteParts.push(
-          `这一轮是${audienceTurn === 'private' ? '私聊' : audienceTurn.replace('group:', '群 ')}在听，别的场${
-            audienceMode === 'hard' ? '没翻' : '排到了后面'
-          }`,
-        )
-      }
-      const note = noteParts.join('；')
-      // 账本被翻也是一件真事 —— 情绪流听这个。
-      // 同一分钟里翻同一条只算一次；隔了半小时再翻，算新的（人被提醒一次和被提醒十次不一样）。
-      if (list.length) {
-        const bucket = Math.floor(now / (30 * 60_000))
-        for (const n of list.slice(0, 5)) {
-          noteEmotion({
-            source: 'recall',
-            ref: n.id,
-            at: now,
-            text: String(n.text ?? '').slice(0, 120),
-            dedupeKey: `recall|${n.id}|${bucket}`,
-          })
-        }
-      }
-      return { ok: true, items, echoed, note, origins, ...(resurrectPick ? { resurrect: resurrectPick.id } : {}) }
+      // 批 A：决策本体在 commands/recall.mjs（检索/排名/受众/染色/翻身位/执受/总量闸全身）。
+      // 回执含条件字段 resurrect（翻身位触发时出现）——批 C 的 /recall HTTP 面原样透传（§0 契约 v:1）。
+      return recallCommands.recall(args, { cwd: agentCwd(exec?.agent), sessionId: agentSessionId(exec?.agent) })
     },
   })
 
