@@ -149,7 +149,8 @@ import { createEmotionCommands } from './commands/emotion.mjs'
 import { createLedgerCommands } from './commands/ledger.mjs'
 import { createRecallCommands } from './commands/recall.mjs'
 import { createWriteCommands } from './commands/write.mjs'
-import { createRememberCommands } from './commands/remember.mjs' // 批 A：情绪域命令层（决策本体，回执逐字不变）
+import { createRememberCommands } from './commands/remember.mjs'
+import { createStatusCommands } from './commands/status.mjs' // 批 A：情绪域命令层（决策本体，回执逐字不变）
 
 // 批③（账本协议迁移，docs/g1-batch3-book-skeleton.md）：协议函数与 Book 工厂住在
 // core/protocol —— 闭包状态装进 book，协议函数统一收 book 首参。pullFast/pullIntent
@@ -471,45 +472,9 @@ export function apply(ctx, baseConfig = {}) {
   }
 
 
-  function currentSection(now = Date.now(), agent = null) {
-    const cfg = getCfg()
-    if (!cfg.enabled) return ''
-    try {
-      const picked = []
-      // 受众过滤（hard 档）：群轮/私聊轮的开头不挂别的场的条（solo 轮全可见 = 现状；
-      // soft 档不动开头 —— 开头本来就只有几条，降存在感没有排位可让）
-      const turnAud = currentAudience(now)
-      const poolNodes =
-        cfg.recallAudience === 'hard' && turnAud !== 'solo'
-          ? book.nodes.filter((n) => audienceVisible(n.audience, turnAud))
-          : book.nodes
-      const text = renderSection(poolNodes, {
-        now,
-        limit: clamp(cfg.injectLimit, 0, 10),
-        openLimit: clamp(cfg.openLimit, 0, 10),
-        maxChars: clamp(cfg.maxChars, 120, 4000),
-        title: '我记得的',
-        // 上了快通路的习惯不跟这些条抢位置（两段用同一个上限，才对得上）
-        habitLimit: clamp(cfg.habitLimit, 0, 10),
-        // 排名用激活度（此刻的目录、刚发生的事都算数）—— 读取路径上不写账本
-        //（唯一的例外是下面的展示观测行，它不喂排名）
-        scoreOf: activationScorer(agent, now),
-        // 展示观测：挂了谁记一笔（不算现行，不进复现轴 —— 判据见 docs/philosophy.md）
-        onPick: (n) => picked.push(n),
-      })
-      // 只记「真的挂给会话」的那次 —— status 轮询（agent=null）是预览，
-      // 记它会污染观测（null-agent 的打分上下文和真实注入不是一回事，集合也随
-      // 激活度漂移），2026-11-16 复核抓到的
-      if (picked.length && agent) noteDisplay(book, picked, now)
-      book.meta.lastRenderAt = now
-      book.meta.renderCount += 1
-      book.meta.lastRenderError = null
-      return text
-    } catch (err) {
-      book.meta.lastRenderError = String(err?.message ?? err).slice(0, 200)
-      log(`渲染失败：${book.meta.lastRenderError}`)
-      return ''
-    }
+    function currentSection(now = Date.now(), agent = null) {
+    // 批 A：决策本体在 commands/status.mjs（主池段 + 展示观测；agent → ctx.cwd）
+    return statusCommands.currentSection(now, agent ? agentCwd(agent) : null)
   }
 
   /**
@@ -524,75 +489,33 @@ export function apply(ctx, baseConfig = {}) {
     return nodes.filter((n) => audienceVisible(n.audience, turnAud))
   }
 
-  function currentSelfSection(now = Date.now()) {
-    const cfg = getCfg()
-    if (!cfg.enabled || cfg.selfEnabled === false) return ''
-    try {
-      return renderSelfSection(hardAudNodes(book.nodes, now), {
-        now,
-        maxChars: clamp(cfg.selfMaxChars, 80, 2000),
-        title: '我',
-      })
-    } catch (err) {
-      log(`自我层渲染失败：${String(err?.message ?? err).slice(0, 200)}`)
-      return ''
-    }
+    function currentSelfSection(now = Date.now()) {
+    // 批 A：决策本体在 commands/status.mjs（七段同源——批 C /sections 与注入区共用）
+    return statusCommands.currentSelfSection(now)
   }
 
   /** 「还没定的」那一段：doubt（还没认下的我）+ open（没结的事）合成一个摊位，固定晒一条（饭桶②）。 */
-  function currentUnsettledSection(now = Date.now()) {
-    const cfg = getCfg()
-    if (!cfg.enabled || cfg.unsettledEnabled === false) return ''
-    try {
-      return renderUnsettledSection(hardAudNodes(book.nodes, now), {
-        now,
-        maxChars: clamp(cfg.unsettledMaxChars, 80, 2000),
-        title: '还没定的',
-      })
-    } catch (err) {
-      log(`「还没定的」段渲染失败：${String(err?.message ?? err).slice(0, 200)}`)
-      return ''
-    }
+    function currentUnsettledSection(now = Date.now()) {
+    // 批 A：决策本体在 commands/status.mjs（七段同源——批 C /sections 与注入区共用）
+    return statusCommands.currentUnsettledSection(now)
   }
 
   /**
    * 快通路那一段。跟「我记得的」和「我」都是分开的段：
    * 这里的条**不参加竞争** —— 习惯该像身体反应一样，到点就送到开头。
    */
-  function currentHabitSection(now = Date.now()) {
-    const cfg = getCfg()
-    if (!cfg.enabled || cfg.habitEnabled === false) return ''
-    try {
-      return renderHabitSection(hardAudNodes(book.nodes, now), {
-        now,
-        limit: clamp(cfg.habitLimit, 0, 10),
-        maxChars: clamp(cfg.habitMaxChars, 80, 2000),
-        title: '习惯',
-      })
-    } catch (err) {
-      log(`习惯段渲染失败：${String(err?.message ?? err).slice(0, 200)}`)
-      return ''
-    }
+    function currentHabitSection(now = Date.now()) {
+    // 批 A：决策本体在 commands/status.mjs（七段同源——批 C /sections 与注入区共用）
+    return statusCommands.currentHabitSection(now)
   }
 
   /**
    * 好奇表那一段。跟「我记得的」「我」「习惯」都是分开的段：
    * 好奇条不参加竞争 —— 我想知道什么，该由惦记的次数和分量决定。
    */
-  function currentCuriositySection(now = Date.now()) {
-    const cfg = getCfg()
-    if (!cfg.enabled || cfg.curiosityEnabled === false) return ''
-    try {
-      return renderCuriositySection(hardAudNodes(book.nodes, now), {
-        now,
-        limit: clamp(cfg.curiosityLimit, 0, 10),
-        maxChars: clamp(cfg.curiosityMaxChars, 80, 2000),
-        title: '好奇',
-      })
-    } catch (err) {
-      log(`好奇段渲染失败：${String(err?.message ?? err).slice(0, 200)}`)
-      return ''
-    }
+    function currentCuriositySection(now = Date.now()) {
+    // 批 A：决策本体在 commands/status.mjs（七段同源——批 C /sections 与注入区共用）
+    return statusCommands.currentCuriositySection(now)
   }
 
   /**
@@ -600,18 +523,9 @@ export function apply(ctx, baseConfig = {}) {
    * 为什么默认关：这一段写的是「上次的我的笔记」——它不该替我说话，
    * 更不该每次都出现在开头（那会变成一种表演）。要挂的时候在设置里打开。
    */
-  function currentEmotionSection(now = Date.now()) {
-    const cfg = getCfg()
-    if (!cfg.enabled || cfg.emotionEnabled === false || cfg.emotionSectionEnabled === false) return ''
-    try {
-      const state = emotionState(now)
-      const note = renderEmotionNote(state, { maxChars: clamp(cfg.emotionMaxChars, 80, 2000) })
-      if (!note) return ''
-      return `${note}\n（这是上次的笔记，不是现在必须摆出的样子 —— 说出口的心情仍然是我当轮的判断。）`
-    } catch (err) {
-      log(`情绪段渲染失败：${String(err?.message ?? err).slice(0, 200)}`)
-      return ''
-    }
+    function currentEmotionSection(now = Date.now()) {
+    // 批 A：决策本体在 commands/status.mjs（七段同源——批 C /sections 与注入区共用）
+    return statusCommands.currentEmotionSection(now)
   }
 
   // ---------------------------------------------------------------- 快层接缝
@@ -2032,30 +1946,9 @@ export function apply(ctx, baseConfig = {}) {
 
   /** 思量段（定案 A，2026-11-18）：链头最新一条的摘要 + 引种子数；due 时提示一句。
    *  思量由 AI 显式 narrate，系统只给时机——段里出现的一切都来自她自己的落笔。 */
-  function currentNarrationSection(now = Date.now()) {    const cfg = getCfg()
-    if (!cfg.enabled || cfg.narrationEnabled === false) return ''
-    try {
-      const all = hardAudNodes(book.nodes, now).filter((n) => n && normKind(n.kind) === 'narration')
-      if (!all.length) return ''
-      const newest = all.reduce((a, b) => ((Number(b.at) || 0) > (Number(a.at) || 0) ? b : a))
-      // 链头要答过四问才挂（hasThought 闸门原样适用）；没答的翻得到、不挂段
-      const head = all
-        .filter((n) => hasThought(n))
-        .sort((a, b) => (Number(b.at) || 0) - (Number(a.at) || 0))[0] ?? null
-      const intervalMs = clamp(cfg.narrationIntervalDays, 1, 30) * 24 * 60 * 60 * 1000
-      const todayKey = new Date(now).toISOString().slice(0, 10)
-      const writtenToday = all.some((n) => new Date(Number(n.at)).toISOString().slice(0, 10) === todayKey)
-      const isDue = now - Number(newest.at) > intervalMs && !writtenToday
-      if (!head) return isDue ? '【思量】\n（有一阵没这么看过自己了）' : ''
-      const refsCount = Array.isArray(head.refs) ? head.refs.length : 0
-      const text = Array.from(head.text).length > 120 ? `${cutByCodePoints(head.text, 120)}…` : head.text
-      const lines = [`· ${text}（引 ${refsCount} 条种子）`]
-      if (isDue) lines.push('（有一阵没这么看过自己了）')
-      return clipSection('【思量】', lines.join('\n'), clamp(cfg.narrationSectionMaxChars, 80, 2000))
-    } catch (err) {
-      log(`思量段渲染失败：${String(err?.message ?? err).slice(0, 200)}`)
-      return ''
-    }
+    function currentNarrationSection(now = Date.now()) {
+    // 批 A：决策本体在 commands/status.mjs（七段同源——批 C /sections 与注入区共用）
+    return statusCommands.currentNarrationSection(now)
   }
 
   /** 瀑流段（定案 B，2026-11-18）：昨日之流是读侧聚合——
@@ -2071,29 +1964,9 @@ export function apply(ctx, baseConfig = {}) {
 
   // 执受写入点已收 core/protocol/book.js 的 sproutToBody（批③子步 2）；
   // 身→识（deriveStandingBodyStates 进契合路）仍在上面 activationCtx。
-  function currentStreamSection(now = Date.now()) {
-    const cfg = getCfg()
-    if (!cfg.enabled || cfg.streamEnabled === false) return ''
-    try {
-      const day = new Date(now).toISOString().slice(0, 10)
-      if (book.streamCache.day === day) return book.streamCache.text
-      const dayMs = 24 * 60 * 60 * 1000
-      const we = Math.floor(now / dayMs) * dayMs // 今日 UTC 起点 = 昨日窗口终点
-      const yesterdayKey = new Date(we - 1).toISOString().slice(0, 10)
-      const vikarmaYesterday = Number(book.vikarmaAgg.byDay[yesterdayKey] ?? 0)
-      const text = renderYesterdayStream({
-        nodes: book.nodes,
-        echoTimes: book.echoAt,
-        vikarmaNewCount: vikarmaYesterday,
-        now,
-        maxChars: clamp(cfg.streamSectionMaxChars, 80, 2000),
-      })
-      book.streamCache = { day, text }
-      return text
-    } catch (err) {
-      log(`瀑流段渲染失败：${String(err?.message ?? err).slice(0, 200)}`)
-      return ''
-    }
+    function currentStreamSection(now = Date.now()) {
+    // 批 A：决策本体在 commands/status.mjs（七段同源——批 C /sections 与注入区共用）
+    return statusCommands.currentStreamSection(now)
   }
 
   const transformTool = defineTool({
@@ -2323,347 +2196,28 @@ export function apply(ctx, baseConfig = {}) {
       }))
   }
 
-  function buildStatus() {
-    const cfg = getCfg()
-    const now = Date.now()
-    // 设置页每几秒拉一次 status —— 顺手把快层的新事件抄进来，
-    // 这样页面上的「快层」是活的（抄不动就算了，不影响后面的读取）。
-    try {
-      pullFast(now)
-    } catch {
-      /* 抄不动不该让 status 挂掉 */
-    }
-    // 意图层同理：桥那边刚进来的消息，也得能在页面上看到
-    try {
-      pullIntent(now)
-    } catch {
-      /* 同上 */
-    }
-    // 情绪流同理：刚认出来的事，折出来的笔记才是新的
-    try {
-      pullEmotion(now)
-    } catch {
-      /* 同上 */
-    }
-    // 熏习势力统计：算一次，echoes 与 display 两块共用 —— scanMs 是
-    // 「衰减只在读时算」的代价观测点（2026-11-16 复核：别只量一半）
-    const echoStatsT0 = performance.now()
-    const eStats = echoStats(now)
-    const echoScanMs = Math.round((performance.now() - echoStatsT0) * 100) / 100
-    // status 这层拿不到具体的会话（没有 agent），契合这一路按「没有当前目录」算；
-    // 排名仍用激活度 —— 跟真机会话里看到的顺序一致（差的那点只是 fit 的目录分量）。
-    const scoreOf = activationScorer(null, now)
-    const s = summaryOf(book.nodes, now, { scoreOf })
-    const top = rankNodes(book.nodes, now, { limit: 8, scoreOf }).map((h) => {
-      const { activation, axes } = activationOf(h.node, now, {
-        repeatCounts: repeatCounts(book.nodes),
-        echoes: echoCounts(now),
-      })
-      return {
-        id: h.node.id,
-        kind: h.node.kind,
-        weight: Number(h.node.weight.toFixed(2)),
-        // 分值 = 老 score（只看分量和时间）；激活 = 四路凸组合（还看契合和复现）
-        score: Number(score(h.node, now).toFixed(3)),
-        activation: Number(activation.toFixed(3)),
-        axes: {
-          weight: Number(axes.weight.toFixed(3)),
-          recency: Number(axes.recency.toFixed(3)),
-          fit: Number(axes.fit.toFixed(3)),
-          repeat: Number(axes.repeat.toFixed(3)),
-        },
-        at: new Date(h.node.at).toISOString(),
-        when: relTime(h.node.at, now),
-        text: h.node.text.slice(0, 200),
-        thought: hasThought(h.node),
-      }
-    })
-    // 按住的列出来三种都算：手动按的、按到点的（带还剩多久）、等条件的（带在等谁）
-    const dirNow = indexNodes(book.nodes)
-    const sealed = book.nodes
-      .filter((n) => isSealed(n, now, dirNow))
-      .slice(-8)
-      .map((n) => ({
-        id: n.id,
-        text: n.text.slice(0, 120),
-        seal: n.sealed ? 'plain' : n.sealCond ? 'cond' : 'until',
-        left: n.sealUntil ? relSealLeft(n.sealUntil, now) : '',
-        cond: n.sealCond || '',
-      }))
-    return {
-      ok: true,
-      now: new Date(now).toISOString(),
-      plugin: { name, version: VERSION, startedAt: new Date(book.meta.startedAt).toISOString(), uptimeMs: now - book.meta.startedAt, dataDir },
-      // 账本健康（自 shihai 合并，2026-11-16）：损坏红灯别只写在日志里，面板要看得见。
-      // broken=读不出能认的账；backupOk=原文已滚 .bak（真丢了还能找回来）
-      ledger: { broken: book.broken, backupOk: book.backupOk },
-      injection: {
-        enabled: cfg.enabled,
-        targetRoot: cfg.targetRoot,
-        allowRoots: cfg.allowRoots,
-        denyRoots: Array.isArray(cfg.denyRoots) ? cfg.denyRoots : [],
-        count: book.meta.renderCount,
-        lastAt: book.meta.lastRenderAt ? new Date(book.meta.lastRenderAt).toISOString() : null,
-        lastError: book.meta.lastRenderError,
-        section: currentSection(now),
-        selfEnabled: cfg.selfEnabled !== false,
-        selfSection: currentSelfSection(now),
-        unsettledEnabled: cfg.unsettledEnabled !== false,
-        unsettledSection: currentUnsettledSection(now),
-        curiosityEnabled: cfg.curiosityEnabled !== false,
-        curiositySection: currentCuriositySection(now),
-        habitEnabled: cfg.habitEnabled !== false,
-        habitSection: currentHabitSection(now),
-      },
-      self: {
-        slots: activeSelfNodes(book.nodes, now).map((n) => ({
-          id: n.id,
-          slot: n.slot,
-          label: slotLabel(n.slot),
-          text: n.text.slice(0, 300),
-          weight: Number(selfWeight(n, now).toFixed(3)),
-          anchor: Boolean(n.anchor),
-        })),
-        seeds: SELF_SLOTS.map((s) => ({ key: s.key, label: s.label })),
-        unsettled: unsettledNodes(book.nodes, now).length,
-      },
-      habits: {
-        fast: fastHabits(book.nodes, now, { limit: clamp(cfg.habitLimit, 0, 10) }).map((n) => ({
-          id: n.id,
-          context: n.context,
-          hits: n.hits,
-          state: habitState(n),
-          text: n.text.slice(0, 200),
-        })),
-        candidates: book.nodes
-          .filter(
-            (n) =>
-              normKind(n.kind) === 'habit' &&
-              !isSealed(n, now, dirNow) &&
-              !n.superseded &&
-              habitState(n) !== 'fast',
-          )
-          .map((n) => ({
-            id: n.id,
-            context: n.context,
-            hits: n.hits,
-            state: habitState(n),
-            text: n.text.slice(0, 200),
-          })),
-        limit: clamp(cfg.habitLimit, 0, 10),
-      },
-      curiosity: curiosityStats(book.nodes, now, { limit: clamp(cfg.curiosityLimit, 0, 10) }),
-      fast: (() => {
-        const source = fastSourcePath(cfg)
-        const events = fastAllEvents(now)
-        const weighed = weighedFastIds()
-        const sum = fastSummary(events, { weighed })
-        return {
-          enabled: cfg.enabled && cfg.fastEnabled !== false,
-          source,
-          copied: countLines(book.files.fast),
-          ...sum,
-          recent: book.fastIndex.slice(0, 5).map((ev) => ({
-            id: ev.id,
-            kind: ev.kind,
-            text: String(ev.text ?? '').slice(0, 160),
-            at: new Date(ev.at).toISOString(),
-            when: fastRelTime(ev.at, now),
-            weighed: weighed.has(ev.id),
-          })),
-        }
-      })(),
-      intent: (() => {
-        const sources = intentSourcePaths(cfg)
-        const events = intentAllEvents(now)
-        const sum = summarizeIntents(events)
-        // 按场分组计数（v0.15.0 分册）：群按群号，私聊归 'private'
-        const byGroup = {}
-        for (const ev of events) {
-          const g = ev.chatType === 'private' ? 'private' : String(ev.groupId ?? '') || 'unknown'
-          byGroup[g] = (byGroup[g] || 0) + 1
-        }
-        return {
-          enabled: cfg.enabled && cfg.intentEnabled !== false,
-          sources,
-          source: sources[0] ?? '',
-          byGroup,
-          copied: countLines(book.files.intent),
-          ...sum,
-          recent: book.intentIndex.slice(0, 5).map((ev) => ({
-            id: ev.id,
-            kind: ev.kind,
-            label: INTENT_LABEL[ev.kind] ?? ev.kind,
-            intensity: ev.intensity,
-            text: String(ev.text ?? '').slice(0, 160),
-            at: new Date(ev.at).toISOString(),
-            when: intentRelTime(ev.at, now),
-          })),
-        }
-      })(),
-      emotion: (() => {
-        // 情绪流的状态：机器从真事里认出来的那些情绪，折到此刻的样子。
-        // 这只是笔记 —— 不接管嘴（说出口的心情还是我当轮的判断）。
-        const state = emotionState(now)
-        const events = state.lines.filter((l) => l.kind === 'event')
-        const tunes = state.lines.filter((l) => l.kind === 'tune')
-        const weighed = weighedEmotionIds()
-        return {
-          enabled: cfg.enabled && cfg.emotionEnabled !== false,
-          dominant: state.dominant,
-          label: state.label,
-          level: state.level,
-          levels: state.levels,
-          unresolved: Boolean(state.unresolved),
-          mixed: Array.isArray(state.mixed) ? state.mixed : [],
-          total: state.total,
-          lastAt: state.lastAt ? new Date(state.lastAt).toISOString() : null,
-          /** 系数表：种子 + 账上改过的（tune 行只增不改） */
-          coefficients: Object.fromEntries(
-            Object.entries(state.coefficients ?? {}).map(([k, v]) => [
-              k,
-              { coefficient: v.coefficient, halfLife: v.halfLife },
-            ]),
-          ),
-          events: events.length,
-          tunes: tunes.length,
-          note: renderEmotionNote(state, { maxChars: clamp(cfg.emotionMaxChars, 80, 2000) }),
-          recent: [...events]
-            .sort((a, b) => b.at - a.at)
-            .slice(0, 5)
-            .map((ev) => ({
-              id: ev.id,
-              emotion: ev.emotion,
-              label: EMOTION_LABEL[ev.emotion] ?? ev.emotion,
-              delta: ev.delta,
-              intensity: ev.intensity,
-              source: ev.source,
-              ref: ev.ref,
-              text: String(ev.text ?? '').slice(0, 160),
-              at: new Date(ev.at).toISOString(),
-              when: emotionRelTime(ev.at, now),
-              weighed: weighed.has(ev.id),
-            })),
-        }
-      })(),
-      summary: s,
-      nodes: top,
-      activation: {
-        /** 四路的权重，和为 1。写死在代码里，不开面板口子。 */
-        axes: { ...ACTIVATION_AXES },
-        /** 两把钟：分量淡按天（老 score 那层），新近按分钟到小时（中层的刻度），自我按月。 */
-        recencyTau: { baseMin: RECENCY_TAU_BASE_MIN, spanMin: RECENCY_TAU_SPAN_MIN, full: REPEAT_FULL },
-        /** 唤醒回弹：被想起的回声只数最近几天的。 */
-        echoWindowDays: Math.round(ECHO_WINDOW_MS / 86400000),
-      },
-      echoes: (() => {
-        // count = 次数（给人看），strength = 熏习势力（真信号）—— 按 strength 排。
-        // scanMs 是熏习扫描的耗时（衰减只在读时算的代价观测点）：跑两周看它，
-        // 超预期再上增量索引（行号→字节偏移），现在不动。
-        let total = 0
-        for (const s of eStats.values()) total += s.count
-        const top = [...eStats.entries()]
-          .sort((a, b) => b[1].strength - a[1].strength)
-          .slice(0, 5)
-          .map(([id, s]) => ({ id, count: s.count, strength: Number(s.strength.toFixed(2)) }))
-        return { windowDays: Math.round(ECHO_WINDOW_MS / 86400000), total, top, scanMs: echoScanMs }
-      })(),
-      // 展示观测（不算现行，只记账）：谁常挂但从不被想起 —— 死重或 recall 词表覆盖不到的候选。
-      // cold = 展示 ≥3 天但熏习势力为 0 的条。只观测，不改排名；跑两周看分布。
-      // 覆盖范围：只记【我记得的】段的 pick（习惯/好奇/自我段另有段，不在此列）；
-      // 「天」是 UTC 日；clipSection 截断在 pick 之后，被预算截掉的行也计展示（略高估，见 philosophy.md）。
-      display: (() => {
-        const rows = []
-        let total = 0
-        for (const [id, days] of book.displayDays) {
-          total += days.size
-          rows.push({ id, days: days.size })
-        }
-        rows.sort((a, b) => b.days - a.days)
-        const cold = rows.filter((r) => r.days >= 3 && !eStats.has(r.id)).slice(0, 5)
-        return { total, top: rows.slice(0, 5), cold }
-      })(),
-      // 违熏（校正质量的账，不进复现轴）：总数、按原因分布、违熏最多的种子
-      // —— 从内存索引聚合（vikarma.jsonl 只增不减，别每 5 秒整本解析）
-      vikarma: (() => {
-        const top = [...book.vikarmaAt.entries()]
-          .map(([seedId, v]) => ({ seedId, count: v.count, lastAt: v.at }))
-          .sort((a, b) => b.count - a.count)
-          .slice(0, 5)
-        return { total: book.vikarmaAgg.total, byReason: { ...book.vikarmaAgg.byReason }, top }
-      })(),
-      // 受众（借自晴猫）：三档开关 + 打了标的新条数（旧条是 any，不计数）
-      audience: {
-        mode: String(cfg.recallAudience ?? 'off'),
-        stamped: book.nodes.filter((n) => n.audience && n.audience !== 'any').length,
-      },
-      // 思量（定案 A）：全内存算（hub 每 5 秒拉一次 status，别读文件——灯案教训）
-      narration: (() => {
-        const all = hardAudNodes(book.nodes, now).filter((n) => n && normKind(n.kind) === 'narration')
-        const newest = all.reduce((a, b) => {
-          const aa = Number(a?.at) || 0
-          const bb = Number(b?.at) || 0
-          return bb > aa ? b : a
-        }, null)
-        const intervalMs = clamp(cfg.narrationIntervalDays, 1, 30) * 24 * 60 * 60 * 1000
-        const todayKey = new Date(now).toISOString().slice(0, 10)
-        const writtenToday = all.some((n) => new Date(Number(n.at)).toISOString().slice(0, 10) === todayKey)
-        return {
-          count: all.length,
-          lastAt: newest ? new Date(newest.at).toISOString() : null,
-          due: all.length === 0 || (now - Number(newest.at) > intervalMs && !writtenToday),
-          latest: newest
-            ? { id: newest.id, at: new Date(newest.at).toISOString(), refsCount: Array.isArray(newest.refs) ? newest.refs.length : 0 }
-            : null,
-        }
-      })(),
-      // 转识成智（定案 D）：全内存算（灯案纪律）
-      wisdom: (() => {
-        const all = book.nodes.filter((n) => n && normKind(n.kind) === 'wisdom')
-        const newest = all.reduce((a, b) => {
-          const aa = Number(a?.at) || 0
-          const bb = Number(b?.at) || 0
-          return bb > aa ? b : a
-        }, null)
-        return {
-          count: all.length,
-          latest: newest
-            ? { id: newest.id, at: new Date(newest.at).toISOString(), seedId: (newest.refs ?? [])[0] ?? '' }
-            : null,
-        }
-      })(),
-      wake: {
-        enabled: cfg.enabled && cfg.wakeEnabled !== false && cfg.fastEnabled !== false,
+  // 批 A 收官：status 与七段进命令层（身份/wake 快照/workspaces 由注入面给——唤醒编排与宿主面板留在壳）
+  const statusCommands = createStatusCommands({
+    book, log, cfg: getCfg, pulls: emotionCommands, ledger: ledgerCommands, emo: emotionCommands,
+    identity: { name, version: VERSION, dataDir },
+    editable: Object.keys(EDITABLE),
+    env: {
+      listWorkspaces,
+      wakeSnapshot: () => ({
+        enabled: getCfg().enabled && getCfg().wakeEnabled !== false && getCfg().fastEnabled !== false,
         sessionId: wakeState.target,
-        cooldownMinutes: clamp(cfg.wakeCooldownMinutes, 0, 720),
+        cooldownMinutes: clamp(getCfg().wakeCooldownMinutes, 0, 720),
         kinds: [...WAKE_KINDS],
         beats: wakeState.beats,
         lastWakeAt: wakeState.lastWakeAt ? new Date(wakeState.lastWakeAt).toISOString() : null,
         lastText: wakeState.lastText,
-      },
-      // 执受（定案 E，v0.24.0）：观测耳目——book.sproutTracker 内存求和，零文件读
-      sprout: { today: book.sproutAgg.today, total: book.sproutAgg.total },
-      sealed,
-      workspaces: listWorkspaces(),
-      // 计数走 countLines（只数行不 parse）—— status 每几秒被拉一次，别为它整本解析
-      rawLines: countLines(book.files.lines),
-      rawEchoes: countLines(book.files.echo),
-      // 统一时间锚的原始数据（2026-11-16 起收集，跑两周看三者差值和分布）：
-      // 上次写账本（这里）/ 上次有情绪（emotion.lastAt）/ 上次被叫醒（wake.lastWakeAt）
-      // —— 三者语义不同，先别统一，等分布说话
-      lastLineAt: (() => {
-        try {
-          const last = tailLines(book.files.lines, 1)[0]
-          const at = Number(JSON.parse(last ?? '')?.at)
-          return Number.isFinite(at) && at > 0 ? new Date(at).toISOString() : null
-        } catch {
-          return null
-        }
-      })(),
-      config: { effective: cfg, editable: Object.keys(EDITABLE) },
-      paths: book.files,
-      logs: tailLines(book.files.log, 8),
-    }
+      }),
+    },
+  })
+
+  function buildStatus() {
+    // 批 A：决策本体在 commands/status.mjs（读侧组装 + 八段渲染器；身份/wake/workspaces 注入）
+    return statusCommands.buildStatus()
   }
 
   function registerRoutes() {

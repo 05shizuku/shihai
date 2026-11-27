@@ -125,6 +125,18 @@ export function createEmotionCommands({ book, log, cfg, now = () => Date.now(), 
     return line
   }
 
+  /** 已经被我掂量过的情绪事件（账本里有条 refs 指着它，e_ 前缀）——闭包同款搬入（status/recall 共用） */
+  function weighedEmotionIds() {
+    const out = new Set()
+    for (const n of book.nodes) {
+      for (const r of n.refs ?? []) {
+        const id = String(r ?? '').trim()
+        if (id.startsWith('e_')) out.add(id)
+      }
+    }
+    return out
+  }
+
   /* ---------------- 拉取族（宿主侧绑定：cfg 闸门 + 源路径解析） ---------------- */
 
   function fastSourcePath(c = cfg()) {
@@ -447,6 +459,7 @@ export function createEmotionCommands({ book, log, cfg, now = () => Date.now(), 
     pullEmotion,
     fastSourcePath,
     intentSourcePaths,
+    weighedEmotionIds,
     fastAllEvents,
     intentAllEvents,
   }

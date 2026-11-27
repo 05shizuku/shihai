@@ -230,3 +230,37 @@ export function keepTailLines(file, maxLines) {
     return -1
   }
 }
+
+export function tailLines(file, n = 10, maxBytes = 65536) {
+  try {
+    const size = statSync(file).size
+    if (size <= 0) return []
+    const start = Math.max(0, size - maxBytes)
+    const len = size - start
+    const buf = Buffer.alloc(len)
+    const fd = openSync(file, 'r')
+    try {
+      readSync(fd, buf, 0, len, start)
+    } finally {
+      closeSync(fd)
+    }
+    const text = buf.toString('utf8')
+    const lines = text.split('\n').filter(Boolean)
+    return lines.slice(-n)
+  } catch {
+    return []
+  }
+}
+
+export function countLines(file) {
+  try {
+    const raw = readFileSync(file, 'utf8')
+    let n = 0
+    for (let i = 0; i < raw.length; i += 1) {
+      if (raw.charCodeAt(i) === 10) n += 1
+    }
+    return raw.length && !raw.endsWith('\n') ? n + 1 : n
+  } catch {
+    return 0
+  }
+}
