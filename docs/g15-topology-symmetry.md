@@ -8,6 +8,8 @@
 ## 1. 新-1 拓扑对称：bridge/she 收编进仓
 
 **现状**：remember/body/reach 的运行体 = git 仓（junction→E:\大肥鱼\shihai\）✓；
+**追记（2026-11-27，ADR-0008）**：本节承诺全部兑现——bridge/she 已收编进仓，五 junction（remember/body/reach/qq-bridge/she）现役装载位 = profiles\desktop\node_modules，SHA-256 对拍全一致；Plugin\ 下两 junction 转墓碑语义（侧门 _say.mjs 邻接工作，保留不删）；仓外成员 dsh-look/dsh-model-failover 如实记不入识海仓。台账全文见 ADR-0008。
+
 **qq-bridge 与 she 的运行体 = junction→Plugin 仓外副本**，仓里另有一份手工同步的拷贝
 （2026-11-22 逐字节一致，但无任何同步机制）。三审原话：最活跃的 bridge（群参与 v1 所在）
 运行体不在版本控制内，「三个月后就是这次事故的微型复刻」。

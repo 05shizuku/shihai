@@ -122,6 +122,8 @@ graph TB
 
 - 一次装齐 remember + body + reach，附一份 cordis patch：按「识」的顺序把三家的段排进系统提示词，不用你手动对 order。
 
+> **部署口径（2026-11-27 注）**：本仓的五个包通过 junction 装载（`profiles\desktop\node_modules\* → 仓内目录`，见 ADR-0008）——**仓库即运行体**，`dsh-remember` 的代码还共享仓根的 `core/`（npm 的 `files` 字段装不进上级目录，故无 npm publish 通道；装包 = 建 junction，不拷文件）。
+
 ## 检索质量 · 考卷
 
 「不编造相关性」不是口号，是一道有数字的门：
